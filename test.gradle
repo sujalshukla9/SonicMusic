@@ -1,0 +1,1 @@
+println(org.gradle.api.JavaVersion.values())

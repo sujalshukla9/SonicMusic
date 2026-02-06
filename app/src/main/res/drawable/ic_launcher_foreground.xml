@@ -1,0 +1,39 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Rounded Triangle Container -->
+    <path
+        android:pathData="M54,20 C59,20 63,23 65,28 L89,70 C91,75 88,82 82,82 H26 C20,82 17,75 19,70 L43,28 C45,23 49,20 54,20 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="20"
+                android:startY="20"
+                android:endX="88"
+                android:endY="88"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00E5FF"/> <!-- Cyan -->
+                <item android:offset="0.5" android:color="#2979FF"/> <!-- Blue -->
+                <item android:offset="1.0" android:color="#D500F9"/> <!-- Purple -->
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Music Note Icon (White) -->
+    <!-- Scaled and Centered -->
+    <group
+        android:pivotX="12"
+        android:pivotY="12"
+        android:scaleX="2.0"
+        android:scaleY="2.0"
+        android:translateX="30"
+        android:translateY="32">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M12,3 V13.55 C11.41,13.21 10.73,13 10,13 C7.79,13 6,14.79 6,17 S7.79,21 10,21 S14,19.21 14,17 V7 H18 V3 H12 Z" />
+    </group>
+
+</vector>
