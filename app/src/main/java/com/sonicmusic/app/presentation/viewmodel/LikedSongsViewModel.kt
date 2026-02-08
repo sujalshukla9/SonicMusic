@@ -41,7 +41,7 @@ class LikedSongsViewModel @Inject constructor(
 
     fun playSong(song: Song) {
         viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.HIGH)
+            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }
@@ -55,7 +55,7 @@ class LikedSongsViewModel @Inject constructor(
             // Add rest to queue
             songs.drop(1).forEach { song ->
                 viewModelScope.launch {
-                    songRepository.getStreamUrl(song.id, StreamQuality.HIGH)
+                    songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                         .onSuccess { streamUrl ->
                             playerServiceConnection.addToQueue(song, streamUrl)
                         }
@@ -70,7 +70,7 @@ class LikedSongsViewModel @Inject constructor(
             playSong(songs.first())
             songs.drop(1).forEach { song ->
                 viewModelScope.launch {
-                    songRepository.getStreamUrl(song.id, StreamQuality.HIGH)
+                    songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                         .onSuccess { streamUrl ->
                             playerServiceConnection.addToQueue(song, streamUrl)
                         }

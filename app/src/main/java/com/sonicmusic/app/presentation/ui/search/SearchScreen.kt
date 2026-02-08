@@ -41,6 +41,7 @@ import com.sonicmusic.app.presentation.viewmodel.SearchViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
+    onShowFullPlayer: () -> Unit = {},
     viewModel: SearchViewModel = hiltViewModel()
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -162,7 +163,7 @@ fun SearchScreen(
                 else -> {
                     SearchResultsList(
                         results = searchResults,
-                        onSongClick = { viewModel.onSongClick(it) }
+                        onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() }
                     )
                 }
             }

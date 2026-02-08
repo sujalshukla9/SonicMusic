@@ -117,7 +117,7 @@ class SearchViewModel @Inject constructor(
             recentSearchRepository.addSearch(song.title)
             
             // Get stream URL and play
-            songRepository.getStreamUrl(song.id, StreamQuality.HIGH)
+            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }

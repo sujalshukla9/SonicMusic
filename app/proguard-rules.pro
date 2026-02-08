@@ -40,3 +40,17 @@
 -keepclassmembers @dagger.hilt.android.lifecycle.HiltViewModel class * {
     @javax.inject.Inject <init>(...);
 }
+
+# ═══════════════════════════════════════════════════════════════
+# NewPipe Extractor
+# ═══════════════════════════════════════════════════════════════
+-keep class org.schabi.newpipe.extractor.** { *; }
+-dontwarn org.schabi.newpipe.extractor.**
+
+# Rhino JavaScript engine (required by NewPipe)
+-keep class org.mozilla.javascript.** { *; }
+-dontwarn org.mozilla.javascript.**
+
+# JSoup (required by NewPipe)
+-keep class org.jsoup.** { *; }
+-dontwarn org.jsoup.**

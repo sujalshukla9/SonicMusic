@@ -1,9 +1,13 @@
 package com.sonicmusic.app.presentation.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -36,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -55,12 +60,39 @@ import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    
+    // Notification permission launcher for Android 13+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        // Permission result - notification will work if granted
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        
+        // Request notification permission for Android 13+ (API 33+)
+        requestNotificationPermission()
+        
         setContent {
             SonicMusicTheme {
                 SonicMusicApp()
+            }
+        }
+    }
+    
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permission = Manifest.permission.POST_NOTIFICATIONS
+            when {
+                ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED -> {
+                    // Already granted
+                }
+                else -> {
+                    // Request permission
+                    notificationPermissionLauncher.launch(permission)
+                }
             }
         }
     }
@@ -164,11 +196,14 @@ fun SonicMusicApp() {
                         },
                         onNavigateToSettings = { 
                             navController.navigate(Screen.Settings.route) 
-                        }
+                        },
+                        onShowFullPlayer = { showFullPlayer = true }
                     )
                 }
                 composable(Screen.Search.route) {
-                    SearchScreen()
+                    SearchScreen(
+                        onShowFullPlayer = { showFullPlayer = true }
+                    )
                 }
                 composable(Screen.Library.route) {
                     LibraryScreen(

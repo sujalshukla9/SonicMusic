@@ -54,8 +54,8 @@ class SongRepositoryImpl @Inject constructor(
         // Extract fresh stream URL
         return audioStreamExtractor.extractAudioStream(songId, quality)
             .onSuccess { streamUrl ->
-                // Cache the URL for 6 hours
-                val expiry = System.currentTimeMillis() + (6 * 60 * 60 * 1000)
+                // Cache the URL for 30 minutes (YouTube URLs expire quickly)
+                val expiry = System.currentTimeMillis() + (30 * 60 * 1000)
                 songDao.updateSong(
                     cachedSong?.copy(
                         cachedStreamUrl = streamUrl,
@@ -96,6 +96,13 @@ class SongRepositoryImpl @Inject constructor(
     override fun getLikedSongs(): Flow<List<Song>> {
         return songDao.getLikedSongs().map { entities ->
             entities.map { it.toSong() }
+        }
+    }
+
+    override suspend fun clearCachedStreamUrl(songId: String) {
+        val cachedSong = songDao.getSongById(songId)
+        cachedSong?.let {
+            songDao.updateSong(it.copy(cachedStreamUrl = null, cacheExpiry = null))
         }
     }
 

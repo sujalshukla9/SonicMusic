@@ -20,8 +20,10 @@ ksp = "1.9.22-1.0.17"
 navigation = "2.7.7"
 datastore = "1.0.0"
 palette = "1.0.0"
-newpipe = "v0.25.0"
+newpipe = "v0.25.2"
 rhino = "1.7.14"
+reorderable = "2.4.3"
+media = "1.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -81,6 +83,12 @@ androidx-palette = { group = "androidx.palette", name = "palette-ktx", version.r
 # NewPipe Extractor
 newpipe-extractor = { group = "com.github.TeamNewPipe", name = "NewPipeExtractor", version.ref = "newpipe" }
 rhino = { group = "org.mozilla", name = "rhino", version.ref = "rhino" }
+
+# Reorderable (Drag & Drop)
+reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.ref = "reorderable" }
+
+# AndroidX Media (for MediaStyle notification)
+androidx-media = { group = "androidx.media", name = "media", version.ref = "media" }
 
 [bundles]
 compose = ["androidx-ui", "androidx-ui-graphics", "androidx-ui-tooling-preview", "androidx-material3", "androidx-material-icons"]

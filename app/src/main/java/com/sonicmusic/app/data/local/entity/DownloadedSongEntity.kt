@@ -15,5 +15,6 @@ data class DownloadedSongEntity(
     val fileSize: Long,
     val quality: String,
     val downloadedAt: Long,
-    val thumbnailUrl: String? = null
+    val thumbnailUrl: String? = null,
+    val isEncrypted: Boolean = true
 )

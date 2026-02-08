@@ -82,6 +82,7 @@ dependencies {
     
     // Media3
     implementation(libs.bundles.media3)
+    implementation(libs.androidx.media) // For MediaStyle notification
     
     // Networking
     implementation(libs.bundles.networking)
@@ -102,6 +103,9 @@ dependencies {
     // NewPipe Extractor (YouTube stream extraction)
     implementation(libs.newpipe.extractor)
     implementation(libs.rhino)
+    
+    // Reorderable (Drag & Drop for Queue)
+    implementation(libs.reorderable)
     
     // Testing
     testImplementation(libs.junit)

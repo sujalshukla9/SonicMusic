@@ -6,12 +6,14 @@ import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.data.repository.HistoryRepositoryImpl
 import com.sonicmusic.app.data.repository.LocalMusicRepositoryImpl
 import com.sonicmusic.app.data.repository.PlaylistRepositoryImpl
+import com.sonicmusic.app.data.repository.QueueRepositoryImpl
 import com.sonicmusic.app.data.repository.RecentSearchRepositoryImpl
 import com.sonicmusic.app.data.repository.RecommendationRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
+import com.sonicmusic.app.domain.repository.QueueRepository
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SongRepository
@@ -61,6 +63,12 @@ abstract class RepositoryModule {
     abstract fun bindRecommendationRepository(
         impl: RecommendationRepositoryImpl
     ): RecommendationRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindQueueRepository(
+        impl: QueueRepositoryImpl
+    ): QueueRepository
 
     companion object {
         @Provides

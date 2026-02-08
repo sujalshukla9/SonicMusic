@@ -89,6 +89,7 @@ fun HomeScreen(
     onNavigateToPlaylists: () -> Unit = {},
     onNavigateToRecentlyPlayed: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
+    onShowFullPlayer: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val homeContent by viewModel.homeContent.collectAsState()
@@ -113,7 +114,8 @@ fun HomeScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
         
         if (isLoading && homeContent.listenAgain.isEmpty()) {
@@ -177,7 +179,7 @@ fun HomeScreen(
                             title = "Continue Listening",
                             subtitle = "Pick up where you left off",
                             songs = homeContent.listenAgain,
-                            onSongClick = { viewModel.onSongClick(it) },
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                             onSeeAllClick = { viewModel.onSectionSeeAll("listen_again") },
                             cardStyle = CardStyle.LARGE_SQUARE
                         )
@@ -193,7 +195,7 @@ fun HomeScreen(
                             title = "Recommended For You",
                             subtitle = "Based on your listening",
                             songs = homeContent.quickPicks,
-                            onSongClick = { viewModel.onSongClick(it) },
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                             onSeeAllClick = { viewModel.onSectionSeeAll("quick_picks") },
                             cardStyle = CardStyle.MEDIUM_CARD
                         )
@@ -206,10 +208,10 @@ fun HomeScreen(
                 if (homeContent.trending.isNotEmpty()) {
                     item {
                         SongSection(
-                            title = "Trending Now 🔥",
+                            title = "Trending Now",
                             subtitle = "What's hot in India",
                             songs = homeContent.trending,
-                            onSongClick = { viewModel.onSongClick(it) },
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                             onSeeAllClick = { viewModel.onSectionSeeAll("trending") },
                             cardStyle = CardStyle.COMPACT_ROW
                         )
@@ -225,7 +227,7 @@ fun HomeScreen(
                             title = "New Releases",
                             subtitle = "Fresh tracks just dropped",
                             songs = homeContent.newReleases,
-                            onSongClick = { viewModel.onSongClick(it) },
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                             onSeeAllClick = { viewModel.onSectionSeeAll("new_releases") },
                             cardStyle = CardStyle.MEDIUM_CARD
                         )
@@ -241,7 +243,7 @@ fun HomeScreen(
                             title = "English Hits",
                             subtitle = "Top international tracks",
                             songs = homeContent.englishHits,
-                            onSongClick = { viewModel.onSongClick(it) },
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                             onSeeAllClick = { viewModel.onSectionSeeAll("english_hits") },
                             cardStyle = CardStyle.LARGE_SQUARE
                         )
@@ -256,7 +258,7 @@ fun HomeScreen(
                         title = "More from ${artistSection.artist.name}",
                         subtitle = "Because you listened",
                         songs = artistSection.songs,
-                        onSongClick = { viewModel.onSongClick(it) },
+                        onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
                         onSeeAllClick = { viewModel.onSectionSeeAll("artist_${artistSection.artist.id}") },
                         cardStyle = CardStyle.MEDIUM_CARD
                     )
@@ -281,7 +283,8 @@ private fun HomeHeader(
         modifier = Modifier
             .fillMaxWidth()
             .windowInsetsPadding(WindowInsets.statusBars)
-            .padding(horizontal = 20.dp, vertical = 16.dp)
+            .padding(horizontal = 20.dp)
+            .padding(top = 12.dp, bottom = 8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -338,10 +341,10 @@ private fun HomeHeader(
 private fun getGreeting(): String {
     val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
     return when (hour) {
-        in 5..11 -> "Good Morning ☀️"
-        in 12..16 -> "Good Afternoon 🌤️"
-        in 17..20 -> "Good Evening 🌅"
-        else -> "Good Night 🌙"
+        in 5..11 -> "Good Morning"
+        in 12..16 -> "Good Afternoon"
+        in 17..20 -> "Good Evening"
+        else -> "Good Night"
     }
 }
 

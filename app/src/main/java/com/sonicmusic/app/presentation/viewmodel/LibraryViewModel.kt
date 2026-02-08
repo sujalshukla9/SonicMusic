@@ -101,7 +101,7 @@ class LibraryViewModel @Inject constructor(
 
     fun onSongClick(song: Song) {
         viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.HIGH)
+            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }
@@ -122,7 +122,7 @@ class LibraryViewModel @Inject constructor(
         )
         
         viewModelScope.launch {
-            songRepository.getStreamUrl(history.songId, StreamQuality.HIGH)
+            songRepository.getStreamUrl(history.songId, StreamQuality.BEST)
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }

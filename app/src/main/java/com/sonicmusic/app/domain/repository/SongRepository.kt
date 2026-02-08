@@ -12,6 +12,9 @@ interface SongRepository {
     suspend fun getTrending(limit: Int = 30): Result<List<Song>>
     suspend fun getEnglishHits(limit: Int = 25): Result<List<Song>>
     
+    // URL cache management
+    suspend fun clearCachedStreamUrl(songId: String)
+    
     suspend fun likeSong(songId: String)
     suspend fun unlikeSong(songId: String)
     fun getLikedSongs(): Flow<List<Song>>
