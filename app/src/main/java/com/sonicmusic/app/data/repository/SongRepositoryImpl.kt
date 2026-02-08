@@ -2,98 +2,105 @@ package com.sonicmusic.app.data.repository
 
 import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.data.local.entity.SongEntity
-import com.sonicmusic.app.data.remote.api.YouTubeiService
+import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
+import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
-import com.sonicmusic.app.data.manager.CacheManager
+import javax.inject.Singleton
 
+@Singleton
 class SongRepositoryImpl @Inject constructor(
-    private val api: YouTubeiService,
-    private val dao: SongDao,
-    private val cacheManager: CacheManager
+    private val songDao: SongDao,
+    private val youTubeiService: YouTubeiService,
+    private val audioStreamExtractor: AudioStreamExtractor
 ) : SongRepository {
-
-    override suspend fun searchSongs(query: String): Result<List<Song>> {
-        return api.searchSongs(query)
-    }
-
-    override suspend fun getSong(id: String): Result<Song> {
-        val localSong = dao.getSong(id)
-        if (localSong != null) {
-            return Result.success(localSong.toDomain())
-        }
-        
-        return api.getStreamUrl(id).map { url ->
-             Song(
-                id = id,
-                title = "Unknown",
-                artist = "Unknown",
-                artistId = null,
-                album = null,
-                albumId = null,
-                duration = 0,
-                thumbnailUrl = "",
-                streamUrl = url
-            )
-        }
-    }
-
-    override suspend fun toggleLike(song: Song) {
-        val current = dao.getSong(song.id)
-        val isLiked = !(current?.isLiked ?: false)
-        val timestamp = if (isLiked) System.currentTimeMillis() else null
-        
-        if (current == null) {
-            dao.insertSong(song.toEntity().copy(isLiked = isLiked, likedAt = timestamp))
-        } else {
-            dao.updateLikeStatus(song.id, isLiked, timestamp)
-        }
-    }
-
-    override fun getLikedSongs(): Flow<List<Song>> {
-        return dao.getLikedSongs().map { entities ->
-            entities.map { it.toDomain() }
-        }
-    }
     
+    override suspend fun searchSongs(query: String, limit: Int): Result<List<Song>> {
+        return youTubeiService.searchSongs(query, limit)
+            .onSuccess { songs ->
+                // Cache songs to database
+                val entities = songs.map { it.toEntity() }
+                songDao.insertAll(entities)
+            }
+    }
+
+    override suspend fun getSongById(id: String): Result<Song> {
+        // Try to get from database first
+        val cachedSong = songDao.getSongById(id)
+        if (cachedSong != null) {
+            return Result.success(cachedSong.toSong())
+        }
+
+        // Fetch from API
+        return youTubeiService.getSongDetails(id)
+            .onSuccess { song ->
+                songDao.insertSong(song.toEntity())
+            }
+    }
+
+    override suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String> {
+        // Check if we have a cached stream URL
+        val cachedSong = songDao.getSongById(songId)
+        if (cachedSong?.cachedStreamUrl != null && 
+            cachedSong.cacheExpiry != null && 
+            cachedSong.cacheExpiry > System.currentTimeMillis()) {
+            return Result.success(cachedSong.cachedStreamUrl)
+        }
+
+        // Extract fresh stream URL
+        return audioStreamExtractor.extractAudioStream(songId, quality)
+            .onSuccess { streamUrl ->
+                // Cache the URL for 6 hours
+                val expiry = System.currentTimeMillis() + (6 * 60 * 60 * 1000)
+                songDao.updateSong(
+                    cachedSong?.copy(
+                        cachedStreamUrl = streamUrl,
+                        cacheExpiry = expiry
+                    ) ?: SongEntity(
+                        id = songId,
+                        title = "",
+                        artist = "",
+                        duration = 0,
+                        thumbnailUrl = "",
+                        cachedStreamUrl = streamUrl,
+                        cacheExpiry = expiry
+                    )
+                )
+            }
+    }
+
     override suspend fun getNewReleases(limit: Int): Result<List<Song>> {
-        // Placeholder: Use search API with specific query
-        return api.searchSongs("New Music Release")
+        return youTubeiService.getNewReleases(limit)
     }
 
     override suspend fun getTrending(limit: Int): Result<List<Song>> {
-         return api.searchSongs("Trending Songs")
+        return youTubeiService.getTrendingSongs(limit)
     }
 
     override suspend fun getEnglishHits(limit: Int): Result<List<Song>> {
-         return api.searchSongs("Top English Songs")
+        return youTubeiService.getEnglishHits(limit)
     }
 
-    override suspend fun getStreamUrl(songId: String, quality: Int): Result<String> {
-        val cached = cacheManager.getCachedStreamUrl(songId, quality)
-        if (cached != null) return Result.success(cached)
-        
-        return api.getStreamUrl(songId).onSuccess { url ->
-            cacheManager.cacheStreamUrl(songId, url, quality, 6)
+    override suspend fun likeSong(songId: String) {
+        songDao.updateLikeStatus(songId, true, System.currentTimeMillis())
+    }
+
+    override suspend fun unlikeSong(songId: String) {
+        songDao.updateLikeStatus(songId, false, null)
+    }
+
+    override fun getLikedSongs(): Flow<List<Song>> {
+        return songDao.getLikedSongs().map { entities ->
+            entities.map { it.toSong() }
         }
     }
 
-    private fun SongEntity.toDomain(): Song {
-        return Song(
-            id = id,
-            title = title,
-            artist = artist,
-            artistId = artistId,
-            album = album,
-            albumId = albumId,
-            duration = duration,
-            thumbnailUrl = thumbnailUrl,
-            isLiked = isLiked,
-            streamUrl = cachedStreamUrl
-        )
+    override suspend fun isLiked(songId: String): Boolean {
+        return songDao.isLiked(songId) ?: false
     }
 
     private fun Song.toEntity(): SongEntity {
@@ -106,11 +113,29 @@ class SongRepositoryImpl @Inject constructor(
             albumId = albumId,
             duration = duration,
             thumbnailUrl = thumbnailUrl,
-            year = null,
-            category = "Music",
-            viewCount = null,
+            year = year,
+            category = category,
+            viewCount = viewCount,
             isLiked = isLiked,
-            cachedStreamUrl = streamUrl
+            likedAt = likedAt
+        )
+    }
+
+    private fun SongEntity.toSong(): Song {
+        return Song(
+            id = id,
+            title = title,
+            artist = artist,
+            artistId = artistId,
+            album = album,
+            albumId = albumId,
+            duration = duration,
+            thumbnailUrl = thumbnailUrl,
+            year = year,
+            category = category,
+            viewCount = viewCount,
+            isLiked = isLiked,
+            likedAt = likedAt
         )
     }
 }

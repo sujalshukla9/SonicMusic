@@ -1,39 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-
-    <!-- Rounded Triangle Container -->
+    
+    <!-- Sonic Music Logo: Triangle with integrated music note -->
+    <!-- The logo is centered in the 66dp safe zone (21dp inset on each side) -->
+    
+    <!-- Main triangle outline with gradient -->
     <path
-        android:pathData="M54,20 C59,20 63,23 65,28 L89,70 C91,75 88,82 82,82 H26 C20,82 17,75 19,70 L43,28 C45,23 49,20 54,20 Z">
+        android:pathData="M54,24 L82,72 Q84,76 80,76 L28,76 Q24,76 26,72 L44,44 
+                          Q46,40 48,42 L48,58 Q48,66 40,66 Q32,66 32,58 Q32,50 40,50
+                          L44,50 L44,44 Q44,38 48,38 L54,24 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#00000000"
+        android:fillType="evenOdd">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="20"
-                android:startY="20"
-                android:endX="88"
-                android:endY="88"
-                android:type="linear">
-                <item android:offset="0.0" android:color="#00E5FF"/> <!-- Cyan -->
-                <item android:offset="0.5" android:color="#2979FF"/> <!-- Blue -->
-                <item android:offset="1.0" android:color="#D500F9"/> <!-- Purple -->
+                android:type="linear"
+                android:startX="28"
+                android:startY="76"
+                android:endX="82"
+                android:endY="24">
+                <item android:offset="0.0" android:color="#FFFFB3D9"/>
+                <item android:offset="0.3" android:color="#FFD4B3FF"/>
+                <item android:offset="0.6" android:color="#FFB3D4FF"/>
+                <item android:offset="1.0" android:color="#FF7BE0F4"/>
             </gradient>
         </aapt:attr>
     </path>
-
-    <!-- Music Note Icon (White) -->
-    <!-- Scaled and Centered -->
-    <group
-        android:pivotX="12"
-        android:pivotY="12"
-        android:scaleX="2.0"
-        android:scaleY="2.0"
-        android:translateX="30"
-        android:translateY="32">
-        <path
-            android:fillColor="#FFFFFF"
-            android:pathData="M12,3 V13.55 C11.41,13.21 10.73,13 10,13 C7.79,13 6,14.79 6,17 S7.79,21 10,21 S14,19.21 14,17 V7 H18 V3 H12 Z" />
-    </group>
-
+    
+    <!-- Refined triangle path with music note cutout -->
+    <path
+        android:pathData="M54,26 
+                          L79,70 Q81,74 78,74 
+                          L30,74 Q27,74 29,70 
+                          L54,26 Z
+                          M54,34 
+                          L36,66 L72,66 
+                          L54,34 Z"
+        android:fillType="evenOdd">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="30"
+                android:startY="74"
+                android:endX="78"
+                android:endY="26">
+                <item android:offset="0.0" android:color="#FFFFB3D9"/>
+                <item android:offset="0.35" android:color="#FFD4B3FF"/>
+                <item android:offset="0.65" android:color="#FFB3D4FF"/>
+                <item android:offset="1.0" android:color="#FF7BE0F4"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+    
+    <!-- Music note inside the triangle -->
+    <path
+        android:pathData="M58,42 L58,60 Q58,66 52,66 Q46,66 46,60 Q46,54 52,54 L54,54 L54,42 L58,42 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="46"
+                android:startY="66"
+                android:endX="58"
+                android:endY="42">
+                <item android:offset="0.0" android:color="#FFFFB3D9"/>
+                <item android:offset="0.5" android:color="#FFD4B3FF"/>
+                <item android:offset="1.0" android:color="#FFB3D4FF"/>
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

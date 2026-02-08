@@ -1,48 +1,71 @@
 package com.sonicmusic.app.domain.usecase
 
-import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.HomeContent
 import com.sonicmusic.app.domain.repository.HistoryRepository
+import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SongRepository
-import com.sonicmusic.app.domain.service.RecommendationService
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
-
-data class HomeContent(
-    val listenAgain: List<Song> = emptyList(),
-    val quickPicks: List<Song> = emptyList(),
-    val forgottenFavorites: List<Song> = emptyList(),
-    val newReleases: List<Song> = emptyList(),
-    val trending: List<Song> = emptyList(),
-    val englishHits: List<Song> = emptyList(),
-    val artists: List<Song> = emptyList() // List of songs representing artists for now
-)
 
 class GetHomeContentUseCase @Inject constructor(
     private val songRepository: SongRepository,
     private val historyRepository: HistoryRepository,
-    private val recommendationService: RecommendationService
+    private val recommendationRepository: RecommendationRepository
 ) {
     suspend operator fun invoke(): Result<HomeContent> {
         return try {
-            // Fetch concurrently in real app, sequential for now
-            val listenAgain = historyRepository.getRecentlyPlayed(limit = 15).getOrDefault(emptyList())
-            val quickPicks = recommendationService.getPersonalizedSongs(limit = 20).getOrDefault(emptyList())
-            val forgottenFavorites = recommendationService.getForgottenFavorites(limit = 15).getOrDefault(emptyList())
-            val newReleases = songRepository.getNewReleases(limit = 25).getOrDefault(emptyList())
-            val trending = songRepository.getTrending(limit = 30).getOrDefault(emptyList())
-            val englishHits = songRepository.getEnglishHits(limit = 25).getOrDefault(emptyList())
-            val artists = recommendationService.getTopArtistSongs(limit = 8).getOrDefault(emptyList())
-            
-            Result.success(
-                HomeContent(
-                    listenAgain = listenAgain,
-                    quickPicks = quickPicks,
-                    forgottenFavorites = forgottenFavorites,
-                    newReleases = newReleases,
-                    trending = trending,
-                    englishHits = englishHits,
-                    artists = artists
+            coroutineScope {
+                val listenAgainDeferred = async { 
+                    historyRepository.getRecentlyPlayedSongs(15) 
+                }
+                val quickPicksDeferred = async { 
+                    recommendationRepository.getQuickPicks(20) 
+                }
+                val newReleasesDeferred = async { 
+                    songRepository.getNewReleases(25) 
+                }
+                val trendingDeferred = async { 
+                    songRepository.getTrending(30) 
+                }
+                val englishHitsDeferred = async { 
+                    songRepository.getEnglishHits(25) 
+                }
+                val artistsDeferred = async { 
+                    recommendationRepository.getTopArtistSongs(8) 
+                }
+
+                // Wait for all results
+                val listenAgain = listenAgainDeferred.await().first()
+                val quickPicks = quickPicksDeferred.await()
+                val newReleases = newReleasesDeferred.await()
+                val trending = trendingDeferred.await()
+                val englishHits = englishHitsDeferred.await()
+                val artists = artistsDeferred.await()
+
+                // Convert history to songs
+                val listenAgainSongs = listenAgain.map { history ->
+                    com.sonicmusic.app.domain.model.Song(
+                        id = history.songId,
+                        title = history.title,
+                        artist = history.artist,
+                        duration = 0,
+                        thumbnailUrl = history.thumbnailUrl
+                    )
+                }
+
+                Result.success(
+                    HomeContent(
+                        listenAgain = listenAgainSongs,
+                        quickPicks = quickPicks.getOrNull() ?: emptyList(),
+                        newReleases = newReleases.getOrNull() ?: emptyList(),
+                        trending = trending.getOrNull() ?: emptyList(),
+                        englishHits = englishHits.getOrNull() ?: emptyList(),
+                        artists = artists.getOrNull() ?: emptyList()
+                    )
                 )
-            )
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }

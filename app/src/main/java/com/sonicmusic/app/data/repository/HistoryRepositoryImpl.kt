@@ -1,48 +1,65 @@
 package com.sonicmusic.app.data.repository
 
-import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
+import com.sonicmusic.app.data.local.entity.PlaybackHistoryEntity
+import com.sonicmusic.app.data.local.entity.SongEntity
+import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.repository.HistoryRepository
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
+import javax.inject.Singleton
 
+@Singleton
 class HistoryRepositoryImpl @Inject constructor(
-    private val historyDao: com.sonicmusic.app.data.local.dao.PlaybackHistoryDao,
-    private val songDao: com.sonicmusic.app.data.local.dao.SongDao
+    private val historyDao: PlaybackHistoryDao
 ) : HistoryRepository {
 
-    override suspend fun getRecentlyPlayed(limit: Int): Result<List<Song>> {
-        return try {
-            val entities = historyDao.getRecentlyPlayed(limit)
-            val songs = entities.map { it.toDomain() }
-            Result.success(songs)
-        } catch (e: Exception) {
-            Result.failure(e)
+    override fun getRecentlyPlayed(limit: Int): Flow<List<PlaybackHistory>> {
+        return historyDao.getRecentlyPlayed(limit).map { entities ->
+            entities.map { it.toPlaybackHistory() }
         }
     }
 
-    private fun com.sonicmusic.app.data.local.entity.SongEntity.toDomain(): Song {
-        return Song(
+    override fun getRecentlyPlayedSongs(limit: Int): Flow<List<PlaybackHistory>> {
+        return historyDao.getRecentlyPlayed(limit).map { entities ->
+            entities.distinctBy { it.songId }.take(limit).map { it.toPlaybackHistory() }
+        }
+    }
+
+    override suspend fun recordPlayback(songId: String, playDuration: Int, completed: Boolean) {
+        // TODO: Fetch song details from database or API
+        val entity = PlaybackHistoryEntity(
+            songId = songId,
+            title = "", // TODO: Get from SongRepository
+            artist = "",
+            thumbnailUrl = "",
+            playedAt = System.currentTimeMillis(),
+            playDuration = playDuration,
+            completed = completed
+        )
+        historyDao.insertPlayback(entity)
+        historyDao.pruneOldHistory(100)
+    }
+
+    override suspend fun clearHistory() {
+        historyDao.clearAllHistory()
+    }
+
+    override suspend fun pruneOldHistory(keepCount: Int) {
+        historyDao.pruneOldHistory(keepCount)
+    }
+
+    private fun PlaybackHistoryEntity.toPlaybackHistory(): PlaybackHistory {
+        return PlaybackHistory(
             id = id,
+            songId = songId,
             title = title,
             artist = artist,
-            artistId = artistId,
-            album = album,
-            albumId = albumId,
-            duration = duration,
             thumbnailUrl = thumbnailUrl,
-            isLiked = isLiked,
-            streamUrl = cachedStreamUrl
-        )
-    }
-    
-    // Actually I should update the interface to suspend.
-    // Let's self-correct: Update interface first.
-    
-    override suspend fun recordPlayback(songId: String) {
-        historyDao.insert(
-             com.sonicmusic.app.data.local.entity.PlaybackHistoryEntity(
-                 songId = songId,
-                 playedAt = System.currentTimeMillis()
-             )
+            playedAt = playedAt,
+            playDuration = playDuration,
+            completed = completed
         )
     }
 }

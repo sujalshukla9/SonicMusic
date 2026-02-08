@@ -1,9 +1,23 @@
 package com.sonicmusic.app.di
 
+import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
+import com.sonicmusic.app.data.remote.source.NewPipeService
+import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.data.repository.HistoryRepositoryImpl
+import com.sonicmusic.app.data.repository.LocalMusicRepositoryImpl
+import com.sonicmusic.app.data.repository.PlaylistRepositoryImpl
+import com.sonicmusic.app.data.repository.RecentSearchRepositoryImpl
+import com.sonicmusic.app.data.repository.RecommendationRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
+import com.sonicmusic.app.domain.repository.HistoryRepository
+import com.sonicmusic.app.domain.repository.LocalMusicRepository
+import com.sonicmusic.app.domain.repository.PlaylistRepository
+import com.sonicmusic.app.domain.repository.RecentSearchRepository
+import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
@@ -15,42 +29,58 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindSongRepository(
-        songRepositoryImpl: SongRepositoryImpl
+        impl: SongRepositoryImpl
     ): SongRepository
-    
-    @Binds
-    @Singleton
-    abstract fun bindHistoryRepository(
-        impl: com.sonicmusic.app.data.repository.HistoryRepositoryImpl
-    ): com.sonicmusic.app.domain.repository.HistoryRepository
-
-    @Binds
-    @Singleton
-    abstract fun bindRecentSearchRepository(
-        impl: com.sonicmusic.app.data.repository.RecentSearchRepositoryImpl
-    ): com.sonicmusic.app.domain.repository.RecentSearchRepository
 
     @Binds
     @Singleton
     abstract fun bindPlaylistRepository(
-        impl: com.sonicmusic.app.data.repository.PlaylistRepositoryImpl
-    ): com.sonicmusic.app.domain.repository.PlaylistRepository
+        impl: PlaylistRepositoryImpl
+    ): PlaylistRepository
 
     @Binds
     @Singleton
-    abstract fun bindCacheRepository(
-        impl: com.sonicmusic.app.data.repository.CacheRepositoryImpl
-    ): com.sonicmusic.app.domain.repository.CacheRepository
+    abstract fun bindHistoryRepository(
+        impl: HistoryRepositoryImpl
+    ): HistoryRepository
 
     @Binds
     @Singleton
-    abstract fun bindRecommendationService(
-        impl: com.sonicmusic.app.data.service.RecommendationServiceImpl
-    ): com.sonicmusic.app.domain.service.RecommendationService
-    
+    abstract fun bindRecentSearchRepository(
+        impl: RecentSearchRepositoryImpl
+    ): RecentSearchRepository
+
     @Binds
     @Singleton
-    abstract fun bindPlayerController(
-        impl: com.sonicmusic.app.data.service.PlayerControllerImpl
-    ): com.sonicmusic.app.domain.service.PlayerController
+    abstract fun bindLocalMusicRepository(
+        impl: LocalMusicRepositoryImpl
+    ): LocalMusicRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindRecommendationRepository(
+        impl: RecommendationRepositoryImpl
+    ): RecommendationRepository
+
+    companion object {
+        @Provides
+        @Singleton
+        fun provideYouTubeiService(): YouTubeiService {
+            return YouTubeiService()
+        }
+
+        @Provides
+        @Singleton
+        fun provideNewPipeService(): NewPipeService {
+            return NewPipeService()
+        }
+
+        @Provides
+        @Singleton
+        fun provideAudioStreamExtractor(
+            newPipeService: NewPipeService
+        ): AudioStreamExtractor {
+            return AudioStreamExtractor(newPipeService)
+        }
+    }
 }

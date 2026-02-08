@@ -2,22 +2,30 @@ package com.sonicmusic.app.data.local.dao
 
 import androidx.room.Dao
 import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.sonicmusic.app.data.local.entity.PlaybackHistoryEntity
-import com.sonicmusic.app.data.local.entity.SongEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlaybackHistoryDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(history: PlaybackHistoryEntity)
+    @Query("SELECT * FROM playback_history ORDER BY playedAt DESC LIMIT :limit")
+    fun getRecentlyPlayed(limit: Int): Flow<List<PlaybackHistoryEntity>>
 
-    @Query("""
-        SELECT s.* FROM songs s
-        INNER JOIN playback_history h ON s.id = h.songId
-        ORDER BY h.playedAt DESC
-        LIMIT :limit
-    """)
-    suspend fun getRecentlyPlayed(limit: Int): List<SongEntity>
+    @Query("SELECT DISTINCT songId FROM playback_history ORDER BY playedAt DESC LIMIT :limit")
+    suspend fun getRecentSongIds(limit: Int): List<String>
+
+    @Insert
+    suspend fun insertPlayback(history: PlaybackHistoryEntity)
+
+    @Query("DELETE FROM playback_history WHERE id NOT IN (SELECT id FROM playback_history ORDER BY playedAt DESC LIMIT :keepCount)")
+    suspend fun pruneOldHistory(keepCount: Int)
+
+    @Query("DELETE FROM playback_history")
+    suspend fun clearAllHistory()
+
+    @Query("SELECT COUNT(*) FROM playback_history WHERE songId = :songId")
+    suspend fun getPlayCount(songId: String): Int
+
+    @Query("SELECT * FROM playback_history WHERE playedAt > :since ORDER BY playedAt DESC")
+    suspend fun getMostPlayedSince(since: Long): List<PlaybackHistoryEntity>
 }

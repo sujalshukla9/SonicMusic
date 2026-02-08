@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.SonicMusic" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.SonicMusic" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Edge-to-edge: Make system bars transparent -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <!-- Ensure content draws behind system bars -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+    </style>
 </resources>

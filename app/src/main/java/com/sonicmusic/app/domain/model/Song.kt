@@ -4,11 +4,20 @@ data class Song(
     val id: String,
     val title: String,
     val artist: String,
-    val artistId: String?,
-    val album: String?,
-    val albumId: String?,
-    val duration: Int, // seconds
+    val artistId: String? = null,
+    val album: String? = null,
+    val albumId: String? = null,
+    val duration: Int,
     val thumbnailUrl: String,
+    val year: Int? = null,
+    val category: String = "Music",
+    val viewCount: Long? = null,
     val isLiked: Boolean = false,
-    val streamUrl: String? = null
-)
+    val likedAt: Long? = null
+) {
+    fun formattedDuration(): String {
+        val minutes = duration / 60
+        val seconds = duration % 60
+        return String.format("%d:%02d", minutes, seconds)
+    }
+}

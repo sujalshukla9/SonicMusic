@@ -1,3 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Sonic Music</string>
+    <string name="app_name">SonicMusic</string>
+
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_search">Search</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Home -->
+    <string name="home_title">SonicMusic</string>
+    <string name="section_listen_again">Listen Again</string>
+    <string name="section_quick_picks">Quick Picks</string>
+    <string name="section_forgotten_favorites">Forgotten Favorites</string>
+    <string name="section_new_releases">New Releases</string>
+    <string name="section_trending">Trending</string>
+    <string name="section_english_hits">English Hits</string>
+    <string name="see_all">See All</string>
+
+    <!-- Search -->
+    <string name="search_hint">Search songs…</string>
+    <string name="recent_searches">Recent Searches</string>
+    <string name="clear_all">Clear All</string>
+    <string name="no_results">No songs found</string>
+    <string name="search_placeholder">Your recent searches will appear here</string>
+
+    <!-- Library -->
+    <string name="library_title">Library</string>
+    <string name="liked_songs">Liked Songs</string>
+    <string name="playlists">Playlists</string>
+    <string name="recently_played">Recently Played</string>
+    <string name="local_songs">Local Songs</string>
+    <string name="artists">Artists</string>
+    <string name="songs_count">%d songs</string>
+    <string name="playlists_count">%d playlists</string>
+
+    <!-- Player -->
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="next">Next</string>
+    <string name="previous">Previous</string>
+    <string name="shuffle">Shuffle</string>
+    <string name="repeat">Repeat</string>
+    <string name="like">Like</string>
+    <string name="unlike">Unlike</string>
+    <string name="add_to_queue">Add to Queue</string>
+    <string name="play_next">Play Next</string>
+    <string name="add_to_playlist">Add to Playlist</string>
+    <string name="share">Share</string>
+    <string name="go_to_artist">Go to Artist</string>
+    <string name="download">Download</string>
+    <string name="next_in_queue">Next in Queue</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="audio_quality">Audio Quality</string>
+    <string name="streaming_quality">Streaming Quality</string>
+    <string name="download_quality">Download Quality</string>
+    <string name="normalize_volume">Normalize Volume</string>
+    <string name="playback">Playback</string>
+    <string name="gapless_playback">Gapless Playback</string>
+    <string name="crossfade_duration">Crossfade Duration</string>
+    <string name="appearance">Appearance</string>
+    <string name="theme">Theme</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="theme_system">System</string>
+    <string name="dynamic_colors">Dynamic Colors</string>
+    <string name="storage">Storage &amp; Cache</string>
+    <string name="clear_cache">Clear Cache</string>
+    <string name="privacy">Privacy &amp; Permissions</string>
+    <string name="pause_history">Pause History</string>
+    <string name="clear_search_history">Clear Search History</string>
+    <string name="about">About</string>
+    <string name="app_version">App Version</string>
+    <string name="version">1.0.0</string>
+
+    <!-- Error Messages -->
+    <string name="error_network">Network error. Please check your connection.</string>
+    <string name="error_playback">Playback error occurred.</string>
+    <string name="error_generic">Something went wrong. Please try again.</string>
+    <string name="retry">Retry</string>
 </resources>

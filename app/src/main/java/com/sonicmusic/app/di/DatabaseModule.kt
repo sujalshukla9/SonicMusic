@@ -2,11 +2,7 @@ package com.sonicmusic.app.di
 
 import android.content.Context
 import androidx.room.Room
-import com.sonicmusic.app.data.local.SonicMusicDatabase
-import com.sonicmusic.app.data.local.dao.PlaylistDao
-import com.sonicmusic.app.data.local.dao.SongDao
-import com.sonicmusic.app.data.local.dao.SearchHistoryDao
-import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
+import com.sonicmusic.app.data.local.database.SonicMusicDatabase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -20,35 +16,33 @@ object DatabaseModule {
 
     @Provides
     @Singleton
-    fun provideDatabase(@ApplicationContext context: Context): SonicMusicDatabase {
+    fun provideDatabase(
+        @ApplicationContext context: Context
+    ): SonicMusicDatabase {
         return Room.databaseBuilder(
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
-        ).build()
+        )
+            .fallbackToDestructiveMigration()
+            .build()
     }
 
     @Provides
-    @Singleton
-    fun provideSongDao(database: SonicMusicDatabase): SongDao {
-        return database.songDao()
-    }
+    fun provideSongDao(database: SonicMusicDatabase) = database.songDao()
 
     @Provides
-    @Singleton
-    fun providePlaylistDao(database: SonicMusicDatabase): PlaylistDao {
-        return database.playlistDao()
-    }
+    fun providePlaylistDao(database: SonicMusicDatabase) = database.playlistDao()
 
     @Provides
-    @Singleton
-    fun provideSearchHistoryDao(database: SonicMusicDatabase): SearchHistoryDao {
-        return database.searchHistoryDao()
-    }
+    fun providePlaybackHistoryDao(database: SonicMusicDatabase) = database.playbackHistoryDao()
 
     @Provides
-    @Singleton
-    fun providePlaybackHistoryDao(database: SonicMusicDatabase): PlaybackHistoryDao {
-        return database.playbackHistoryDao()
-    }
+    fun provideLocalSongDao(database: SonicMusicDatabase) = database.localSongDao()
+
+    @Provides
+    fun provideRecentSearchDao(database: SonicMusicDatabase) = database.recentSearchDao()
+
+    @Provides
+    fun provideDownloadedSongDao(database: SonicMusicDatabase) = database.downloadedSongDao()
 }

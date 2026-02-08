@@ -1,38 +1,59 @@
 package com.sonicmusic.app.data.local.dao
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
-import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import androidx.room.Update
 import com.sonicmusic.app.data.local.entity.PlaylistEntity
 import com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef
-import com.sonicmusic.app.data.local.entity.SongEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlaylistDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPlaylist(playlist: PlaylistEntity): Long
-
     @Query("SELECT * FROM playlists ORDER BY updatedAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
 
-    @Query("SELECT * FROM playlists WHERE id = :id")
-    suspend fun getPlaylist(id: Long): PlaylistEntity?
+    @Query("SELECT * FROM playlists WHERE id = :playlistId")
+    suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPlaylistSongCrossRef(crossRef: PlaylistSongCrossRef)
+    @Insert
+    suspend fun insertPlaylist(playlist: PlaylistEntity): Long
+
+    @Insert
+    suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef)
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId")
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: String)
 
+    @Delete
+    suspend fun deletePlaylist(playlist: PlaylistEntity)
+
+    @Update
+    suspend fun updatePlaylist(playlist: PlaylistEntity)
+
+    @Query("SELECT * FROM playlist_songs WHERE playlistId = :playlistId ORDER BY position ASC")
+    suspend fun getPlaylistSongs(playlistId: Long): List<PlaylistSongCrossRef>
+
+    @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId")
+    suspend fun clearPlaylistSongs(playlistId: Long)
+
+    @Query("SELECT COUNT(*) FROM playlist_songs WHERE playlistId = :playlistId")
+    suspend fun getSongCount(playlistId: Long): Int
+
     @Transaction
-    @Query("""
-        SELECT * FROM songs 
-        INNER JOIN playlist_songs ON songs.id = playlist_songs.songId 
-        WHERE playlist_songs.playlistId = :playlistId 
-        ORDER BY playlist_songs.position ASC
-    """)
-    fun getPlaylistSongs(playlistId: Long): Flow<List<SongEntity>>
+    suspend fun updatePlaylistOrder(playlistId: Long, songIds: List<String>) {
+        clearPlaylistSongs(playlistId)
+        songIds.forEachIndexed { index, songId ->
+            addSongToPlaylist(
+                PlaylistSongCrossRef(
+                    playlistId = playlistId,
+                    songId = songId,
+                    position = index,
+                    addedAt = System.currentTimeMillis()
+                )
+            )
+        }
+    }
 }
