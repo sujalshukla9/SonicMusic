@@ -171,7 +171,7 @@ class NewPipeService @Inject constructor() {
     /**
      * Search for songs
      */
-    suspend fun searchSongs(query: String, limit: Int = 20): Result<List<Song>> = withContext(Dispatchers.IO) {
+    suspend fun searchSongs(query: String, limit: Int = 50): Result<List<Song>> = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "🔍 Searching: $query")
             

@@ -208,21 +208,28 @@ class AudioStreamExtractor @Inject constructor(
                 return@withContext Result.failure(Exception("No audio formats found"))
             }
 
-            // Sort by bitrate and prefer M4A for compatibility
+            // Sort by bitrate (highest first) and prefer OPUS for best quality (then M4A for compatibility)
+            // OPUS provides better quality at same bitrate vs AAC
             val sortedFormats = formats.sortedWith(
                 compareByDescending<AudioFormat> { it.bitrate }
                     .thenBy {
                         when {
-                            it.mimeType.contains("mp4a") -> 0
-                            it.mimeType.contains("opus") -> 1
+                            it.mimeType.contains("opus") -> 0  // Best quality
+                            it.mimeType.contains("mp4a") -> 1  // Good compatibility
                             else -> 2
                         }
                     }
             )
 
-            // Select based on quality preference
+            // For BEST/HIGH quality, always pick highest bitrate (256kbps+)
+            // OPUS at 256kbps is essentially lossless for most listeners
             val selectedFormat = when (quality) {
-                StreamQuality.BEST, StreamQuality.HIGH -> sortedFormats.firstOrNull()
+                StreamQuality.BEST, StreamQuality.HIGH -> {
+                    // Prefer OPUS at highest bitrate for best quality
+                    sortedFormats.firstOrNull { it.bitrate >= 256000 }
+                        ?: sortedFormats.firstOrNull { it.bitrate >= 128000 }
+                        ?: sortedFormats.firstOrNull()
+                }
                 StreamQuality.MEDIUM -> sortedFormats.getOrNull(sortedFormats.size / 2) ?: sortedFormats.firstOrNull()
                 StreamQuality.LOW -> sortedFormats.lastOrNull()
             }

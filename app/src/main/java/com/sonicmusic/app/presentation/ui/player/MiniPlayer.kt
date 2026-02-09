@@ -78,7 +78,6 @@ fun MiniPlayer(
 ) {
     val currentSong by viewModel.currentSong.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val progress by viewModel.progress.collectAsState()
     val isLiked by viewModel.isLiked.collectAsState()
 
     if (currentSong == null) return
@@ -225,17 +224,24 @@ fun MiniPlayer(
                     }
                 }
 
-                // Progress Bar - M3 Linear Progress with rounded caps
-                LinearProgressIndicator(
-                    progress = { progress },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
-                    strokeCap = StrokeCap.Round
-                )
+                // Progress Bar - Isolated to prevent full recomposition
+                MiniPlayerProgress(viewModel = viewModel)
             }
         }
     }
+}
+
+@Composable
+private fun MiniPlayerProgress(viewModel: PlayerViewModel) {
+    val progress by viewModel.progress.collectAsState()
+    
+    LinearProgressIndicator(
+        progress = progress,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(2.dp),
+        color = MaterialTheme.colorScheme.primary,
+        trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        strokeCap = StrokeCap.Round
+    )
 }

@@ -7,7 +7,8 @@ data class HomeContent(
     val newReleases: List<Song> = emptyList(),
     val trending: List<Song> = emptyList(),
     val englishHits: List<Song> = emptyList(),
-    val artists: List<ArtistSection> = emptyList()
+    val artists: List<ArtistSection> = emptyList(),
+    val personalizedForYou: List<Song> = emptyList()
 )
 
 data class ArtistSection(

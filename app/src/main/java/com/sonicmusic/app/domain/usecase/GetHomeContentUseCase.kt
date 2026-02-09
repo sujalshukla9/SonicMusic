@@ -4,6 +4,7 @@ import com.sonicmusic.app.domain.model.HomeContent
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SongRepository
+import com.sonicmusic.app.domain.repository.UserTasteRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
@@ -12,7 +13,8 @@ import javax.inject.Inject
 class GetHomeContentUseCase @Inject constructor(
     private val songRepository: SongRepository,
     private val historyRepository: HistoryRepository,
-    private val recommendationRepository: RecommendationRepository
+    private val recommendationRepository: RecommendationRepository,
+    private val userTasteRepository: UserTasteRepository
 ) {
     suspend operator fun invoke(): Result<HomeContent> {
         return try {
@@ -35,6 +37,10 @@ class GetHomeContentUseCase @Inject constructor(
                 val artistsDeferred = async { 
                     recommendationRepository.getTopArtistSongs(8) 
                 }
+                // NEW: Fetch personalized recommendations based on user taste
+                val personalizedDeferred = async {
+                    userTasteRepository.getPersonalizedMix(20)
+                }
 
                 // Wait for all results
                 val listenAgain = listenAgainDeferred.await().first()
@@ -43,6 +49,7 @@ class GetHomeContentUseCase @Inject constructor(
                 val trending = trendingDeferred.await()
                 val englishHits = englishHitsDeferred.await()
                 val artists = artistsDeferred.await()
+                val personalized = personalizedDeferred.await()
 
                 // Convert history to songs
                 val listenAgainSongs = listenAgain.map { history ->
@@ -62,7 +69,8 @@ class GetHomeContentUseCase @Inject constructor(
                         newReleases = newReleases.getOrNull() ?: emptyList(),
                         trending = trending.getOrNull() ?: emptyList(),
                         englishHits = englishHits.getOrNull() ?: emptyList(),
-                        artists = artists.getOrNull() ?: emptyList()
+                        artists = artists.getOrNull() ?: emptyList(),
+                        personalizedForYou = personalized.getOrNull() ?: emptyList()
                     )
                 )
             }

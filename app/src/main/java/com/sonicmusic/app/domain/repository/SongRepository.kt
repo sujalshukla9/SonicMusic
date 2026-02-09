@@ -5,7 +5,7 @@ import com.sonicmusic.app.domain.model.StreamQuality
 import kotlinx.coroutines.flow.Flow
 
 interface SongRepository {
-    suspend fun searchSongs(query: String, limit: Int = 20): Result<List<Song>>
+    suspend fun searchSongs(query: String, limit: Int = 50): Result<List<Song>>
     suspend fun getSongById(id: String): Result<Song>
     suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String>
     suspend fun getNewReleases(limit: Int = 25): Result<List<Song>>

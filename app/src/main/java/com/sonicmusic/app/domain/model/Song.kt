@@ -1,5 +1,8 @@
 package com.sonicmusic.app.domain.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class Song(
     val id: String,
     val title: String,

@@ -1,7 +1,10 @@
 package com.sonicmusic.app.data.remote.source
 
+import android.content.Context
+import android.telephony.TelephonyManager
 import android.util.Log
 import com.sonicmusic.app.domain.model.Song
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -10,6 +13,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,7 +31,9 @@ import javax.inject.Singleton
  * Default region: India (IN)
  */
 @Singleton
-class YouTubeiService @Inject constructor() {
+class YouTubeiService @Inject constructor(
+    @ApplicationContext private val context: Context
+) {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -82,6 +88,77 @@ class YouTubeiService @Inject constructor() {
     }
 
     // ═══════════════════════════════════════════════════════════════
+    // REGION DETECTION - Auto-detect user's country for localized content
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Detect user's region from SIM card or system locale
+     * Priority: SIM country > Network country > System locale
+     */
+    private fun detectUserRegion(): String {
+        try {
+            val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            
+            // Try SIM country first (most accurate)
+            val simCountry = telephonyManager?.simCountryIso?.uppercase()
+            if (!simCountry.isNullOrEmpty() && simCountry.length == 2) {
+                Log.d(TAG, "🌍 Region from SIM: $simCountry")
+                return simCountry
+            }
+            
+            // Try network country
+            val networkCountry = telephonyManager?.networkCountryIso?.uppercase()
+            if (!networkCountry.isNullOrEmpty() && networkCountry.length == 2) {
+                Log.d(TAG, "🌍 Region from network: $networkCountry")
+                return networkCountry
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error detecting SIM region", e)
+        }
+        
+        // Fallback to system locale
+        val localeCountry = Locale.getDefault().country.uppercase()
+        if (localeCountry.isNotEmpty()) {
+            Log.d(TAG, "🌍 Region from locale: $localeCountry")
+            return localeCountry
+        }
+        
+        Log.d(TAG, "🌍 Using default region: $DEFAULT_REGION")
+        return DEFAULT_REGION
+    }
+    
+    /**
+     * Get language code for the detected region
+     */
+    private fun getLanguageForRegion(region: String): String {
+        return when (region) {
+            "IN" -> "hi" // India -> Hindi
+            "PK" -> "ur" // Pakistan -> Urdu
+            "BD" -> "bn" // Bangladesh -> Bengali
+            "US", "GB", "AU", "CA", "NZ" -> "en" // English countries
+            "JP" -> "ja" // Japan
+            "KR" -> "ko" // Korea
+            "BR", "PT" -> "pt" // Portuguese
+            "ES", "MX", "AR", "CO", "CL" -> "es" // Spanish
+            "FR" -> "fr" // France
+            "DE", "AT", "CH" -> "de" // German
+            "IT" -> "it" // Italy
+            "RU" -> "ru" // Russia
+            "CN", "TW", "HK" -> "zh" // Chinese
+            "SA", "AE", "EG" -> "ar" // Arabic
+            "TR" -> "tr" // Turkey
+            "ID" -> "id" // Indonesia
+            "TH" -> "th" // Thailand
+            "VN" -> "vi" // Vietnam
+            else -> "en" // Default to English
+        }
+    }
+    
+    // Current region (cached)
+    private val currentRegion: String by lazy { detectUserRegion() }
+    private val currentLanguage: String by lazy { getLanguageForRegion(currentRegion) }
+
+    // ═══════════════════════════════════════════════════════════════
     // MAIN SEARCH - Uses YouTube Music API (music-only)
     // ═══════════════════════════════════════════════════════════════
     
@@ -89,7 +166,7 @@ class YouTubeiService @Inject constructor() {
      * Search for songs using YouTube Music API
      * Returns music-only results with proper filtering
      */
-    suspend fun searchSongs(query: String, limit: Int = 20): Result<List<Song>> = withContext(Dispatchers.IO) {
+    suspend fun searchSongs(query: String, limit: Int = 50): Result<List<Song>> = withContext(Dispatchers.IO) {
         Log.d(TAG, "🎵 Searching for: $query")
         
         // Try YouTube Music API first (music-only results)
@@ -599,33 +676,432 @@ class YouTubeiService @Inject constructor() {
         }
     }
 
+    /**
+     * Get Trending Songs using YouTube Music Charts API
+     * Uses the browse endpoint with charts browse ID
+     */
     suspend fun getTrendingSongs(limit: Int = 30): Result<List<Song>> = withContext(Dispatchers.IO) {
-        val queries = listOf(
-            "trending Hindi songs",
-            "top Bollywood songs 2024",
-            "viral songs India",
-            "popular Hindi music"
-        )
-        searchSongs(queries.random(), limit)
+        try {
+            Log.d(TAG, "🔥 Fetching real-time trending songs for region: $currentRegion")
+            
+            // YouTube Music Charts browse ID - region-specific
+            val requestBody = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240101.01.00")
+                        put("hl", currentLanguage)
+                        put("gl", currentRegion)
+                    })
+                })
+                // Browse ID for "Top Songs" chart
+                put("browseId", "FEmusic_charts")
+                put("params", "sgYJQGVuZ2luZQ%3D%3D") // Chart type params
+            }
+            
+            val request = Request.Builder()
+                .url("$YOUTUBE_MUSIC_BASE/browse?key=$YOUTUBE_MUSIC_API_KEY&prettyPrint=false")
+                .post(requestBody.toString().toRequestBody(jsonMediaType))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            
+            val response = client.newCall(request).execute()
+            
+            if (!response.isSuccessful) {
+                Log.w(TAG, "Charts API failed, falling back to search")
+                return@withContext searchSongs("trending songs $currentRegion 2024", limit)
+            }
+            
+            val responseBody = response.body?.string()
+            if (responseBody.isNullOrEmpty()) {
+                return@withContext searchSongs("top songs $currentRegion 2024", limit)
+            }
+            
+            val songs = parseChartsResponse(responseBody).take(limit)
+            
+            if (songs.isEmpty()) {
+                Log.w(TAG, "No songs from charts, using search fallback")
+                return@withContext searchSongs("viral songs $currentRegion 2024", limit)
+            }
+            
+            Log.d(TAG, "✅ Got ${songs.size} trending songs for $currentRegion")
+            Result.success(songs)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Trending error, using fallback", e)
+            searchSongs("popular songs $currentRegion 2024", limit)
+        }
     }
 
+    /**
+     * Get New Releases using YouTube Music New Releases API
+     */
     suspend fun getNewReleases(limit: Int = 25): Result<List<Song>> = withContext(Dispatchers.IO) {
-        val queries = listOf(
-            "new Hindi songs 2024",
-            "latest Bollywood songs",
-            "new Indian music",
-            "new releases Hindi"
-        )
-        searchSongs(queries.random(), limit)
+        try {
+            Log.d(TAG, "🆕 Fetching real-time new releases for region: $currentRegion")
+            
+            val requestBody = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240101.01.00")
+                        put("hl", currentLanguage)
+                        put("gl", currentRegion)
+                    })
+                })
+                // Browse ID for New Releases
+                put("browseId", "FEmusic_new_releases")
+            }
+            
+            val request = Request.Builder()
+                .url("$YOUTUBE_MUSIC_BASE/browse?key=$YOUTUBE_MUSIC_API_KEY&prettyPrint=false")
+                .post(requestBody.toString().toRequestBody(jsonMediaType))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            
+            val response = client.newCall(request).execute()
+            
+            if (!response.isSuccessful) {
+                Log.w(TAG, "New releases API failed, falling back to search")
+                return@withContext searchSongs("new songs $currentRegion 2024", limit)
+            }
+            
+            val responseBody = response.body?.string()
+            if (responseBody.isNullOrEmpty()) {
+                return@withContext searchSongs("latest songs $currentRegion 2024", limit)
+            }
+            
+            val songs = parseBrowseResponse(responseBody).take(limit)
+            
+            if (songs.isEmpty()) {
+                Log.w(TAG, "No songs from new releases, using search fallback")
+                return@withContext searchSongs("new releases $currentRegion 2024", limit)
+            }
+            
+            Log.d(TAG, "✅ Got ${songs.size} new releases for $currentRegion")
+            Result.success(songs)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "New releases error, using fallback", e)
+            searchSongs("new music $currentRegion 2024", limit)
+        }
     }
 
     suspend fun getEnglishHits(limit: Int = 25): Result<List<Song>> = withContext(Dispatchers.IO) {
-        val queries = listOf(
-            "top English songs 2024",
-            "popular English music",
-            "trending English songs"
-        )
-        searchSongs(queries.random(), limit)
+        // Use specific search for English songs with current year
+        searchSongs("top English songs 2024 trending", limit)
+    }
+    
+    /**
+     * Parse charts browse response
+     */
+    private fun parseChartsResponse(jsonString: String): List<Song> {
+        val songs = mutableListOf<Song>()
+        
+        try {
+            val json = JSONObject(jsonString)
+            
+            // Navigate to chart contents
+            val contents = json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnBrowseResultsRenderer")
+                ?.optJSONArray("tabs")
+            
+            if (contents != null) {
+                for (t in 0 until contents.length()) {
+                    val tabContent = contents.optJSONObject(t)
+                        ?.optJSONObject("tabRenderer")
+                        ?.optJSONObject("content")
+                        ?.optJSONObject("sectionListRenderer")
+                        ?.optJSONArray("contents")
+                        ?: continue
+                    
+                    songs.addAll(parseSectionContents(tabContent))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing charts", e)
+        }
+        
+        return songs.distinctBy { it.id }
+    }
+    
+    /**
+     * Parse browse response (new releases, etc.)
+     */
+    private fun parseBrowseResponse(jsonString: String): List<Song> {
+        val songs = mutableListOf<Song>()
+        
+        try {
+            val json = JSONObject(jsonString)
+            
+            // Try different browse structures
+            val contents = json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnBrowseResultsRenderer")
+                ?.optJSONArray("tabs")
+            
+            if (contents != null) {
+                for (t in 0 until contents.length()) {
+                    val sectionList = contents.optJSONObject(t)
+                        ?.optJSONObject("tabRenderer")
+                        ?.optJSONObject("content")
+                        ?.optJSONObject("sectionListRenderer")
+                        ?.optJSONArray("contents")
+                        ?: continue
+                    
+                    songs.addAll(parseSectionContents(sectionList))
+                }
+            }
+            
+            // Alternative structure
+            val gridContents = json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnBrowseResultsRenderer")
+                ?.optJSONObject("contents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+            
+            if (gridContents != null) {
+                songs.addAll(parseSectionContents(gridContents))
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing browse response", e)
+        }
+        
+        return songs.distinctBy { it.id }
+    }
+    
+    /**
+     * Parse section contents to extract songs
+     */
+    private fun parseSectionContents(sections: JSONArray): List<Song> {
+        val songs = mutableListOf<Song>()
+        
+        for (i in 0 until sections.length()) {
+            val section = sections.optJSONObject(i) ?: continue
+            
+            // Try musicCarouselShelfRenderer
+            val carouselContents = section.optJSONObject("musicCarouselShelfRenderer")
+                ?.optJSONArray("contents")
+            
+            if (carouselContents != null) {
+                for (j in 0 until carouselContents.length()) {
+                    val item = carouselContents.optJSONObject(j) ?: continue
+                    parseMusicItem(item)?.let { songs.add(it) }
+                }
+            }
+            
+            // Try musicShelfRenderer
+            val shelfContents = section.optJSONObject("musicShelfRenderer")
+                ?.optJSONArray("contents")
+            
+            if (shelfContents != null) {
+                for (j in 0 until shelfContents.length()) {
+                    val item = shelfContents.optJSONObject(j) ?: continue
+                    parseMusicItem(item)?.let { songs.add(it) }
+                }
+            }
+            
+            // Try musicPlaylistShelfRenderer
+            val playlistContents = section.optJSONObject("musicPlaylistShelfRenderer")
+                ?.optJSONArray("contents")
+            
+            if (playlistContents != null) {
+                for (j in 0 until playlistContents.length()) {
+                    val item = playlistContents.optJSONObject(j) ?: continue
+                    parseMusicItem(item)?.let { songs.add(it) }
+                }
+            }
+        }
+        
+        return songs
+    }
+    
+    /**
+     * Parse individual music item from browse response
+     */
+    private fun parseMusicItem(item: JSONObject): Song? {
+        try {
+            // Try musicResponsiveListItemRenderer
+            val listItem = item.optJSONObject("musicResponsiveListItemRenderer")
+            if (listItem != null) {
+                return parseMusicResponsiveItem(listItem)
+            }
+            
+            // Try musicTwoRowItemRenderer
+            val twoRow = item.optJSONObject("musicTwoRowItemRenderer")
+            if (twoRow != null) {
+                val videoId = twoRow.optJSONObject("navigationEndpoint")
+                    ?.optJSONObject("watchEndpoint")
+                    ?.optString("videoId", "")
+                    ?: return null
+                
+                if (videoId.isEmpty()) return null
+                
+                val title = extractText(twoRow.optJSONObject("title"))
+                val artist = extractText(twoRow.optJSONObject("subtitle"))
+                
+                val thumbnails = twoRow.optJSONObject("thumbnailRenderer")
+                    ?.optJSONObject("musicThumbnailRenderer")
+                    ?.optJSONObject("thumbnail")
+                    ?.optJSONArray("thumbnails")
+                
+                var thumbnailUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+                if (thumbnails != null && thumbnails.length() > 0) {
+                    thumbnailUrl = thumbnails.optJSONObject(thumbnails.length() - 1)
+                        ?.optString("url", thumbnailUrl) ?: thumbnailUrl
+                }
+                
+                return Song(
+                    id = videoId,
+                    title = title,
+                    artist = cleanArtistName(artist),
+                    duration = 0,
+                    thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
+                    category = "Music"
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing music item", e)
+        }
+        return null
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // UP NEXT / QUEUE ENDPOINT
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Get "Up Next" songs (Queue) from YouTube Music
+     * This is the fastest and most relevant way to get recommendations
+     */
+    suspend fun getUpNext(videoId: String): Result<List<Song>> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "🎵 Fetching Up Next for: $videoId")
+            
+            val requestBody = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240101.01.00")
+                        put("hl", DEFAULT_LANGUAGE)
+                        put("gl", DEFAULT_REGION)
+                    })
+                })
+                put("videoId", videoId)
+                put("enablePersistentPlaylistPanel", true)
+                put("isAudioOnly", true)
+            }
+            
+            val request = Request.Builder()
+                .url("$YOUTUBE_MUSIC_BASE/next?key=$YOUTUBE_MUSIC_API_KEY")
+                .post(requestBody.toString().toRequestBody(jsonMediaType))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            
+            val response = client.newCall(request).execute()
+            
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("Failed: ${response.code}"))
+            }
+
+            val responseBody = response.body?.string() ?: return@withContext Result.failure(Exception("Empty response"))
+            val json = JSONObject(responseBody)
+            
+            // Parse queue from playlistPanelRenderer
+            val queueItems = parseQueueResponse(json)
+            
+            Log.d(TAG, "✅ Got ${queueItems.size} songs from Up Next")
+            Result.success(queueItems)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Get Up Next error", e)
+            Result.failure(e)
+        }
+    }
+
+    private fun parseQueueResponse(json: JSONObject): List<Song> {
+        val songs = mutableListOf<Song>()
+        
+        try {
+            // Locate playlistPanelRenderer (Queue)
+            // path: contents -> singleColumnMusicWatchNextResultsRenderer -> tabbedRenderer -> 
+            // watchNextTabbedResultsRenderer -> tabs -> [0] -> tabRenderer -> content -> 
+            // musicQueueRenderer -> content -> playlistPanelRenderer
+            
+            val tabs = json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
+                ?.optJSONObject("tabbedRenderer")
+                ?.optJSONObject("watchNextTabbedResultsRenderer")
+                ?.optJSONArray("tabs")
+                
+            var playlistPanel: JSONObject? = null
+            
+            if (tabs != null) {
+                // Usually the first tab "Up Next"
+                for (i in 0 until tabs.length()) {
+                    val tabContent = tabs.optJSONObject(i)
+                        ?.optJSONObject("tabRenderer")
+                        ?.optJSONObject("content")
+                    
+                    val queue = tabContent?.optJSONObject("musicQueueRenderer")
+                    
+                    if (queue != null) {
+                        playlistPanel = queue.optJSONObject("content")?.optJSONObject("playlistPanelRenderer")
+                        break
+                    }
+                }
+            }
+            
+            if (playlistPanel == null) return songs
+            
+            val contents = playlistPanel.optJSONArray("contents") ?: return songs
+            
+            for (i in 0 until contents.length()) {
+                val item = contents.optJSONObject(i)
+                    ?.optJSONObject("playlistPanelVideoRenderer") ?: continue
+                
+                val videoId = item.optString("videoId", "")
+                if (videoId.isEmpty()) continue
+                
+                val title = extractText(item.optJSONObject("title"))
+                var artist = extractText(item.optJSONObject("longBylineText"))
+                
+                // Fallback for artist
+                if (artist.isEmpty()) {
+                    artist = extractText(item.optJSONObject("shortBylineText"))
+                }
+                
+                val durationText = extractText(item.optJSONObject("lengthText"))
+                
+                val thumbnails = item.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                var thumbnailUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+                if (thumbnails != null && thumbnails.length() > 0) {
+                    val lastThumb = thumbnails.optJSONObject(thumbnails.length() - 1)
+                    thumbnailUrl = lastThumb?.optString("url", thumbnailUrl) ?: thumbnailUrl
+                }
+                
+                songs.add(Song(
+                    id = videoId,
+                    title = title,
+                    artist = cleanArtistName(artist),
+                    duration = parseDuration(durationText),
+                    thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
+                    category = "Music"
+                ))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing queue", e)
+        }
+        
+        return songs
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -643,14 +1119,40 @@ class YouTubeiService @Inject constructor() {
             .trim()
     }
     
+    /**
+     * Upgrade thumbnail URL to maximum quality
+     * Handles various YouTube thumbnail URL patterns:
+     * - Standard: i.ytimg.com/vi/{id}/{quality}.jpg
+     * - Music: lh3.googleusercontent.com/... with w= and h= params
+     * - i.ytimg.com with size parameters
+     */
     private fun upgradeThumbQuality(url: String, videoId: String): String {
-        return if (url.contains("i.ytimg.com")) {
-            "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        } else {
-            url.replace("hqdefault", "maxresdefault")
-               .replace("mqdefault", "maxresdefault")
-               .replace("sddefault", "maxresdefault")
+        // For standard YouTube thumbnail URLs, always use maxresdefault
+        if (url.contains("i.ytimg.com/vi/")) {
+            return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
         }
+        
+        // For Google user content URLs (YouTube Music thumbnails)
+        // Remove size restrictions (w=, h=, s=) and add maximum size
+        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.googleusercontent.com")) {
+            // Remove existing size params and add max size
+            val baseUrl = url.split("=")[0]
+            return "$baseUrl=w1280-h720-l90-rj" // Max quality params
+        }
+        
+        // For i.ytimg.com URLs with different patterns
+        if (url.contains("i.ytimg.com")) {
+            // Remove any size parameters
+            val cleanUrl = url.replace(Regex("[?&](w|h|sqp|rs)=[^&]*"), "")
+            return cleanUrl
+                .replace("hqdefault", "maxresdefault")
+                .replace("mqdefault", "maxresdefault")
+                .replace("sddefault", "maxresdefault")
+                .replace("default", "maxresdefault")
+        }
+        
+        // For any other URLs, try to get the video ID and construct max quality URL
+        return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
     }
 
     private fun parseDuration(durationText: String): Int {

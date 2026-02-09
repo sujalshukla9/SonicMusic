@@ -28,17 +28,16 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Player Service Connection
+ * Player Service Connection - ViTune Style
  * 
  * Manages connection between UI and PlaybackService.
  * Provides reactive StateFlows for all playback state.
  * 
- * Features:
- * - Automatic connection management
- * - Queue management with stream URL caching
- * - Position tracking
- * - Error handling with callbacks
- * - Infinite queue support via callback
+ * ViTune-Style Features:
+ * - Aggressive queue low detection (triggers early)
+ * - Smart queue preloading
+ * - Proper state sync with QueueRepository
+ * - Callbacks for infinite queue support
  */
 @Singleton
 class PlayerServiceConnection @Inject constructor(
@@ -47,7 +46,9 @@ class PlayerServiceConnection @Inject constructor(
     companion object {
         private const val TAG = "PlayerServiceConnection"
         private const val QUEUE_LOW_THRESHOLD = 2 // Trigger fetch when this many songs left
-        private const val QUEUE_CHECK_COOLDOWN_MS = 30000L // 30 seconds cooldown
+        private const val QUEUE_CHECK_COOLDOWN_MS = 5000L // 5 seconds between checks
+        private const val PRELOAD_THRESHOLD = 5 // Start preloading when 5 songs left
+        private const val POSITION_UPDATE_INTERVAL_MS = 100L // Smooth 10fps position updates
     }
 
     // MediaController for communication with PlaybackService
@@ -57,6 +58,7 @@ class PlayerServiceConnection @Inject constructor(
     // Coroutine scope for background operations
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var positionUpdateJob: Job? = null
+    private var queueCheckJob: Job? = null
 
     // ═══════════════════════════════════════════════════════════════
     // PLAYBACK STATE FLOWS
@@ -97,6 +99,10 @@ class PlayerServiceConnection @Inject constructor(
 
     private val _playbackSpeed = MutableStateFlow(1.0f)
     val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
+    
+    // Track if queue needs more songs (for UI indication)
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════
     // INTERNAL STATE
@@ -114,9 +120,12 @@ class PlayerServiceConnection @Inject constructor(
     
     // Callback for when stream URL expires/fails (needs re-extraction)
     private var onStreamUrlExpired: ((String) -> Unit)? = null
+    
+    // Track if we're at end of queue
+    private var reachedEndOfQueue = false
 
     // ═══════════════════════════════════════════════════════════════
-    // PLAYER LISTENER
+    // PLAYER LISTENER - ViTune Style
     // ═══════════════════════════════════════════════════════════════
     
     private val playerListener = object : Player.Listener {
@@ -125,6 +134,8 @@ class PlayerServiceConnection @Inject constructor(
             if (isPlaying) {
                 startPositionUpdates()
                 _playbackError.value = null
+                // Check queue when playback resumes
+                checkQueueAndRequestMore()
             } else {
                 stopPositionUpdates()
             }
@@ -137,10 +148,12 @@ class PlayerServiceConnection @Inject constructor(
                 Player.STATE_READY -> {
                     _isBuffering.value = false
                     updateDuration()
+                    _playbackError.value = null
                 }
                 Player.STATE_ENDED -> {
                     _isBuffering.value = false
                     _isPlaying.value = false
+                    reachedEndOfQueue = true
                     // Check if we need more songs
                     checkQueueAndRequestMore()
                 }
@@ -161,8 +174,9 @@ class PlayerServiceConnection @Inject constructor(
                 val index = songQueue.indexOfFirst { it.id == item.mediaId }
                 _currentQueueIndex.value = index
                 
-                // DON'T check queue here - only check when playback ends
-                // This prevents aggressive triggering on every track change
+                // Check if we need more songs after transition
+                // This is key for ViTune-style continuous playback
+                checkQueueAndRequestMore()
             }
             updateDuration()
         }
@@ -186,6 +200,18 @@ class PlayerServiceConnection @Inject constructor(
                 _currentSong.value?.let { song ->
                     onStreamUrlExpired?.invoke(song.id)
                 }
+            }
+        }
+        
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            // Check queue after seeking or track change
+            if (reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT ||
+                reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+                checkQueueAndRequestMore()
             }
         }
     }
@@ -243,6 +269,7 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun disconnect() {
         stopPositionUpdates()
+        stopQueueCheck()
         mediaController?.removeListener(playerListener)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         mediaController = null
@@ -269,7 +296,7 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     /**
-     * Play a single song
+     * Play a single song - ViTune Style (triggers instant recommendations)
      * 
      * @param song The song to play
      * @param streamUrl The streaming URL for the song
@@ -284,6 +311,7 @@ class PlayerServiceConnection @Inject constructor(
         songQueue.clear()
         songQueue.add(song)
         _queue.value = songQueue.toList()
+        reachedEndOfQueue = false
         
         // Create and play media item
         val mediaItem = createMediaItem(song, streamUrl)
@@ -296,10 +324,13 @@ class PlayerServiceConnection @Inject constructor(
         
         _currentSong.value = song
         _currentQueueIndex.value = 0
+        
+        // ViTune: Immediately request more songs for infinite queue
+        checkQueueAndRequestMore()
     }
 
     /**
-     * Play with a queue of songs
+     * Play with a queue of songs - ViTune Style
      * 
      * @param songs List of songs to play
      * @param streamUrls Map of song IDs to stream URLs
@@ -316,6 +347,7 @@ class PlayerServiceConnection @Inject constructor(
         songQueue.clear()
         songQueue.addAll(songs)
         _queue.value = songQueue.toList()
+        reachedEndOfQueue = false
         
         // Create media items
         val mediaItems = songs.mapNotNull { song ->
@@ -335,6 +367,9 @@ class PlayerServiceConnection @Inject constructor(
         
         _currentSong.value = songs.getOrNull(startIndex)
         _currentQueueIndex.value = startIndex
+        
+        // ViTune: Check if we need more songs immediately
+        checkQueueAndRequestMore()
     }
 
     /**
@@ -344,9 +379,11 @@ class PlayerServiceConnection @Inject constructor(
      * @param streamUrls Map of song IDs to stream URLs
      */
     fun addToQueue(songs: List<Song>, streamUrls: Map<String, String>) {
+        if (songs.isEmpty()) return
+        
         Log.d(TAG, "➕ Adding ${songs.size} songs to queue")
         
-        songs.forEach { song ->
+        val addedCount = songs.count { song ->
             streamUrls[song.id]?.let { url ->
                 // Cache URL
                 streamUrlCache[song.id] = url
@@ -356,10 +393,14 @@ class PlayerServiceConnection @Inject constructor(
                 
                 // Add to player
                 mediaController?.addMediaItem(createMediaItem(song, url))
-            }
+                true
+            } ?: false
         }
         
         _queue.value = songQueue.toList()
+        reachedEndOfQueue = false
+        
+        Log.d(TAG, "✅ Added $addedCount songs to queue, total: ${songQueue.size}")
     }
 
     /**
@@ -367,6 +408,15 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun addToQueue(song: Song, streamUrl: String) {
         addToQueue(listOf(song), mapOf(song.id to streamUrl))
+    }
+
+    /**
+     * Update stream URLs for existing songs (used for background loading)
+     */
+    fun updateStreamUrls(newUrls: Map<String, String>) {
+        newUrls.forEach { (id, url) ->
+            streamUrlCache[id] = url
+        }
     }
 
     /**
@@ -416,11 +466,22 @@ class PlayerServiceConnection @Inject constructor(
 
     /**
      * Seek to position (0.0 to 1.0)
+     * Uses cached duration for more reliable seeking
      */
     fun seekTo(progress: Float) {
         mediaController?.let { controller ->
-            val position = (progress * controller.duration).toLong()
-            controller.seekTo(position.coerceAtLeast(0))
+            // Use cached duration since controller.duration may be unreliable during drag
+            val cachedDuration = _duration.value
+            val controllerDuration = controller.duration
+            
+            // Use the larger of the two values (prefer cached if available)
+            val durationToUse = if (cachedDuration > 0) cachedDuration else controllerDuration
+            
+            if (durationToUse > 0) {
+                val position = (progress * durationToUse).toLong().coerceIn(0, durationToUse)
+                controller.seekTo(position)
+                Log.d("PlayerServiceConnection", "Seeking to ${position}ms (${(progress * 100).toInt()}%)")
+            }
         }
     }
 
@@ -474,6 +535,7 @@ class PlayerServiceConnection @Inject constructor(
         _queue.value = emptyList()
         _currentQueueIndex.value = -1
         _currentSong.value = null
+        reachedEndOfQueue = false
     }
 
     /**
@@ -510,8 +572,6 @@ class PlayerServiceConnection @Inject constructor(
     fun removeFromQueue(index: Int) {
         mediaController?.let { controller ->
             if (index in 0 until controller.mediaItemCount) {
-                val item = controller.getMediaItemAt(index)
-                
                 // If removing current song, player handles skipping automatically
                 controller.removeMediaItem(index)
                 
@@ -529,6 +589,9 @@ class PlayerServiceConnection @Inject constructor(
                             _currentQueueIndex.value = newIndex
                         }
                     }
+                    
+                    // Check if we need more songs after removal
+                    checkQueueAndRequestMore()
                 }
             }
         }
@@ -553,6 +616,54 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun stop() {
         mediaController?.stop()
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // QUEUE MANAGEMENT - ViTune Style
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Check if queue needs more songs and request them
+     * ViTune-style: Aggressive preloading
+     */
+    private fun checkQueueAndRequestMore() {
+        val controller = mediaController ?: return
+        val callback = onQueueNeedsMoreSongs ?: return
+        val currentSong = _currentSong.value ?: return
+        
+        // Debounce: only check once every few seconds
+        val now = System.currentTimeMillis()
+        if (now - lastQueueCheckTime < QUEUE_CHECK_COOLDOWN_MS) {
+            return
+        }
+        
+        val currentIndex = controller.currentMediaItemIndex
+        val totalItems = controller.mediaItemCount
+        val remaining = totalItems - currentIndex - 1
+        
+        Log.d(TAG, "📊 Queue check: $remaining songs remaining (threshold: $QUEUE_LOW_THRESHOLD)")
+        
+        // ViTune-style: Request more songs early for seamless playback
+        if (remaining <= QUEUE_LOW_THRESHOLD || reachedEndOfQueue) {
+            lastQueueCheckTime = now
+            reachedEndOfQueue = false
+            
+            Log.d(TAG, "🔄 Queue low or ended, requesting more songs...")
+            _isLoadingMore.value = true
+            callback(currentSong.id)
+            
+            // Reset loading state after a delay
+            queueCheckJob?.cancel()
+            queueCheckJob = scope.launch {
+                delay(5000)
+                _isLoadingMore.value = false
+            }
+        }
+    }
+    
+    private fun stopQueueCheck() {
+        queueCheckJob?.cancel()
+        queueCheckJob = null
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -616,7 +727,7 @@ class PlayerServiceConnection @Inject constructor(
                         _progress.value = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
                     }
                 }
-                delay(500)
+                delay(POSITION_UPDATE_INTERVAL_MS) // Smooth position updates
             }
         }
     }
@@ -624,31 +735,6 @@ class PlayerServiceConnection @Inject constructor(
     private fun stopPositionUpdates() {
         positionUpdateJob?.cancel()
         positionUpdateJob = null
-    }
-
-    private fun checkQueueAndRequestMore() {
-        val controller = mediaController ?: return
-        
-        // Debounce: only check once every 30 seconds
-        val now = System.currentTimeMillis()
-        if (now - lastQueueCheckTime < QUEUE_CHECK_COOLDOWN_MS) {
-            Log.d(TAG, "📊 Queue check skipped (cooldown)")
-            return
-        }
-        
-        val currentIndex = controller.currentMediaItemIndex
-        val totalItems = controller.mediaItemCount
-        val remaining = totalItems - currentIndex - 1
-        
-        Log.d(TAG, "📊 Queue check: $remaining songs remaining")
-        
-        if (remaining < QUEUE_LOW_THRESHOLD) {
-            lastQueueCheckTime = now
-            _currentSong.value?.let { song ->
-                Log.d(TAG, "🔄 Queue low, requesting more songs...")
-                onQueueNeedsMoreSongs?.invoke(song.id)
-            }
-        }
     }
 
     private fun MediaItem.toSong(): Song {
@@ -668,6 +754,19 @@ class PlayerServiceConnection @Inject constructor(
     fun getRemainingQueueSize(): Int {
         val controller = mediaController ?: return 0
         return (controller.mediaItemCount - controller.currentMediaItemIndex - 1).coerceAtLeast(0)
+    }
+    
+    /**
+     * Get full queue for external sync
+     */
+    fun getQueue(): List<Song> = songQueue.toList()
+    
+    /**
+     * Force a queue check (useful for external triggers)
+     */
+    fun forceQueueCheck() {
+        lastQueueCheckTime = 0
+        checkQueueAndRequestMore()
     }
 
     /**

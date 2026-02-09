@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -60,6 +59,9 @@ class PlaybackService : MediaSessionService() {
     
     @Inject
     lateinit var equalizerManager: EqualizerManager
+    
+    @Inject
+    lateinit var audioEngine: AudioEngine
 
     companion object {
         private const val TAG = "PlaybackService"
@@ -117,7 +119,6 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "🎵 PlaybackService created")
-        createNotificationChannel()
         initializePlayer()
         setupNotificationProvider()
     }
@@ -152,6 +153,9 @@ class PlaybackService : MediaSessionService() {
                 
                 // Initialize equalizer with audio session ID
                 equalizerManager.init(audioSessionId)
+                
+                // Initialize premium audio engine
+                audioEngine.initialize(audioSessionId)
             }
 
         // Create MediaSession for system integration with custom session commands
@@ -191,20 +195,16 @@ class PlaybackService : MediaSessionService() {
     private fun createPlayerListener() = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.d(TAG, "📊 Playing: $isPlaying")
-            updateNotification()
         }
         
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             Log.d(TAG, "🎵 Track changed: ${mediaItem?.mediaMetadata?.title}")
-            loadArtwork(mediaItem?.mediaMetadata?.artworkUri?.toString())
-            updateNotification()
         }
         
         override fun onPlaybackStateChanged(playbackState: Int) {
             Log.d(TAG, "📊 State: ${playbackStateToString(playbackState)}")
             when (playbackState) {
                 Player.STATE_READY -> {
-                    updateNotification()
                     // Reset retry counter on successful playback
                     retryAttempts = 0
                     lastErrorCode = 0
@@ -223,12 +223,10 @@ class PlaybackService : MediaSessionService() {
         
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
             Log.d(TAG, "🔀 Shuffle mode: $shuffleModeEnabled")
-            updateNotification()
         }
         
         override fun onRepeatModeChanged(repeatMode: Int) {
             Log.d(TAG, "🔁 Repeat mode: ${repeatModeToString(repeatMode)}")
-            updateNotification()
         }
         
         override fun onPlayerError(error: PlaybackException) {
@@ -302,30 +300,7 @@ class PlaybackService : MediaSessionService() {
         else -> "UNKNOWN"
     }
     
-    private fun loadArtwork(url: String?) {
-        if (url.isNullOrEmpty()) {
-            currentArtwork = null
-            return
-        }
-        
-        serviceScope.launch {
-            try {
-                val loader = ImageLoader(this@PlaybackService)
-                val request = ImageRequest.Builder(this@PlaybackService)
-                    .data(url)
-                    .allowHardware(false)
-                    .size(512, 512)
-                    .build()
-                val result = loader.execute(request)
-                currentArtwork = (result as? SuccessResult)?.drawable?.let { 
-                    (it as? BitmapDrawable)?.bitmap 
-                }
-                updateNotification()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load artwork", e)
-            }
-        }
-    }
+
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -367,156 +342,7 @@ class PlaybackService : MediaSessionService() {
         return super.onStartCommand(intent, flags, startId)
     }
     
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Music Playback",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shows currently playing music"
-                setShowBadge(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setSound(null, null)
-                enableVibration(false)
-                enableLights(false)
-            }
-            
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
-        }
-    }
-    
-    private fun updateNotification() {
-        val notification = buildModernNotification()
-        startForeground(NOTIFICATION_ID, notification)
-    }
-    
-    private fun buildModernNotification(): Notification {
-        val exoPlayer = player ?: return buildDefaultNotification()
-        
-        val mediaItem = exoPlayer.currentMediaItem
-        val title = mediaItem?.mediaMetadata?.title?.toString() ?: "Unknown"
-        val artist = mediaItem?.mediaMetadata?.artist?.toString() ?: "Unknown Artist"
-        val album = mediaItem?.mediaMetadata?.albumTitle?.toString()
-        
-        val isPlaying = exoPlayer.isPlaying
-        val hasNext = exoPlayer.hasNextMediaItem()
-        val hasPrevious = exoPlayer.hasPreviousMediaItem() || exoPlayer.currentPosition > 3000
-        
-        // Content intent to open app
-        val contentIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val contentPendingIntent = PendingIntent.getActivity(
-            this, 0, contentIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        
-        // Delete intent for swipe dismiss
-        val deleteIntent = PendingIntent.getService(
-            this, 100,
-            Intent(this, PlaybackService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE
-        )
-        
-        // Build modern styled notification
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(artist)
-            .setSubText(album)
-            .setSmallIcon(R.drawable.ic_notification_small)
-            .setLargeIcon(currentArtwork)
-            .setContentIntent(contentPendingIntent)
-            .setDeleteIntent(deleteIntent)
-            .setOngoing(isPlaying)
-            .setOnlyAlertOnce(true)
-            .setShowWhen(false)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
-                    .setMediaSession(mediaSession?.sessionCompatToken)
-                    .setShowActionsInCompactView(1, 2, 3) // Prev, Play/Pause, Next
-                    .setShowCancelButton(!isPlaying)
-                    .setCancelButtonIntent(deleteIntent)
-            )
-        
-        // Get current shuffle/repeat state
-        val shuffleEnabled = exoPlayer.shuffleModeEnabled
-        val repeatMode = exoPlayer.repeatMode
-        
-        // Add 5 actions: Shuffle, Previous, Play/Pause, Next, Repeat
-        
-        // Shuffle (index 0)
-        builder.addAction(
-            R.drawable.ic_notification_shuffle,
-            if (shuffleEnabled) "Shuffle On" else "Shuffle Off",
-            createActionIntent(ACTION_TOGGLE_SHUFFLE, 0)
-        )
-        
-        // Previous (index 1)
-        builder.addAction(
-            R.drawable.ic_notification_prev,
-            "Previous",
-            createActionIntent(ACTION_PREVIOUS, 1)
-        )
-        
-        // Play/Pause (index 2)
-        builder.addAction(
-            if (isPlaying) R.drawable.ic_notification_pause else R.drawable.ic_notification_play,
-            if (isPlaying) "Pause" else "Play",
-            if (isPlaying) createActionIntent(ACTION_PAUSE, 2) else createActionIntent(ACTION_PLAY, 2)
-        )
-        
-        // Next (index 3)
-        builder.addAction(
-            R.drawable.ic_notification_next,
-            "Next",
-            createActionIntent(ACTION_NEXT, 3)
-        )
-        
-        // Repeat (index 4)
-        val repeatIcon = when (repeatMode) {
-            Player.REPEAT_MODE_ONE -> R.drawable.ic_notification_repeat_one
-            Player.REPEAT_MODE_ALL -> R.drawable.ic_notification_repeat
-            else -> R.drawable.ic_notification_repeat
-        }
-        builder.addAction(
-            repeatIcon,
-            when (repeatMode) {
-                Player.REPEAT_MODE_ONE -> "Repeat One"
-                Player.REPEAT_MODE_ALL -> "Repeat All"
-                else -> "Repeat Off"
-            },
-            createActionIntent(ACTION_TOGGLE_REPEAT, 4)
-        )
-        
-        // Enable colorized notification (Android 12+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && currentArtwork != null) {
-            builder.setColorized(true)
-        }
-        
-        return builder.build()
-    }
-    
-    private fun createActionIntent(action: String, requestCode: Int): PendingIntent {
-        val intent = Intent(this, PlaybackService::class.java).setAction(action)
-        return PendingIntent.getService(
-            this, requestCode, intent, 
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-    }
-    
-    private fun buildDefaultNotification(): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("SonicMusic")
-            .setContentText("Ready to play")
-            .setSmallIcon(R.drawable.ic_notification_small)
-            .setOngoing(false)
-            .build()
-    }
+
     
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
         return mediaSession
@@ -531,12 +357,30 @@ class PlaybackService : MediaSessionService() {
             release()
         }
         equalizerManager.release()
+        audioEngine.release()
         player = null
         mediaSession = null
         super.onDestroy()
     }
     
     private inner class MediaSessionCallback : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult {
+            val connectionResult = super.onConnect(session, controller)
+            val sessionCommands = connectionResult.availableSessionCommands
+                .buildUpon()
+                .add(SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
+                .add(SessionCommand(ACTION_TOGGLE_REPEAT, Bundle.EMPTY))
+                .build()
+            
+            return MediaSession.ConnectionResult.accept(
+                sessionCommands,
+                connectionResult.availablePlayerCommands
+            )
+        }
+
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
             Log.d(TAG, "🔌 Controller connected: ${controller.packageName}")
         }

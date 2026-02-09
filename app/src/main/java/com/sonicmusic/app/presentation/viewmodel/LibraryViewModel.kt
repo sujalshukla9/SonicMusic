@@ -2,11 +2,13 @@ package com.sonicmusic.app.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.HistoryRepository
+import com.sonicmusic.app.domain.repository.LocalMusicRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.service.PlayerServiceConnection
@@ -22,6 +24,7 @@ class LibraryViewModel @Inject constructor(
     private val songRepository: SongRepository,
     private val playlistRepository: PlaylistRepository,
     private val historyRepository: HistoryRepository,
+    private val localMusicRepository: LocalMusicRepository,
     private val playerServiceConnection: PlayerServiceConnection
 ) : ViewModel() {
 
@@ -33,6 +36,9 @@ class LibraryViewModel @Inject constructor(
 
     private val _recentlyPlayed = MutableStateFlow<List<PlaybackHistory>>(emptyList())
     val recentlyPlayed: StateFlow<List<PlaybackHistory>> = _recentlyPlayed.asStateFlow()
+    
+    private val _localSongs = MutableStateFlow<List<LocalSong>>(emptyList())
+    val localSongs: StateFlow<List<LocalSong>> = _localSongs.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -68,7 +74,22 @@ class LibraryViewModel @Inject constructor(
                     _recentlyPlayed.value = history
                 }
             }
+            
+            // Load local songs
+            launch {
+                localMusicRepository.getLocalSongs().collect { songs ->
+                    _localSongs.value = songs
+                }
+            }
 
+            _isLoading.value = false
+        }
+    }
+    
+    fun refreshLocalMusic() {
+        viewModelScope.launch {
+            _isLoading.value = true
+            localMusicRepository.scanDeviceMusic()
             _isLoading.value = false
         }
     }
@@ -98,6 +119,12 @@ class LibraryViewModel @Inject constructor(
             playlistRepository.createPlaylist(name, description)
         }
     }
+    
+    fun deletePlaylist(playlistId: Long) {
+        viewModelScope.launch {
+            playlistRepository.deletePlaylist(playlistId)
+        }
+    }
 
     fun onSongClick(song: Song) {
         viewModelScope.launch {
@@ -109,6 +136,20 @@ class LibraryViewModel @Inject constructor(
                     _error.value = "Failed to play: ${exception.message}"
                 }
         }
+    }
+    
+    fun onLocalSongClick(localSong: LocalSong) {
+        // Convert local song to Song and play
+        val song = Song(
+            id = "local_${localSong.id}",
+            title = localSong.title,
+            artist = localSong.artist,
+            duration = localSong.duration / 1000,
+            thumbnailUrl = "" // Local songs don't have thumbnails
+        )
+        
+        // For local songs, use the file path directly as stream URL
+        playerServiceConnection.playSong(song, localSong.filePath)
     }
     
     fun onHistoryItemClick(history: PlaybackHistory) {

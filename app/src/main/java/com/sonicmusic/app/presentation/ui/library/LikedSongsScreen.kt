@@ -50,6 +50,7 @@ import com.sonicmusic.app.presentation.viewmodel.LikedSongsViewModel
 @Composable
 fun LikedSongsScreen(
     onNavigateBack: () -> Unit,
+    onShowFullPlayer: () -> Unit = {},
     viewModel: LikedSongsViewModel = hiltViewModel()
 ) {
     val likedSongs by viewModel.likedSongs.collectAsState()
@@ -123,7 +124,7 @@ fun LikedSongsScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Button(
-                            onClick = { viewModel.playAll() },
+                            onClick = { viewModel.playAll(); onShowFullPlayer() },
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(
@@ -136,7 +137,7 @@ fun LikedSongsScreen(
                         }
                         
                         FilledTonalButton(
-                            onClick = { viewModel.shufflePlay() },
+                            onClick = { viewModel.shufflePlay(); onShowFullPlayer() },
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(
@@ -162,7 +163,7 @@ fun LikedSongsScreen(
                 items(likedSongs, key = { it.id }) { song ->
                     LikedSongItem(
                         song = song,
-                        onClick = { viewModel.playSong(song) },
+                        onClick = { viewModel.playSong(song); onShowFullPlayer() },
                         onMoreClick = { /* TODO: Show options menu */ }
                     )
                 }

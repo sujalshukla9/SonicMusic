@@ -75,6 +75,7 @@ fun LibraryScreen(
     val likedSongs by viewModel.likedSongs.collectAsState()
     val playlists by viewModel.playlists.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
+    val localSongs by viewModel.localSongs.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
@@ -214,7 +215,7 @@ fun LibraryScreen(
                     LibrarySectionCard(
                         icon = Icons.Default.PhoneAndroid,
                         title = "Local Songs",
-                        subtitle = "Music from your device",
+                        subtitle = "${localSongs.size} song${if (localSongs.size != 1) "s" else ""} on device",
                         onClick = onNavigateToLocalSongs
                     )
                 }
@@ -309,7 +310,7 @@ fun LibraryScreen(
                 
                 // Bottom spacing for mini player
                 item {
-                    Spacer(modifier = Modifier.height(100.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }

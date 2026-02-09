@@ -26,7 +26,9 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +37,8 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -62,14 +66,31 @@ import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /**
- * Redesigned Queue Bottom Sheet
+ * Redesigned Queue Bottom Sheet - ViTune Style
  *
  * Features:
+ * - Infinite mode toggle (ViTune-style)
+ * - Loading indicator for recommendations
+ * - Refresh button for manual recommendations
  * - Song thumbnails for visual identification
  * - Drag-to-reorder with smooth animations
  * - Swipe-to-remove with delete confirmation
  * - Playing indicator with equalizer animation
  * - Clear header with song count
+ *
+ * @param isVisible Whether the sheet is visible
+ * @param onDismiss Callback when sheet is dismissed
+ * @param queue List of songs in queue
+ * @param currentIndex Index of currently playing song
+ * @param onRemove Callback when a song is removed
+ * @param onReorder Callback when songs are reordered
+ * @param onClearQueue Callback when queue is cleared
+ * @param onPlay Callback when a song is clicked
+ * @param infiniteModeEnabled Whether infinite queue mode is on
+ * @param onToggleInfiniteMode Callback to toggle infinite mode
+ * @param isLoadingMore Whether more songs are being loaded
+ * @param onRefreshRecommendations Callback to manually refresh recommendations
+ * @param modifier Modifier for the sheet
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +103,10 @@ fun QueueSheet(
     onReorder: (from: Int, to: Int) -> Unit = { _, _ -> },
     onClearQueue: () -> Unit,
     onPlay: (Int) -> Unit,
+    infiniteModeEnabled: Boolean = true,
+    onToggleInfiniteMode: () -> Unit = {},
+    isLoadingMore: Boolean = false,
+    onRefreshRecommendations: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!isVisible) return
@@ -110,10 +135,9 @@ fun QueueSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 24.dp)
         ) {
             // ═══════════════════════════════════════════
-            // HEADER
+            // HEADER - ViTune Style
             // ═══════════════════════════════════════════
             Row(
                 modifier = Modifier
@@ -156,6 +180,7 @@ fun QueueSheet(
                     }
                 }
 
+                // Clear button
                 if (localQueue.isNotEmpty()) {
                     TextButton(
                         onClick = onClearQueue
@@ -164,6 +189,89 @@ fun QueueSheet(
                             text = "Clear",
                             color = colorScheme.error,
                             fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════════
+            // INFINITE MODE TOGGLE - ViTune Style
+            // ═══════════════════════════════════════════
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                color = colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Repeat,
+                            contentDescription = null,
+                            tint = if (infiniteModeEnabled) colorScheme.primary else colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        
+                        Column {
+                            Text(
+                                text = "Infinite Queue",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                                color = colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (infiniteModeEnabled) "Auto-add similar songs" else "Manual queue only",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Refresh button (only show when infinite mode is on)
+                        if (infiniteModeEnabled) {
+                            IconButton(
+                                onClick = onRefreshRecommendations,
+                                enabled = !isLoadingMore
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Refresh recommendations",
+                                    tint = colorScheme.primary
+                                )
+                            }
+                        }
+                        
+                        // Loading indicator
+                        if (isLoadingMore) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = colorScheme.primary
+                            )
+                        }
+                        
+                        // Toggle switch
+                        Switch(
+                            checked = infiniteModeEnabled,
+                            onCheckedChange = { onToggleInfiniteMode() },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = colorScheme.primary,
+                                checkedTrackColor = colorScheme.primaryContainer
+                            )
                         )
                     }
                 }
@@ -197,7 +305,10 @@ fun QueueSheet(
                             color = colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Add songs to start playing",
+                            text = if (infiniteModeEnabled) 
+                                "Play a song to get recommendations" 
+                            else 
+                                "Add songs to start playing",
                             style = MaterialTheme.typography.bodyMedium,
                             color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
@@ -276,6 +387,33 @@ fun QueueSheet(
                                     }
                                 }
                             )
+                        }
+                    }
+                    
+                    // Loading indicator at bottom
+                    if (isLoadingMore) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Text(
+                                        text = "Loading more songs...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                         }
                     }
                 }

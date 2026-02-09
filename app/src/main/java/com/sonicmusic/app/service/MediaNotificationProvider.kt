@@ -127,8 +127,8 @@ class MediaNotificationProvider(
         val album = metadata?.albumTitle?.toString()
         
         val isPlaying = player.isPlaying
+        // Only show Next if there is a next item
         val hasNext = player.hasNextMediaItem()
-        val hasPrevious = player.hasPreviousMediaItem() || player.currentPosition > 3000
         
         // Create content intent to open app
         val contentIntent = PendingIntent.getActivity(
@@ -149,60 +149,41 @@ class MediaNotificationProvider(
             },
             PendingIntent.FLAG_IMMUTABLE
         )
-        
-        // Build notification
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(artist)
-            .setSubText(album)
-            .setSmallIcon(R.drawable.ic_notification_small)
-            .setLargeIcon(artwork)
-            .setContentIntent(contentIntent)
-            .setDeleteIntent(deleteIntent)
-            .setOngoing(isPlaying)
-            .setOnlyAlertOnce(true)
-            .setShowWhen(false)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
-                    .setMediaSession(mediaSession.sessionCompatToken)
-                    .setShowActionsInCompactView(1, 2, 3) // Prev, Play/Pause, Next in compact view
-                    .setShowCancelButton(!isPlaying)
-                    .setCancelButtonIntent(deleteIntent)
-            )
 
-        // Add actions: Shuffle, Previous, Play/Pause, Next, Repeat (5 actions)
-        // Compact view shows indices 1, 2, 3 (Prev, Play/Pause, Next)
+        // Lists to hold actions and their indices for compact view
         val actions = mutableListOf<NotificationCompat.Action>()
+        val compactViewIndices = mutableListOf<Int>()
         
         val shuffleEnabled = player.shuffleModeEnabled
         val repeatMode = player.repeatMode
         
-        // Shuffle action (index 0)
+        // 1. Shuffle Action (Index 0) - Always added, but NOT in compact view usually
         actions.add(
             createAction(
-                if (shuffleEnabled) R.drawable.ic_notification_shuffle else R.drawable.ic_notification_shuffle,
+                R.drawable.ic_notification_shuffle,
                 if (shuffleEnabled) "Shuffle On" else "Shuffle Off",
                 PlaybackService.ACTION_TOGGLE_SHUFFLE,
                 0,
-                true
+                true // Always enabled to allow toggling
             )
         )
         
-        // Previous action (index 1)
+        // 2. Previous Action (Index 1) - In Compact View
+        // We always add Previous, but if no previous item, we could disable it. 
+        // For consistent UI, we keep it enabled or check capability.
+        // Android guidelines say "Previous" should be present.
         actions.add(
             createAction(
                 R.drawable.ic_notification_prev,
                 "Previous",
                 PlaybackService.ACTION_PREVIOUS,
                 1,
-                true
+                true 
             )
         )
+        compactViewIndices.add(actions.lastIndex)
         
-        // Play/Pause action (index 2 - main action)
+        // 3. Play/Pause Action (Index 2) - In Compact View
         actions.add(
             createAction(
                 if (isPlaying) R.drawable.ic_notification_pause else R.drawable.ic_notification_play,
@@ -212,8 +193,10 @@ class MediaNotificationProvider(
                 true
             )
         )
+        compactViewIndices.add(actions.lastIndex)
         
-        // Next action (index 3)
+        // 4. Next Action (Index 3) - ALWAYS in Compact View
+        // We always show Next to allow triggering "load more" or just solely for UI consistency
         actions.add(
             createAction(
                 R.drawable.ic_notification_next,
@@ -223,8 +206,9 @@ class MediaNotificationProvider(
                 true
             )
         )
+        compactViewIndices.add(actions.lastIndex)
         
-        // Repeat action (index 4)
+        // 5. Repeat Action (Index 4 or 3) - Expanded view only
         val repeatIcon = when (repeatMode) {
             Player.REPEAT_MODE_ONE -> R.drawable.ic_notification_repeat_one
             Player.REPEAT_MODE_ALL -> R.drawable.ic_notification_repeat
@@ -240,11 +224,35 @@ class MediaNotificationProvider(
                 repeatIcon,
                 repeatLabel,
                 PlaybackService.ACTION_TOGGLE_REPEAT,
-                4,
+                actions.size, // Dynamic request code
                 true
             )
         )
         
+        // Build notification
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(artist)
+            .setSubText(album)
+            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setLargeIcon(artwork)
+            .setContentIntent(contentIntent)
+            .setDeleteIntent(deleteIntent)
+            .setOngoing(isPlaying)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setStyle(
+                androidx.media.app.NotificationCompat.MediaStyle()
+                    .setMediaSession(mediaSession.sessionCompatToken)
+                    .setShowActionsInCompactView(*compactViewIndices.toIntArray())
+                    .setShowCancelButton(!isPlaying)
+                    .setCancelButtonIntent(deleteIntent)
+            )
+            
+        // Add all actions to builder
         actions.forEach { action -> builder.addAction(action) }
         
         // Set color extraction from artwork (Android 12+)

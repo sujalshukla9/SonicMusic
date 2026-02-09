@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -145,11 +147,10 @@ fun HomeScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 120.dp) // Space for mini player + nav bar
+                    .padding(paddingValues)
             ) {
                 // ═══════════════════════════════════════════
-                // 1️⃣ HEADER - Greeting + Profile + Search
+                // 1️⃣ HEADER - Greeting + Search + Settings
                 // ═══════════════════════════════════════════
                 item {
                     HomeHeader(
@@ -159,51 +160,76 @@ fun HomeScreen(
                 }
 
                 // ═══════════════════════════════════════════
-                // 2️⃣ QUICK ACCESS BUTTONS
+                // 2️⃣ CONTINUE LISTENING - Horizontal Row
+                // Uses listenAgain history or quickPicks as fallback
                 // ═══════════════════════════════════════════
-                item {
-                    QuickAccessSection(
-                        onLikedSongsClick = onNavigateToLikedSongs,
-                        onDownloadsClick = onNavigateToDownloads,
-                        onPlaylistsClick = onNavigateToPlaylists,
-                        onRecentlyPlayedClick = onNavigateToRecentlyPlayed
-                    )
+                val continueListeningSongs = if (homeContent.listenAgain.isNotEmpty()) {
+                    homeContent.listenAgain.take(10)
+                } else {
+                    homeContent.quickPicks.take(10)
                 }
-
-                // ═══════════════════════════════════════════
-                // 3️⃣ CONTINUE LISTENING (Listen Again)
-                // ═══════════════════════════════════════════
-                if (homeContent.listenAgain.isNotEmpty()) {
+                
+                if (continueListeningSongs.isNotEmpty()) {
                     item {
-                        SongSection(
-                            title = "Continue Listening",
-                            subtitle = "Pick up where you left off",
-                            songs = homeContent.listenAgain,
+                        ContinueListeningSection(
+                            songs = continueListeningSongs,
                             onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
-                            onSeeAllClick = { viewModel.onSectionSeeAll("listen_again") },
-                            cardStyle = CardStyle.LARGE_SQUARE
+                            title = if (homeContent.listenAgain.isNotEmpty()) "Continue Listening" else "For You"
                         )
                     }
                 }
 
                 // ═══════════════════════════════════════════
-                // 4️⃣ RECOMMENDED FOR YOU (Quick Picks)
+                // 3️⃣ LISTEN AGAIN - 3x3 Grid with 3 Swipeable Pages
+                // Uses listenAgain history or trending as fallback
+                // 27 songs needed (9 per page × 3 pages)
+                // ═══════════════════════════════════════════
+                val listenAgainGridSongs = if (homeContent.listenAgain.isNotEmpty()) {
+                    homeContent.listenAgain.take(27)
+                } else {
+                    homeContent.trending.take(27)
+                }
+                
+                if (listenAgainGridSongs.isNotEmpty()) {
+                    item {
+                        ListenAgainGrid(
+                            songs = listenAgainGridSongs,
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
+                            title = "Listen Again"
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════
+                // 4️⃣ QUICK PICKS - Horizontal Cards
                 // ═══════════════════════════════════════════
                 if (homeContent.quickPicks.isNotEmpty()) {
                     item {
-                        SongSection(
-                            title = "Recommended For You",
-                            subtitle = "Based on your listening",
+                        QuickPicksSection(
                             songs = homeContent.quickPicks,
+                            onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() }
+                        )
+                    }
+                }
+                
+                // ═══════════════════════════════════════════
+                // 4.5️⃣ FOR YOU - Personalized Based on User Taste
+                // ═══════════════════════════════════════════
+                if (homeContent.personalizedForYou.isNotEmpty()) {
+                    item {
+                        SongSection(
+                            title = "Made for You",
+                            subtitle = "Based on your listening habits",
+                            songs = homeContent.personalizedForYou,
                             onSongClick = { viewModel.onSongClick(it); onShowFullPlayer() },
-                            onSeeAllClick = { viewModel.onSectionSeeAll("quick_picks") },
+                            onSeeAllClick = { viewModel.onSectionSeeAll("personalized") },
                             cardStyle = CardStyle.MEDIUM_CARD
                         )
                     }
                 }
 
                 // ═══════════════════════════════════════════
-                // 5️⃣ TRENDING / POPULAR SONGS
+                // 5️⃣ TRENDING NOW
                 // ═══════════════════════════════════════════
                 if (homeContent.trending.isNotEmpty()) {
                     item {
@@ -286,55 +312,18 @@ private fun HomeHeader(
             .padding(horizontal = 20.dp)
             .padding(top = 12.dp, bottom = 8.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Left side: Greeting
-            Column {
-                Text(
-                    text = greeting,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "What do you want to listen to?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            
-            // Right side: Icons
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Search button
-                FilledIconButton(
-                    onClick = onSearchClick,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                }
-                
-                // Settings button
-                IconButton(onClick = onSettingsClick) {
-                    Icon(
-                        imageVector = Icons.Default.Settings,
-                        contentDescription = "Settings",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
+        // Greeting only - cleaner look like YT Music
+        Text(
+            text = greeting,
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Text(
+            text = "What do you want to listen to?",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -349,110 +338,387 @@ private fun getGreeting(): String {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 2️⃣ QUICK ACCESS BUTTONS
+// 2️⃣ CONTINUE LISTENING - Horizontal Row (like YT Music)
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
-private fun QuickAccessSection(
-    onLikedSongsClick: () -> Unit,
-    onDownloadsClick: () -> Unit,
-    onPlaylistsClick: () -> Unit,
-    onRecentlyPlayedClick: () -> Unit
+private fun ContinueListeningSection(
+    songs: List<Song>,
+    onSongClick: (Song) -> Unit,
+    title: String = "Continue Listening"
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
+        modifier = Modifier.fillMaxWidth()
     ) {
-        // Two rows of 2 buttons each (Grid style)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+        )
+        
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            QuickAccessChip(
-                icon = Icons.Default.Favorite,
-                label = "Liked Songs",
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                onClick = onLikedSongsClick,
-                modifier = Modifier.weight(1f)
-            )
-            QuickAccessChip(
-                icon = Icons.Default.Download,
-                label = "Downloads",
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                onClick = onDownloadsClick,
-                modifier = Modifier.weight(1f)
-            )
+            items(songs.take(10), key = { it.id }) { song ->
+                ContinueListeningCard(
+                    song = song,
+                    onClick = { onSongClick(song) }
+                )
+            }
         }
         
-        Spacer(modifier = Modifier.height(12.dp))
-        
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            QuickAccessChip(
-                icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                label = "Playlists",
-                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                onClick = onPlaylistsClick,
-                modifier = Modifier.weight(1f)
-            )
-            QuickAccessChip(
-                icon = Icons.Default.History,
-                label = "Recently Played",
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                onClick = onRecentlyPlayedClick,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
 @Composable
-private fun QuickAccessChip(
-    icon: ImageVector,
-    label: String,
-    containerColor: Color,
-    contentColor: Color,
+private fun ContinueListeningCard(
+    song: Song,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.width(160.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column {
+            // Album art with play button overlay
+            Box(
+                modifier = Modifier
+                    .size(160.dp)
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+            ) {
+                AsyncImage(
+                    model = song.thumbnailUrl,
+                    contentDescription = song.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                
+                // Gradient overlay
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.4f)
+                                ),
+                                startY = 80f
+                            )
+                        )
+                )
+                
+                // Play button
+                FilledIconButton(
+                    onClick = onClick,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .size(40.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Play",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            
+            // Song info
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = song.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = song.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 3️⃣ LISTEN AGAIN - 3x3 Grid with 3 Swipeable Pages (YT Music Style)
+// ═══════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ListenAgainGrid(
+    songs: List<Song>,
+    onSongClick: (Song) -> Unit,
+    title: String = "Listen Again"
+) {
+    // 3x3 grid = 9 songs per page, 3 pages = 27 songs total
+    val songsPerPage = 9
+    val pageCount = 3
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+    
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        // Header with title and page indicators
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            
+            // Page indicators
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                repeat(pageCount) { index ->
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (pagerState.currentPage == index)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant
+                            )
+                    )
+                }
+            }
+        }
+        
+        // Swipeable pages with 3x3 grids
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            pageSpacing = 16.dp
+        ) { page ->
+            val startIndex = page * songsPerPage
+            val pageSongs = songs.drop(startIndex).take(songsPerPage)
+            
+            // 3x3 Grid layout
+            val rows = pageSongs.chunked(3)
+            
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                rows.forEach { rowSongs ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        rowSongs.forEach { song ->
+                            ListenAgainGridItem(
+                                song = song,
+                                onClick = { onSongClick(song) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        // Fill remaining space if row is incomplete
+                        repeat(3 - rowSongs.size) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                    }
+                }
+                
+                // Fill empty rows if page has less than 3 rows
+                repeat(3 - rows.size) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        repeat(3) {
+                            Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
+                        }
+                    }
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun ListenAgainGridItem(
+    song: Song,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
+    Card(
         onClick = onClick,
-        modifier = modifier.height(56.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = containerColor,
-        tonalElevation = 1.dp
+        modifier = modifier.aspectRatio(1f),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Start
+        Box(
+            modifier = Modifier.fillMaxSize()
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = contentColor,
-                modifier = Modifier.size(24.dp)
+            AsyncImage(
+                model = song.thumbnailUrl,
+                contentDescription = song.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            
+            // Dark gradient overlay for text visibility
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.7f)
+                            ),
+                            startY = 50f
+                        )
+                    )
+            )
+            
+            // Song title at bottom
             Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
+                text = song.title,
+                style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Medium,
-                color = contentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp)
             )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 4️⃣ QUICK PICKS - Horizontal Cards
+// ═══════════════════════════════════════════════════════════════
+
+@Composable
+private fun QuickPicksSection(
+    songs: List<Song>,
+    onSongClick: (Song) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = "Quick Picks",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+        )
+        
+        Text(
+            text = "Based on your listening",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(songs.take(15), key = { it.id }) { song ->
+                QuickPickCard(
+                    song = song,
+                    onClick = { onSongClick(song) }
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun QuickPickCard(
+    song: Song,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.width(140.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column {
+            // Album art
+            AsyncImage(
+                model = song.thumbnailUrl,
+                contentDescription = song.title,
+                modifier = Modifier
+                    .size(140.dp)
+                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                contentScale = ContentScale.Crop
+            )
+            
+            // Song info
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = song.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = song.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

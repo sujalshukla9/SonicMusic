@@ -49,6 +49,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -91,9 +92,6 @@ fun FullPlayerScreen(
 ) {
     val currentSong by viewModel.currentSong.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
-    val progress by viewModel.progress.collectAsState()
-    val currentPosition by viewModel.currentPosition.collectAsState()
-    val duration by viewModel.duration.collectAsState()
     val isLiked by viewModel.isLiked.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
@@ -111,6 +109,8 @@ fun FullPlayerScreen(
 
     val queue by viewModel.queue.collectAsState()
     val currentQueueIndex by viewModel.currentQueueIndex.collectAsState()
+    val infiniteModeEnabled by viewModel.infiniteModeEnabled.collectAsState()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     var showQueueSheet by remember { mutableStateOf(false) }
 
     var showSpeedSheet by remember { mutableStateOf(false) }
@@ -158,7 +158,7 @@ fun FullPlayerScreen(
                     .windowInsetsPadding(WindowInsets.navigationBars)
             ) {
                 // ═══════════════════════════════════════════
-                // TOP SECTION - Drag Handle + Album Art
+                // TOP SECTION - Album Art
                 // ═══════════════════════════════════════════
                 Column(
                     modifier = Modifier
@@ -166,25 +166,14 @@ fun FullPlayerScreen(
                         .padding(horizontal = 30.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(80.dp))
                     
-                    // Drag handle
-                    Box(
-                        modifier = Modifier
-                            .width(36.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(colorScheme.outlineVariant)
-                    )
-                    
-                    Spacer(modifier = Modifier.height(100.dp))
-                    
-                    // Album Art - Full width with rounded corners
+                    // Album Art - Full width with subtle corners
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(1f),
-                        shape = RoundedCornerShape(24.dp),
+                        shape = RoundedCornerShape(12.dp),
                         shadowElevation = 12.dp,
                         tonalElevation = 0.dp,
                         color = colorScheme.surfaceContainerHigh
@@ -253,42 +242,10 @@ fun FullPlayerScreen(
                 // ═══════════════════════════════════════════
                 // PROGRESS SLIDER
                 // ═══════════════════════════════════════════
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                ) {
-                    Slider(
-                        value = progress,
-                        onValueChange = { newValue ->
-                            viewModel.seekTo(newValue)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = SliderDefaults.colors(
-                            thumbColor = colorScheme.primary,
-                            activeTrackColor = colorScheme.primary,
-                            inactiveTrackColor = colorScheme.surfaceContainerHighest
-                        )
-                    )
-                    
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = formatDuration((currentPosition / 1000).toInt()),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = formatDuration((duration / 1000).toInt()),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+                // ═══════════════════════════════════════════
+                // PROGRESS SLIDER - Isolated
+                // ═══════════════════════════════════════════
+                PlayerProgressSection(viewModel = viewModel)
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
@@ -461,7 +418,7 @@ fun FullPlayerScreen(
                     }
                 }
                 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
     }
@@ -503,8 +460,80 @@ fun FullPlayerScreen(
         onPlay = { index ->
             viewModel.skipToQueueItem(index)
             showQueueSheet = false
-        }
+        },
+        infiniteModeEnabled = infiniteModeEnabled,
+        onToggleInfiniteMode = viewModel::toggleInfiniteMode,
+        isLoadingMore = isLoadingMore,
+        onRefreshRecommendations = viewModel::refreshRecommendations
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlayerProgressSection(viewModel: PlayerViewModel) {
+    val progress by viewModel.progress.collectAsState()
+    val currentPosition by viewModel.currentPosition.collectAsState()
+    val duration by viewModel.duration.collectAsState()
+    val colorScheme = MaterialTheme.colorScheme
+
+    // Track dragging state with remember
+    var isUserDragging by remember { mutableStateOf(false) }
+    var dragValue by remember { mutableFloatStateOf(0f) }
+    
+    // The value to display: use drag value when dragging, otherwise use progress
+    val sliderPosition = if (isUserDragging) dragValue else progress
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+    ) {
+        Slider(
+            value = sliderPosition,
+            onValueChange = { newValue ->
+                // User started/is dragging
+                isUserDragging = true
+                dragValue = newValue
+            },
+            onValueChangeFinished = {
+                // User finished dragging - seek and reset state
+                viewModel.seekTo(dragValue)
+                isUserDragging = false
+            },
+            valueRange = 0f..1f,
+            modifier = Modifier.fillMaxWidth(),
+            colors = SliderDefaults.colors(
+                thumbColor = colorScheme.primary,
+                activeTrackColor = colorScheme.primary,
+                inactiveTrackColor = colorScheme.surfaceContainerHighest
+            )
+        )
+        
+        // Calculate display time based on drag state
+        val displayTimeMs = if (isUserDragging) {
+            (dragValue * duration).toLong()
+        } else {
+            currentPosition
+        }
+        
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDuration((displayTimeMs / 1000).toInt()),
+                style = MaterialTheme.typography.labelMedium,
+                color = colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = formatDuration((duration / 1000).toInt()),
+                style = MaterialTheme.typography.labelMedium,
+                color = colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }
 
 private fun formatDuration(seconds: Int): String {

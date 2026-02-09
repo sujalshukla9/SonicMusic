@@ -28,6 +28,7 @@ import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -40,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -146,16 +148,19 @@ fun SonicMusicApp() {
         bottomBar = {
             // Stack MiniPlayer + BottomNavigation together
             AnimatedVisibility(visible = showBottomNav) {
-                Column(
-                    modifier = Modifier.navigationBarsPadding()
-                ) {
+                Column {
                     // MiniPlayer sits above the navigation bar
                     MiniPlayer(
                         onExpand = { showFullPlayer = true }
                     )
                     
-                    // Bottom Navigation Bar
-                    NavigationBar {
+                    // ViTune-style Bottom Navigation Bar
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.95f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        tonalElevation = 0.dp,
+                        windowInsets = WindowInsets.navigationBars
+                    ) {
                         bottomNavItems.forEach { screen ->
                             val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
                             NavigationBarItem(
@@ -167,6 +172,7 @@ fun SonicMusicApp() {
                                 },
                                 label = { Text(screen.title) },
                                 selected = selected,
+                                alwaysShowLabel = true,
                                 onClick = {
                                     navController.navigate(screen.route) {
                                         popUpTo(navController.graph.findStartDestination().id) {
@@ -228,7 +234,8 @@ fun SonicMusicApp() {
                 // Library sub-screens
                 composable(SubScreens.LIKED_SONGS) {
                     LikedSongsScreen(
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = { navController.popBackStack() },
+                        onShowFullPlayer = { showFullPlayer = true }
                     )
                 }
                 composable(SubScreens.PLAYLISTS) {

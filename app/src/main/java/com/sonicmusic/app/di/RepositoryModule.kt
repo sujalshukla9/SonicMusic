@@ -69,14 +69,14 @@ abstract class RepositoryModule {
     abstract fun bindQueueRepository(
         impl: QueueRepositoryImpl
     ): QueueRepository
+    
+    @Binds
+    @Singleton
+    abstract fun bindUserTasteRepository(
+        impl: com.sonicmusic.app.data.repository.UserTasteRepositoryImpl
+    ): com.sonicmusic.app.domain.repository.UserTasteRepository
 
     companion object {
-        @Provides
-        @Singleton
-        fun provideYouTubeiService(): YouTubeiService {
-            return YouTubeiService()
-        }
-
         @Provides
         @Singleton
         fun provideNewPipeService(): NewPipeService {
