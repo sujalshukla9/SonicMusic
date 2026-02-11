@@ -90,7 +90,7 @@ class SongDownloadManager @Inject constructor(
                 ))
 
                 // Get stream URL
-                val streamResult = audioStreamExtractor.extractAudioStream(song.id, quality)
+                val streamResult = audioStreamExtractor.extractAudioStreamUrl(song.id, quality)
                 
                 if (streamResult.isFailure) {
                     val error = streamResult.exceptionOrNull()

@@ -25,7 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -38,6 +37,7 @@ import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Shuffle
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -70,8 +70,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.Player
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
 
 /**
@@ -92,6 +91,7 @@ fun FullPlayerScreen(
 ) {
     val currentSong by viewModel.currentSong.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val isBuffering by viewModel.isBuffering.collectAsState()
     val isLiked by viewModel.isLiked.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
@@ -101,16 +101,10 @@ fun FullPlayerScreen(
     val sleepTimerActive by viewModel.sleepTimerActive.collectAsState()
     var showSleepTimerSheet by remember { mutableStateOf(false) }
 
-    val equalizerEnabled by viewModel.equalizerEnabled.collectAsState()
-    val equalizerBands by viewModel.equalizerBands.collectAsState()
-    val equalizerPresets by viewModel.equalizerPresets.collectAsState()
-    val currentPreset by viewModel.currentPreset.collectAsState()
-    var showEqualizerSheet by remember { mutableStateOf(false) }
+
 
     val queue by viewModel.queue.collectAsState()
     val currentQueueIndex by viewModel.currentQueueIndex.collectAsState()
-    val infiniteModeEnabled by viewModel.infiniteModeEnabled.collectAsState()
-    val isLoadingMore by viewModel.isLoadingMore.collectAsState()
     var showQueueSheet by remember { mutableStateOf(false) }
 
     var showSpeedSheet by remember { mutableStateOf(false) }
@@ -178,15 +172,11 @@ fun FullPlayerScreen(
                         tonalElevation = 0.dp,
                         color = colorScheme.surfaceContainerHigh
                     ) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(currentSong?.thumbnailUrl)
-                                .crossfade(300)
-                                .size(coil.size.Size.ORIGINAL)
-                                .build(),
+                        SongThumbnail(
+                            artworkUrl = currentSong?.thumbnailUrl,
+                            modifier = Modifier.fillMaxSize(),
                             contentDescription = "Album Art",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
+                            contentScale = ContentScale.Crop
                         )
                     }
                 }
@@ -290,20 +280,30 @@ fun FullPlayerScreen(
                     }
 
                     // Play/Pause - Large expressive button
-                    FilledIconButton(
-                        onClick = { viewModel.togglePlayPause() },
-                        modifier = Modifier.size(80.dp),
-                        shape = CircleShape,
-                        colors = IconButtonDefaults.filledIconButtonColors(
-                            containerColor = colorScheme.primary,
-                            contentColor = colorScheme.onPrimary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = if (isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(40.dp)
-                        )
+                    Box(modifier = Modifier.size(80.dp), contentAlignment = Alignment.Center) {
+                        if (isBuffering) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(48.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 4.dp
+                            )
+                        } else {
+                            FilledIconButton(
+                                onClick = { viewModel.togglePlayPause() },
+                                modifier = Modifier.size(80.dp),
+                                shape = CircleShape,
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = colorScheme.primary,
+                                    contentColor = colorScheme.onPrimary
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                    contentDescription = if (isPlaying) "Pause" else "Play",
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
+                        }
                     }
 
                     // Next
@@ -377,19 +377,7 @@ fun FullPlayerScreen(
                         )
                     }
 
-                    // Equalizer
-                    IconButton(
-                        onClick = { showEqualizerSheet = true },
-                        modifier = Modifier.size(44.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = "Equalizer",
-                            modifier = Modifier.size(22.dp),
-                            tint = if (equalizerEnabled) colorScheme.primary 
-                                else colorScheme.onSurfaceVariant
-                        )
-                    }
+
 
                     // Queue
                     IconButton(
@@ -437,17 +425,7 @@ fun FullPlayerScreen(
         remainingTime = sleepTimerRemaining
     )
 
-    EqualizerSheet(
-        isVisible = showEqualizerSheet,
-        onDismiss = { showEqualizerSheet = false },
-        enabled = equalizerEnabled,
-        onEnabledChange = viewModel::setEqualizerEnabled,
-        bands = equalizerBands,
-        onBandLevelChange = viewModel::setBandLevel,
-        presets = equalizerPresets,
-        currentPreset = currentPreset,
-        onPresetSelect = viewModel::usePreset
-    )
+
 
     QueueSheet(
         isVisible = showQueueSheet,
@@ -460,11 +438,7 @@ fun FullPlayerScreen(
         onPlay = { index ->
             viewModel.skipToQueueItem(index)
             showQueueSheet = false
-        },
-        infiniteModeEnabled = infiniteModeEnabled,
-        onToggleInfiniteMode = viewModel::toggleInfiniteMode,
-        isLoadingMore = isLoadingMore,
-        onRefreshRecommendations = viewModel::refreshRecommendations
+        }
     )
 }
 

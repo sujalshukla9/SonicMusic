@@ -4,6 +4,7 @@ import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.data.local.entity.SongEntity
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
@@ -26,6 +27,10 @@ class SongRepositoryImpl @Inject constructor(
                 val entities = songs.map { it.toEntity() }
                 songDao.insertAll(entities)
             }
+    }
+
+    override suspend fun getSearchSuggestions(query: String): Result<List<String>> {
+        return youTubeiService.getSearchSuggestions(query)
     }
 
     override suspend fun getSongById(id: String): Result<Song> {
@@ -51,15 +56,15 @@ class SongRepositoryImpl @Inject constructor(
             return Result.success(cachedSong.cachedStreamUrl)
         }
 
-        // Extract fresh stream URL
-        return audioStreamExtractor.extractAudioStream(songId, quality)
+        // Extract fresh stream URL (URL-only for backward compatibility)
+        return audioStreamExtractor.extractAudioStreamUrl(songId, quality)
             .onSuccess { streamUrl ->
                 // Cache the URL for 30 minutes (YouTube URLs expire quickly)
                 val expiry = System.currentTimeMillis() + (30 * 60 * 1000)
                 songDao.updateSong(
                     cachedSong?.copy(
                         cachedStreamUrl = streamUrl,
-                        cacheExpiry = expiry
+                        cacheExpiry = expiry,
                     ) ?: SongEntity(
                         id = songId,
                         title = "",
@@ -67,10 +72,17 @@ class SongRepositoryImpl @Inject constructor(
                         duration = 0,
                         thumbnailUrl = "",
                         cachedStreamUrl = streamUrl,
-                        cacheExpiry = expiry
+                        cacheExpiry = expiry,
                     )
                 )
             }
+    }
+
+    override suspend fun getStreamWithInfo(
+        songId: String,
+        quality: StreamQuality,
+    ): Result<Pair<String, AudioStreamInfo>> {
+        return audioStreamExtractor.extractAudioStream(songId, quality)
     }
 
     override suspend fun getNewReleases(limit: Int): Result<List<Song>> {
@@ -137,7 +149,12 @@ class SongRepositoryImpl @Inject constructor(
             album = album,
             albumId = albumId,
             duration = duration,
-            thumbnailUrl = thumbnailUrl,
+            // Force high-res thumbnail even if cache has low-res
+            thumbnailUrl = if (thumbnailUrl.contains("i.ytimg.com")) {
+                "https://i.ytimg.com/vi/$id/maxresdefault.jpg"
+            } else {
+                thumbnailUrl
+            },
             year = year,
             category = category,
             viewCount = viewCount,

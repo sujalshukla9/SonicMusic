@@ -306,7 +306,7 @@ class MediaNotificationProvider(
                 val request = ImageRequest.Builder(context)
                     .data(uri)
                     .allowHardware(false)
-                    .size(512, 512) // Good size for notification
+                    .size(1024, 1024) // Higher quality for lockscreen/media controls
                     .build()
                 
                 val result = loader.execute(request)

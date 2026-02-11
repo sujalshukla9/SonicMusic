@@ -20,7 +20,11 @@ class GetHomeContentUseCase @Inject constructor(
         return try {
             coroutineScope {
                 val listenAgainDeferred = async { 
-                    historyRepository.getRecentlyPlayedSongs(15) 
+                    try {
+                        historyRepository.getRecentlyPlayedSongs(30).first()
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
                 }
                 val quickPicksDeferred = async { 
                     recommendationRepository.getQuickPicks(20) 
@@ -37,19 +41,24 @@ class GetHomeContentUseCase @Inject constructor(
                 val artistsDeferred = async { 
                     recommendationRepository.getTopArtistSongs(8) 
                 }
-                // NEW: Fetch personalized recommendations based on user taste
+                // Fetch personalized recommendations based on user taste
                 val personalizedDeferred = async {
                     userTasteRepository.getPersonalizedMix(20)
                 }
+                // Fetch forgotten favorites (songs played often but not recently)
+                val forgottenDeferred = async {
+                    recommendationRepository.getForgottenFavorites(15)
+                }
 
                 // Wait for all results
-                val listenAgain = listenAgainDeferred.await().first()
+                val listenAgain = listenAgainDeferred.await()
                 val quickPicks = quickPicksDeferred.await()
                 val newReleases = newReleasesDeferred.await()
                 val trending = trendingDeferred.await()
                 val englishHits = englishHitsDeferred.await()
                 val artists = artistsDeferred.await()
                 val personalized = personalizedDeferred.await()
+                val forgotten = forgottenDeferred.await()
 
                 // Convert history to songs
                 val listenAgainSongs = listenAgain.map { history ->
@@ -66,6 +75,7 @@ class GetHomeContentUseCase @Inject constructor(
                     HomeContent(
                         listenAgain = listenAgainSongs,
                         quickPicks = quickPicks.getOrNull() ?: emptyList(),
+                        forgottenFavorites = forgotten.getOrNull() ?: emptyList(),
                         newReleases = newReleases.getOrNull() ?: emptyList(),
                         trending = trending.getOrNull() ?: emptyList(),
                         englishHits = englishHits.getOrNull() ?: emptyList(),

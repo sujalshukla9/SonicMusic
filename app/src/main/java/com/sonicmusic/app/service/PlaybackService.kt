@@ -18,6 +18,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
@@ -28,7 +29,7 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.google.common.collect.ImmutableList
 import com.sonicmusic.app.R
-import com.sonicmusic.app.domain.usecase.EqualizerManager
+
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -57,8 +58,7 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class PlaybackService : MediaSessionService() {
     
-    @Inject
-    lateinit var equalizerManager: EqualizerManager
+
     
     @Inject
     lateinit var audioEngine: AudioEngine
@@ -125,16 +125,21 @@ class PlaybackService : MediaSessionService() {
     
     private fun initializePlayer() {
         // Build ExoPlayer with proper audio configuration and buffer settings
-        player = ExoPlayer.Builder(this)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .setUsage(C.USAGE_MEDIA)
-                    .build(),
-                true // Handle audio focus automatically
-            )
-            .setHandleAudioBecomingNoisy(true) // Pause on headphone disconnect
-            .setWakeMode(C.WAKE_MODE_LOCAL) // Keep CPU awake during playback
+            // Apple Music-style Audio Attributes
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                .setUsage(C.USAGE_MEDIA)
+                .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
+                .build()
+
+            player = ExoPlayer.Builder(this)
+                .setAudioAttributes(audioAttributes, true)
+                .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_NETWORK)
+                .setRenderersFactory(
+                    DefaultRenderersFactory(this)
+                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                )
             .setLoadControl(
                 androidx.media3.exoplayer.DefaultLoadControl.Builder()
                     .setBufferDurationsMs(
@@ -151,8 +156,7 @@ class PlaybackService : MediaSessionService() {
                 // Set up player listener for state changes
                 addListener(createPlayerListener())
                 
-                // Initialize equalizer with audio session ID
-                equalizerManager.init(audioSessionId)
+
                 
                 // Initialize premium audio engine
                 audioEngine.initialize(audioSessionId)
@@ -356,7 +360,7 @@ class PlaybackService : MediaSessionService() {
             player.release()
             release()
         }
-        equalizerManager.release()
+
         audioEngine.release()
         player = null
         mediaSession = null

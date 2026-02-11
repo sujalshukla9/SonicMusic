@@ -2,8 +2,8 @@ package com.sonicmusic.app.data.repository
 
 import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
 import com.sonicmusic.app.data.local.entity.PlaybackHistoryEntity
-import com.sonicmusic.app.data.local.entity.SongEntity
 import com.sonicmusic.app.domain.model.PlaybackHistory
+import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -27,13 +27,12 @@ class HistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun recordPlayback(songId: String, playDuration: Int, completed: Boolean) {
-        // TODO: Fetch song details from database or API
+    override suspend fun recordPlayback(song: Song, playDuration: Int, completed: Boolean) {
         val entity = PlaybackHistoryEntity(
-            songId = songId,
-            title = "", // TODO: Get from SongRepository
-            artist = "",
-            thumbnailUrl = "",
+            songId = song.id,
+            title = song.title,
+            artist = song.artist,
+            thumbnailUrl = song.thumbnailUrl,
             playedAt = System.currentTimeMillis(),
             playDuration = playDuration,
             completed = completed

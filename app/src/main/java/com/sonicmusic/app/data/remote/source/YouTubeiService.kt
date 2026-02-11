@@ -3,6 +3,7 @@ package com.sonicmusic.app.data.remote.source
 import android.content.Context
 import android.telephony.TelephonyManager
 import android.util.Log
+import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -499,18 +500,68 @@ class YouTubeiService @Inject constructor(
             }
             
             if (title.isEmpty()) return null
-            
+
+            // Detect content type from title and metadata
+            val contentType = detectContentType(title, artist, durationText)
+
+            // Skip non-music content (videos, podcasts, live streams)
+            if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
+                Log.d(TAG, "🎬 Skipping non-music content: $title ($contentType)")
+                return null
+            }
+
             return Song(
                 id = videoId,
                 title = title,
                 artist = cleanArtistName(artist),
                 duration = parseDuration(durationText),
                 thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-                category = "Music"
+                category = "Music",
+                contentType = contentType
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing music item", e)
             return null
+        }
+    }
+
+    /**
+     * Detect content type from title, artist, and duration
+     * ViTune-style detection to filter only music songs
+     */
+    private fun detectContentType(title: String, artist: String, durationText: String): ContentType {
+        val titleLower = title.lowercase()
+        val artistLower = artist.lowercase()
+        val durationSeconds = parseDuration(durationText)
+
+        // Check for explicit content type indicators in title
+        return when {
+            // Live streams
+            titleLower.contains("live") && (titleLower.contains("now") || titleLower.contains("streaming")) -> ContentType.LIVE_STREAM
+            titleLower.contains("🔴") || titleLower.contains("livestream") -> ContentType.LIVE_STREAM
+
+            // Podcasts
+            titleLower.contains("podcast") || titleLower.contains("episode") -> ContentType.PODCAST
+            artistLower.contains("podcast") -> ContentType.PODCAST
+
+            // Shorts
+            titleLower.contains("#shorts") || titleLower.contains("shorts") -> ContentType.SHORT
+            durationSeconds in 1..59 -> ContentType.SHORT  // Less than 1 minute = short
+
+            // Full albums
+            titleLower.contains("full album") || titleLower.contains("complete album") -> ContentType.ALBUM
+            durationSeconds > 1800 -> ContentType.ALBUM  // More than 30 minutes = album
+
+            // Music videos (visual content)
+            titleLower.contains("official video") || titleLower.contains("music video") -> ContentType.VIDEO
+            titleLower.contains("(video)") || titleLower.contains("[video]") -> ContentType.VIDEO
+            titleLower.contains("vevo") && (titleLower.contains("video") || titleLower.contains("official")) -> ContentType.VIDEO
+
+            // Regular songs (1-10 minutes, no video indicators)
+            durationSeconds in 60..600 -> ContentType.SONG
+
+            // Unknown - will be filtered later by duration
+            else -> ContentType.UNKNOWN
         }
     }
     
@@ -578,31 +629,39 @@ class YouTubeiService @Inject constructor(
             val renderer = item.optJSONObject("videoRenderer")
                 ?: item.optJSONObject("compactVideoRenderer")
                 ?: return null
-            
+
             val videoId = renderer.optString("videoId", "")
             if (videoId.isEmpty()) return null
-            
+
             val title = extractText(renderer.optJSONObject("title"))
             if (title.isEmpty()) return null
-            
+
             val artist = extractText(renderer.optJSONObject("ownerText"))
                 .ifEmpty { extractText(renderer.optJSONObject("shortBylineText")) }
-            
+
             val durationText = renderer.optJSONObject("lengthText")?.optString("simpleText", "0:00") ?: "0:00"
-            
+
+            // Detect content type and filter non-music
+            val contentType = detectContentType(title, artist, durationText)
+            if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
+                Log.d(TAG, "🎬 Filtering non-music from regular YouTube: $title ($contentType)")
+                return null
+            }
+
             val thumbnails = renderer.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
             var thumbnailUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
             if (thumbnails != null && thumbnails.length() > 0) {
                 thumbnailUrl = thumbnails.optJSONObject(thumbnails.length() - 1)?.optString("url", thumbnailUrl) ?: thumbnailUrl
             }
-            
+
             return Song(
                 id = videoId,
                 title = title,
                 artist = cleanArtistName(artist),
                 duration = parseDuration(durationText),
                 thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-                category = "Music"
+                category = "Music",
+                contentType = contentType
             )
         } catch (e: Exception) {
             return null
@@ -797,7 +856,109 @@ class YouTubeiService @Inject constructor(
         // Use specific search for English songs with current year
         searchSongs("top English songs 2024 trending", limit)
     }
-    
+
+    /**
+     * Get real-time autocomplete suggestions from YouTube Music
+     * Uses the music/get_search_suggestions endpoint
+     */
+    suspend fun getSearchSuggestions(query: String): Result<List<String>> = withContext(Dispatchers.IO) {
+        try {
+            val requestBody = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240101.01.00")
+                        put("hl", DEFAULT_LANGUAGE)
+                        put("gl", DEFAULT_REGION)
+                    })
+                })
+                put("input", query)
+            }
+
+            val request = Request.Builder()
+                .url("$YOUTUBE_MUSIC_BASE/music/get_search_suggestions?key=$YOUTUBE_MUSIC_API_KEY&prettyPrint=false")
+                .post(requestBody.toString().toRequestBody(jsonMediaType))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+
+            val response = client.newCall(request).execute()
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("Suggestions failed: ${response.code}"))
+            }
+
+            val responseBody = response.body?.string()
+            if (responseBody.isNullOrEmpty()) {
+                return@withContext Result.success(emptyList())
+            }
+
+            val suggestions = parseSearchSuggestions(responseBody)
+            Result.success(suggestions.take(8))
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Search suggestions error", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Parse YouTube Music search suggestions response
+     */
+    private fun parseSearchSuggestions(jsonString: String): List<String> {
+        val suggestions = mutableListOf<String>()
+
+        try {
+            val json = JSONObject(jsonString)
+            val contents = json.optJSONObject("contents") ?: return suggestions
+
+            // Try searchSuggestionsSectionRenderer path
+            val sections = contents.optJSONArray("searchSuggestionsSectionRenderer")
+                ?: contents.optJSONObject("searchSuggestionsSectionRenderer")
+                    ?.optJSONArray("contents")
+
+            if (sections != null) {
+                for (i in 0 until sections.length()) {
+                    val item = sections.optJSONObject(i) ?: continue
+
+                    // searchSuggestionRenderer contains the suggestion text
+                    val suggestionRenderer = item.optJSONObject("searchSuggestionRenderer")
+                    if (suggestionRenderer != null) {
+                        val runs = suggestionRenderer.optJSONObject("suggestion")
+                            ?.optJSONArray("runs")
+                        if (runs != null) {
+                            val text = StringBuilder()
+                            for (r in 0 until runs.length()) {
+                                text.append(runs.optJSONObject(r)?.optString("text", "") ?: "")
+                            }
+                            val suggestion = text.toString().trim()
+                            if (suggestion.isNotEmpty()) {
+                                suggestions.add(suggestion)
+                            }
+                        }
+                    }
+
+                    // musicResponsiveListItemRenderer for entity suggestions
+                    val musicItem = item.optJSONObject("musicResponsiveListItemRenderer")
+                    if (musicItem != null) {
+                        val flexColumns = musicItem.optJSONArray("flexColumns")
+                        if (flexColumns != null && flexColumns.length() > 0) {
+                            val text = extractMusicText(flexColumns.optJSONObject(0))
+                            if (text.isNotEmpty()) {
+                                suggestions.add(text)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing suggestions", e)
+        }
+
+        return suggestions.distinct()
+    }
+
     /**
      * Parse charts browse response
      */
@@ -957,13 +1118,22 @@ class YouTubeiService @Inject constructor(
                         ?.optString("url", thumbnailUrl) ?: thumbnailUrl
                 }
                 
+                // Detect content type (assume SONG since from YouTube Music browse)
+                val contentType = detectContentType(title, artist, "3:00") // Default 3 min
+
+                if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
+                    Log.d(TAG, "🎬 Filtering non-music from browse: $title ($contentType)")
+                    return null
+                }
+
                 return Song(
                     id = videoId,
                     title = title,
                     artist = cleanArtistName(artist),
                     duration = 0,
                     thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-                    category = "Music"
+                    category = "Music",
+                    contentType = contentType
                 )
             }
         } catch (e: Exception) {
@@ -1023,6 +1193,67 @@ class YouTubeiService @Inject constructor(
             Result.success(queueItems)
         } catch (e: Exception) {
             Log.e(TAG, "❌ Get Up Next error", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Get Radio Mix (RDAMVM) from YouTube Music
+     * This creates a proper "Radio" station based on the song
+     */
+    suspend fun getRadioMix(videoId: String): Result<List<Song>> = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "📻 Fetching Radio Mix for: $videoId")
+            
+            // RDAMVM is the prefix for "Radio Mix" playlists in YouTube Music
+            // It stands for "Radio Mix" + videoId
+            val playlistId = "RDAMVM$videoId"
+            
+            val requestBody = JSONObject().apply {
+                put("context", JSONObject().apply {
+                    put("client", JSONObject().apply {
+                        put("clientName", "WEB_REMIX")
+                        put("clientVersion", "1.20240101.01.00")
+                        put("hl", DEFAULT_LANGUAGE)
+                        put("gl", DEFAULT_REGION)
+                    })
+                })
+                put("playlistId", playlistId)
+                put("isAudioOnly", true)
+            }
+            
+            val request = Request.Builder()
+                .url("$YOUTUBE_MUSIC_BASE/next?key=$YOUTUBE_MUSIC_API_KEY")
+                .post(requestBody.toString().toRequestBody(jsonMediaType))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .build()
+            
+            val response = client.newCall(request).execute()
+            
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("Failed: ${response.code}"))
+            }
+
+            val responseBody = response.body?.string() ?: return@withContext Result.failure(Exception("Empty response"))
+            val json = JSONObject(responseBody)
+            
+            // Parse queue from playlistPanelRenderer (same structure as Up Next)
+            val queueItems = parseQueueResponse(json)
+            
+            // Filter out the seed song if it appears first
+            val filteredItems = if (queueItems.isNotEmpty() && queueItems[0].id == videoId) {
+                queueItems.drop(1)
+            } else {
+                queueItems
+            }
+            
+            Log.d(TAG, "✅ Got ${filteredItems.size} songs from Radio Mix")
+            Result.success(filteredItems)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Get Radio Mix error", e)
             Result.failure(e)
         }
     }
@@ -1127,32 +1358,29 @@ class YouTubeiService @Inject constructor(
      * - i.ytimg.com with size parameters
      */
     private fun upgradeThumbQuality(url: String, videoId: String): String {
-        // For standard YouTube thumbnail URLs, always use maxresdefault
+        // For standard YouTube thumbnail URLs, use hq720 (720p, always available)
+        // maxresdefault.jpg doesn't exist for all videos and falls back to a blurry 120x90 image
         if (url.contains("i.ytimg.com/vi/")) {
-            return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+            return "https://i.ytimg.com/vi/$videoId/hq720.jpg"
+        }
+        if (url.isEmpty()) return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+        
+        // If it's a googleusercontent URL (YouTube Music)
+        if (url.contains("googleusercontent.com")) {
+            // Replace size params (w120-h120, s120, etc.) with w544-h544 (standard high quality for Music)
+            // or remove params to get original (=s0)
+            return url.replace(Regex("=[wsh][0-9]+.*"), "=w1080-h1080-l90-rj") 
         }
         
-        // For Google user content URLs (YouTube Music thumbnails)
-        // Remove size restrictions (w=, h=, s=) and add maximum size
-        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.googleusercontent.com")) {
-            // Remove existing size params and add max size
-            val baseUrl = url.split("=")[0]
-            return "$baseUrl=w1280-h720-l90-rj" // Max quality params
+        // If it's a ytimg URL
+        if (url.contains("ytimg.com")) {
+            // Force maxresdefault
+            if (url.contains("hqdefault") || url.contains("mqdefault") || url.contains("sddefault")) {
+                return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+            }
         }
         
-        // For i.ytimg.com URLs with different patterns
-        if (url.contains("i.ytimg.com")) {
-            // Remove any size parameters
-            val cleanUrl = url.replace(Regex("[?&](w|h|sqp|rs)=[^&]*"), "")
-            return cleanUrl
-                .replace("hqdefault", "maxresdefault")
-                .replace("mqdefault", "maxresdefault")
-                .replace("sddefault", "maxresdefault")
-                .replace("default", "maxresdefault")
-        }
-        
-        // For any other URLs, try to get the video ID and construct max quality URL
-        return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+        return url
     }
 
     private fun parseDuration(durationText: String): Int {

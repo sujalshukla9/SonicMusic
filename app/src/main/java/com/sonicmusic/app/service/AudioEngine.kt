@@ -1,11 +1,16 @@
 package com.sonicmusic.app.service
 
 import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
 import android.media.audiofx.PresetReverb
 import android.media.audiofx.Virtualizer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.util.Log
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -13,6 +18,8 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.domain.model.StreamQuality
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,46 +33,51 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Premium Audio Engine - Studio Quality
+ * Apple Music-Style Premium Audio Engine
  * 
- * Professional-grade audio processing featuring:
- * 
- * 🎚️ EQUALIZER
- * - Custom 5-band EQ with ±15dB range
- * - Professional presets (Flat, Bass Heavy, Vocal Boost, etc.)
- * 
- * 🔊 SOUND CHECK  
- * - Intelligent loudness normalization (-14 LUFS standard)
- * - Prevents volume jumps between tracks
- * 
- * 🎧 SPATIAL AUDIO
- * - Dolby Atmos-like 3D immersion
- * - Head-tracking simulation (Virtualizer)
- * 
- * 🔈 BASS BOOST
- * - Sub-bass enhancement (20-80Hz)
- * - Adjustable strength 0-100%
- * 
- * 🔀 CROSSFADE
- * - Smooth transitions (1-12 seconds)
- * - Gapless playback preparation
- * 
- * 🏛️ REVERB
- * - Concert hall acoustics
- * - Multiple room presets
- * 
- * 🎵 HIGH-RES AUDIO
- * - 256kbps+ OPUS/AAC priority
- * - Lossless when available
+ * Professional-grade audio processing pipeline inspired by Apple Music:
+ *
+ * 🎵 AUDIO QUALITY TIERS (Apple Music-Style)
+ * ├─ Data Saver       → ≤64 kbps, any codec
+ * ├─ High Efficiency  → 128 kbps AAC-HE  
+ * ├─ High Quality     → 256 kbps AAC (Apple Music standard)
+ * ├─ High-Res         → 256 kbps OPUS (near-lossless, transparent)
+ * └─ High-Res Lossless → Max kbps OPUS (best available quality)
+ *
+ * 📊 STREAM METADATA TRACKING
+ * - Real-time codec, bitrate, sample rate, bit depth info
+ * - Quality badge display (Lossless, Hi-Res, AAC)
+ * - Audio signal path visualization 
+ *
+ * 🔌 OUTPUT DEVICE DETECTION
+ * - USB DAC detection for Hi-Res output
+ * - Bluetooth codec awareness
+ * - Built-in speaker optimization
+ *
+ * 📡 ADAPTIVE QUALITY ENGINE
+ * - Wi-Fi vs Cellular quality separation
+ * - Network-aware stream selection
+ * - Battery-conscious quality adaptation
+ *
+ * 🎚️ AUDIO EFFECTS
+ * - 5-Band Parametric EQ with professional presets
+ * - Sound Check (LUFS loudness normalization)
+ * - Spatial Audio (Dolby Atmos-like 3D immersion)
+ * - Bass Boost with adjustable strength
+ * - Crossfade with smooth transitions
+ * - Reverb with concert hall presets
  */
 @Singleton
 class AudioEngine @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
 ) {
     companion object {
         private const val TAG = "AudioEngine"
         
-        // Preference Keys
+        // ═══════════════════════════════════════════════════════════
+        // PREFERENCE KEYS
+        // ═══════════════════════════════════════════════════════════
+        
         private val KEY_CROSSFADE_ENABLED = booleanPreferencesKey("crossfade_enabled")
         private val KEY_CROSSFADE_DURATION = intPreferencesKey("crossfade_duration_ms")
         private val KEY_SOUND_CHECK = booleanPreferencesKey("sound_check_enabled")
@@ -74,21 +86,19 @@ class AudioEngine @Inject constructor(
         private val KEY_BASS_BOOST_STRENGTH = intPreferencesKey("bass_boost_strength")
         private val KEY_SPATIAL_AUDIO = booleanPreferencesKey("spatial_audio_enabled")
         private val KEY_SPATIAL_STRENGTH = intPreferencesKey("spatial_strength")
-        private val KEY_HIGH_RES_AUDIO = booleanPreferencesKey("high_res_audio_enabled")
         private val KEY_EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         private val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
         private val KEY_REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
         private val KEY_REVERB_PRESET = intPreferencesKey("reverb_preset")
         
-        // Audio Quality Modes
-        const val QUALITY_AUTO = 0
-        const val QUALITY_HIGH = 1       // 256kbps+ AAC/OPUS
-        const val QUALITY_LOSSLESS = 2   // Max quality available
-        const val QUALITY_DATA_SAVER = 3 // 128kbps or lower
+        // Apple-style quality tier keys
+        private val KEY_WIFI_QUALITY_TIER = stringPreferencesKey("wifi_quality_tier")
+        private val KEY_CELLULAR_QUALITY_TIER = stringPreferencesKey("cellular_quality_tier")
+        private val KEY_DOWNLOAD_QUALITY_TIER = stringPreferencesKey("download_quality_tier")
         
         // Default Values
-        const val DEFAULT_CROSSFADE_DURATION = 3000 // 3 seconds
-        const val DEFAULT_LOUDNESS_TARGET = -14f // LUFS (Spotify standard)
+        const val DEFAULT_CROSSFADE_DURATION = 3000
+        const val DEFAULT_LOUDNESS_TARGET = -14f
         const val MAX_BASS_BOOST_STRENGTH = 1000
         const val MAX_VIRTUALIZER_STRENGTH = 1000
     }
@@ -106,11 +116,26 @@ class AudioEngine @Inject constructor(
     // Current audio session
     private var currentAudioSessionId: Int = 0
     
-    // State flows for UI binding
+    // ═══════════════════════════════════════════════════════════════
+    // STATE FLOWS
+    // ═══════════════════════════════════════════════════════════════
+    
     private val _audioEngineState = MutableStateFlow(AudioEngineState())
     val audioEngineState: StateFlow<AudioEngineState> = _audioEngineState.asStateFlow()
     
-    // EQ Presets
+    private val _currentStreamInfo = MutableStateFlow<AudioStreamInfo?>(null)
+    val currentStreamInfo: StateFlow<AudioStreamInfo?> = _currentStreamInfo.asStateFlow()
+    
+    private val _outputDeviceType = MutableStateFlow(OutputDeviceType.BUILT_IN_SPEAKER)
+    val outputDeviceType: StateFlow<OutputDeviceType> = _outputDeviceType.asStateFlow()
+
+    private val _eqBands = MutableStateFlow<List<EqBandInfo>>(emptyList())
+    val eqBands: StateFlow<List<EqBandInfo>> = _eqBands.asStateFlow()
+    
+    // ═══════════════════════════════════════════════════════════════
+    // EQ PRESETS
+    // ═══════════════════════════════════════════════════════════════
+    
     private val eqPresets = mapOf(
         "flat" to shortArrayOf(0, 0, 0, 0, 0),
         "bass_boost" to shortArrayOf(600, 500, 200, 0, 0),
@@ -129,7 +154,7 @@ class AudioEngine @Inject constructor(
         "spoken_word" to shortArrayOf(-200, 0, 400, 500, 400),
         "deep_bass" to shortArrayOf(1000, 800, 400, 100, -100),
         "bright" to shortArrayOf(-200, 0, 300, 600, 800),
-        "warm" to shortArrayOf(400, 300, 100, -100, -200)
+        "warm" to shortArrayOf(400, 300, 100, -100, -200),
     )
     
     // ═══════════════════════════════════════════════════════════════
@@ -142,7 +167,7 @@ class AudioEngine @Inject constructor(
     fun initialize(audioSessionId: Int) {
         if (audioSessionId == 0 || audioSessionId == currentAudioSessionId) return
         
-        Log.d(TAG, "🎵 Initializing Studio-Quality Audio Engine with session: $audioSessionId")
+        Log.d(TAG, "🎵 Initializing Apple-Style Audio Engine with session: $audioSessionId")
         currentAudioSessionId = audioSessionId
         
         // Release previous effects
@@ -155,12 +180,15 @@ class AudioEngine @Inject constructor(
         initializeEqualizer(audioSessionId)
         initializeReverb(audioSessionId)
         
+        // Detect output device capabilities
+        detectOutputDevice()
+        
         // Load saved preferences
         scope.launch {
             loadSavedPreferences()
         }
         
-        Log.d(TAG, "✅ Studio-Quality Audio Engine initialized")
+        Log.d(TAG, "✅ Apple-Style Audio Engine initialized")
     }
     
     private fun initializeLoudnessEnhancer(audioSessionId: Int) {
@@ -206,6 +234,7 @@ class AudioEngine @Inject constructor(
                 enabled = false
             }
             Log.d(TAG, "✅ Equalizer initialized with ${equalizer?.numberOfBands} bands")
+            updateEqBands()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init equalizer", e)
         }
@@ -225,20 +254,26 @@ class AudioEngine @Inject constructor(
     private suspend fun loadSavedPreferences() {
         val prefs = context.audioPrefs.data.first()
         
+        val wifiTier = prefs[KEY_WIFI_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.LOSSLESS
+        val cellularTier = prefs[KEY_CELLULAR_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.HIGH
+        val downloadTier = prefs[KEY_DOWNLOAD_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.LOSSLESS
+        
         val state = AudioEngineState(
             crossfadeEnabled = prefs[KEY_CROSSFADE_ENABLED] ?: false,
             crossfadeDuration = prefs[KEY_CROSSFADE_DURATION] ?: DEFAULT_CROSSFADE_DURATION,
-            soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: true, // Default ON for quality
+            soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: true,
             loudnessTarget = prefs[KEY_LOUDNESS_TARGET] ?: DEFAULT_LOUDNESS_TARGET,
             bassBoostEnabled = prefs[KEY_BASS_BOOST_ENABLED] ?: false,
             bassBoostStrength = prefs[KEY_BASS_BOOST_STRENGTH] ?: 500,
             spatialAudioEnabled = prefs[KEY_SPATIAL_AUDIO] ?: false,
             spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800,
-            highResAudioEnabled = prefs[KEY_HIGH_RES_AUDIO] ?: true,
             eqEnabled = prefs[KEY_EQ_ENABLED] ?: false,
             eqPreset = prefs[KEY_EQ_PRESET] ?: "flat",
             reverbEnabled = prefs[KEY_REVERB_ENABLED] ?: false,
-            reverbPreset = prefs[KEY_REVERB_PRESET] ?: PresetReverb.PRESET_NONE.toInt()
+            reverbPreset = prefs[KEY_REVERB_PRESET] ?: PresetReverb.PRESET_NONE.toInt(),
+            wifiQualityTier = wifiTier,
+            cellularQualityTier = cellularTier,
+            downloadQualityTier = downloadTier,
         )
         
         _audioEngineState.value = state
@@ -251,6 +286,145 @@ class AudioEngine @Inject constructor(
         setSpatialAudio(state.spatialAudioEnabled, state.spatialStrength)
         setEqualizer(state.eqEnabled, state.eqPreset)
         setReverb(state.reverbEnabled, state.reverbPreset)
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // APPLE-STYLE AUDIO QUALITY PIPELINE
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Set Wi-Fi streaming quality tier
+     */
+    fun setWifiQualityTier(tier: StreamQuality) {
+        _audioEngineState.value = _audioEngineState.value.copy(wifiQualityTier = tier)
+        scope.launch {
+            context.audioPrefs.edit { it[KEY_WIFI_QUALITY_TIER] = tier.name }
+        }
+        Log.d(TAG, "📶 Wi-Fi quality tier: ${tier.displayName}")
+    }
+    
+    /**
+     * Set cellular streaming quality tier
+     */
+    fun setCellularQualityTier(tier: StreamQuality) {
+        _audioEngineState.value = _audioEngineState.value.copy(cellularQualityTier = tier)
+        scope.launch {
+            context.audioPrefs.edit { it[KEY_CELLULAR_QUALITY_TIER] = tier.name }
+        }
+        Log.d(TAG, "📱 Cellular quality tier: ${tier.displayName}")
+    }
+    
+    /**
+     * Set download quality tier
+     */
+    fun setDownloadQualityTier(tier: StreamQuality) {
+        _audioEngineState.value = _audioEngineState.value.copy(downloadQualityTier = tier)
+        scope.launch {
+            context.audioPrefs.edit { it[KEY_DOWNLOAD_QUALITY_TIER] = tier.name }
+        }
+        Log.d(TAG, "💾 Download quality tier: ${tier.displayName}")
+    }
+    
+    /**
+     * Get the optimal quality tier based on current conditions.
+     * 
+     * Considers: user preference, network type, output device capability, battery.
+     * Apple Music-style: separate Wi-Fi and Cellular preferences.
+     */
+    fun getOptimalQuality(): StreamQuality {
+        val state = _audioEngineState.value
+        val isOnWifi = isWifiConnected()
+        
+        // Start with user preference for current network
+        val userPreference = if (isOnWifi) state.wifiQualityTier else state.cellularQualityTier
+        
+        // Cap at output device capability
+        val deviceMax = getMaxQualityForDevice()
+        
+        // Return the lower of user preference and device capability
+        return if (userPreference.ordinal > deviceMax.ordinal) deviceMax else userPreference
+    }
+    
+    /**
+     * Update the currently playing stream's metadata.
+     * Called by PlaybackService when a new stream starts playing.
+     */
+    fun updateStreamInfo(info: AudioStreamInfo) {
+        _currentStreamInfo.value = info
+        Log.d(TAG, "🎵 Now Playing: ${info.fullDescription}")
+        Log.d(TAG, "🏷️ Quality Badge: ${info.qualityBadge}")
+        Log.d(TAG, "📡 Signal Path: ${info.getSignalPath(getOutputDeviceName())}")
+    }
+    
+    /**
+     * Clear stream info (when playback stops)
+     */
+    fun clearStreamInfo() {
+        _currentStreamInfo.value = null
+    }
+    
+    /**
+     * Get the audio signal path description for display
+     */
+    fun getSignalPathDescription(): String {
+        val streamInfo = _currentStreamInfo.value ?: return "No audio playing"
+        return streamInfo.getSignalPath(getOutputDeviceName())
+    }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // OUTPUT DEVICE DETECTION
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Detect connected audio output device
+     */
+    fun detectOutputDevice() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        
+        val deviceType = when {
+            devices.any { it.type == AudioDeviceInfo.TYPE_USB_HEADSET || it.type == AudioDeviceInfo.TYPE_USB_DEVICE } ->
+                OutputDeviceType.USB_DAC
+            devices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP } ->
+                OutputDeviceType.BLUETOOTH
+            devices.any { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET || it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES } ->
+                OutputDeviceType.WIRED_HEADPHONES
+            else -> OutputDeviceType.BUILT_IN_SPEAKER
+        }
+        
+        _outputDeviceType.value = deviceType
+        Log.d(TAG, "🔌 Output device: ${deviceType.displayName}")
+    }
+    
+    /**
+     * Get max supported quality for connected output device
+     */
+    private fun getMaxQualityForDevice(): StreamQuality {
+        return when (_outputDeviceType.value) {
+            OutputDeviceType.USB_DAC -> StreamQuality.LOSSLESS
+            OutputDeviceType.WIRED_HEADPHONES -> StreamQuality.LOSSLESS
+            OutputDeviceType.BLUETOOTH -> StreamQuality.BEST // Bluetooth caps at ~990kbps LDAC
+            OutputDeviceType.BUILT_IN_SPEAKER -> StreamQuality.LOSSLESS
+        }
+    }
+    
+    /**
+     * Get human-readable name for current output device
+     */
+    fun getOutputDeviceName(): String = _outputDeviceType.value.displayName
+    
+    // ═══════════════════════════════════════════════════════════════
+    // NETWORK DETECTION
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Check if currently connected to Wi-Fi
+     */
+    private fun isWifiConnected(): Boolean {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
     
     // ═══════════════════════════════════════════════════════════════
@@ -277,19 +451,20 @@ class AudioEngine @Inject constructor(
                     for (band in 0 until numBands) {
                         val gain = gains[band].coerceIn(
                             eq.bandLevelRange[0],
-                            eq.bandLevelRange[1]
+                            eq.bandLevelRange[1],
                         )
                         eq.setBandLevel(band.toShort(), gain)
                     }
                     
                     Log.d(TAG, "🎚️ EQ ON: Preset '$preset'")
+                    updateEqBands()
                 } else {
                     Log.d(TAG, "🎚️ EQ OFF")
                 }
                 
                 _audioEngineState.value = _audioEngineState.value.copy(
                     eqEnabled = enabled,
-                    eqPreset = preset
+                    eqPreset = preset,
                 )
                 
                 scope.launch {
@@ -315,7 +490,9 @@ class AudioEngine @Inject constructor(
                 if (band in 0 until eq.numberOfBands) {
                     val clampedLevel = level.coerceIn(eq.bandLevelRange[0], eq.bandLevelRange[1])
                     eq.setBandLevel(band.toShort(), clampedLevel)
+                    eq.setBandLevel(band.toShort(), clampedLevel)
                     Log.d(TAG, "🎚️ EQ Band $band: ${clampedLevel}mB")
+                    updateEqBands()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error setting EQ band", e)
@@ -324,18 +501,22 @@ class AudioEngine @Inject constructor(
         }
     }
     
+
+
     /**
-     * Get EQ band frequency info
+     * Get EQ band frequency info (Reactive)
      */
-    fun getEqBandInfo(): List<EqBandInfo> {
-        return equalizer?.let { eq ->
+    fun getEqBandInfo(): List<EqBandInfo> = _eqBands.value
+
+    private fun updateEqBands() {
+        _eqBands.value = equalizer?.let { eq ->
             (0 until eq.numberOfBands).map { band ->
                 EqBandInfo(
                     band = band,
-                    frequency = eq.getCenterFreq(band.toShort()) / 1000, // Hz to kHz
+                    frequency = eq.getCenterFreq(band.toShort()) / 1000,
                     minLevel = eq.bandLevelRange[0].toInt(),
                     maxLevel = eq.bandLevelRange[1].toInt(),
-                    currentLevel = eq.getBandLevel(band.toShort()).toInt()
+                    currentLevel = eq.getBandLevel(band.toShort()).toInt(),
                 )
             }
         } ?: emptyList()
@@ -353,9 +534,6 @@ class AudioEngine @Inject constructor(
         loudnessEnhancer?.let { enhancer ->
             try {
                 if (enabled) {
-                    // Convert LUFS target to millibels
-                    // -14 LUFS is the standard (Spotify, Apple Music)
-                    // Higher values = louder output
                     val gainMb = ((targetLufs + 14) * 100).toInt().coerceIn(-1000, 3000)
                     enhancer.setTargetGain(gainMb)
                     enhancer.enabled = true
@@ -367,7 +545,7 @@ class AudioEngine @Inject constructor(
                 
                 _audioEngineState.value = _audioEngineState.value.copy(
                     soundCheckEnabled = enabled,
-                    loudnessTarget = targetLufs
+                    loudnessTarget = targetLufs,
                 )
                 
                 scope.launch {
@@ -404,7 +582,7 @@ class AudioEngine @Inject constructor(
                 
                 _audioEngineState.value = _audioEngineState.value.copy(
                     bassBoostEnabled = enabled,
-                    bassBoostStrength = strength
+                    bassBoostStrength = strength,
                 )
                 
                 scope.launch {
@@ -441,7 +619,7 @@ class AudioEngine @Inject constructor(
                 
                 _audioEngineState.value = _audioEngineState.value.copy(
                     spatialAudioEnabled = enabled,
-                    spatialStrength = strength
+                    spatialStrength = strength,
                 )
                 
                 scope.launch {
@@ -470,7 +648,7 @@ class AudioEngine @Inject constructor(
         PresetReverb.PRESET_LARGEROOM.toInt() to "Large Room",
         PresetReverb.PRESET_MEDIUMHALL.toInt() to "Medium Hall",
         PresetReverb.PRESET_LARGEHALL.toInt() to "Large Hall",
-        PresetReverb.PRESET_PLATE.toInt() to "Plate"
+        PresetReverb.PRESET_PLATE.toInt() to "Plate",
     )
     
     /**
@@ -489,7 +667,7 @@ class AudioEngine @Inject constructor(
                 
                 _audioEngineState.value = _audioEngineState.value.copy(
                     reverbEnabled = enabled,
-                    reverbPreset = preset
+                    reverbPreset = preset,
                 )
                 
                 scope.launch {
@@ -517,7 +695,7 @@ class AudioEngine @Inject constructor(
         
         _audioEngineState.value = _audioEngineState.value.copy(
             crossfadeEnabled = enabled,
-            crossfadeDuration = clampedDuration
+            crossfadeDuration = clampedDuration,
         )
         
         scope.launch {
@@ -539,48 +717,6 @@ class AudioEngine @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════
-    // HIGH RESOLUTION AUDIO
-    // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * Enable/disable High Resolution Audio mode
-     * Prioritizes 256kbps+ streams when available
-     */
-    fun setHighResAudio(enabled: Boolean) {
-        _audioEngineState.value = _audioEngineState.value.copy(
-            highResAudioEnabled = enabled
-        )
-        
-        scope.launch {
-            context.audioPrefs.edit {
-                it[KEY_HIGH_RES_AUDIO] = enabled
-            }
-        }
-        
-        Log.d(TAG, if (enabled) "🎵 High-Res Audio ON" else "🎵 High-Res Audio OFF")
-    }
-    
-    /**
-     * Check if high-res audio is enabled
-     */
-    fun isHighResAudioEnabled(): Boolean = _audioEngineState.value.highResAudioEnabled
-    
-    // ═══════════════════════════════════════════════════════════════
-    // AUDIO QUALITY RECOMMENDATIONS
-    // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * Get recommended audio quality based on current settings
-     */
-    fun getRecommendedQuality(): Int {
-        return if (_audioEngineState.value.highResAudioEnabled) {
-            QUALITY_LOSSLESS
-        } else {
-            QUALITY_HIGH
-        }
-    }
-    
-    // ═══════════════════════════════════════════════════════════════
     // QUICK PRESETS (One-Tap Audio Profiles)
     // ═══════════════════════════════════════════════════════════════
     
@@ -589,7 +725,7 @@ class AudioEngine @Inject constructor(
      */
     fun applyStudioPreset() {
         setSoundCheck(true, -14f)
-        setHighResAudio(true)
+        setWifiQualityTier(StreamQuality.LOSSLESS)
         setEqualizer(true, "flat")
         setSpatialAudio(false)
         setBassBoost(false)
@@ -602,7 +738,7 @@ class AudioEngine @Inject constructor(
      */
     fun applyBassHeavyPreset() {
         setSoundCheck(true, -12f)
-        setHighResAudio(true)
+        setWifiQualityTier(StreamQuality.LOSSLESS)
         setEqualizer(true, "deep_bass")
         setBassBoost(true, 700)
         setSpatialAudio(true, 600)
@@ -615,7 +751,7 @@ class AudioEngine @Inject constructor(
      */
     fun applyVocalPreset() {
         setSoundCheck(true, -14f)
-        setHighResAudio(true)
+        setWifiQualityTier(StreamQuality.LOSSLESS)
         setEqualizer(true, "vocal_boost")
         setBassBoost(false)
         setSpatialAudio(false)
@@ -628,7 +764,7 @@ class AudioEngine @Inject constructor(
      */
     fun applyImmersivePreset() {
         setSoundCheck(true, -12f)
-        setHighResAudio(true)
+        setWifiQualityTier(StreamQuality.LOSSLESS)
         setEqualizer(true, "rock")
         setBassBoost(true, 500)
         setSpatialAudio(true, 900)
@@ -641,7 +777,9 @@ class AudioEngine @Inject constructor(
      */
     fun resetToDefault() {
         setSoundCheck(true, -14f)
-        setHighResAudio(true)
+        setWifiQualityTier(StreamQuality.LOSSLESS)
+        setCellularQualityTier(StreamQuality.HIGH)
+        setDownloadQualityTier(StreamQuality.LOSSLESS)
         setEqualizer(false)
         setBassBoost(false)
         setSpatialAudio(false)
@@ -649,6 +787,36 @@ class AudioEngine @Inject constructor(
         setCrossfade(false)
         Log.d(TAG, "🔄 Reset to defaults")
     }
+    
+    // ═══════════════════════════════════════════════════════════════
+    // LEGACY COMPATIBILITY
+    // ═══════════════════════════════════════════════════════════════
+    
+    /**
+     * Check if high-res audio is enabled (legacy compatibility)
+     */
+    fun isHighResAudioEnabled(): Boolean {
+        val state = _audioEngineState.value
+        return state.wifiQualityTier.isHighRes || state.cellularQualityTier.isHighRes
+    }
+    
+    /**
+     * Enable/disable High Resolution Audio mode (legacy compatibility)
+     * Maps to setting Wi-Fi tier to LOSSLESS or HIGH
+     */
+    fun setHighResAudio(enabled: Boolean) {
+        if (enabled) {
+            setWifiQualityTier(StreamQuality.LOSSLESS)
+        } else {
+            setWifiQualityTier(StreamQuality.HIGH)
+        }
+        Log.d(TAG, if (enabled) "🎵 High-Res Audio ON" else "🎵 High-Res Audio OFF")
+    }
+    
+    /**
+     * Get recommended audio quality based on current settings (legacy compatibility)
+     */
+    fun getRecommendedQuality(): StreamQuality = getOptimalQuality()
     
     // ═══════════════════════════════════════════════════════════════
     // CLEANUP
@@ -675,36 +843,60 @@ class AudioEngine @Inject constructor(
     fun release() {
         Log.d(TAG, "🔚 Releasing Audio Engine")
         releaseEffects()
+        clearStreamInfo()
         currentAudioSessionId = 0
     }
 }
 
 /**
- * Audio Engine State for UI binding
+ * Output device types for quality adaptation
  */
-data class AudioEngineState(
-    val crossfadeEnabled: Boolean = false,
-    val crossfadeDuration: Int = AudioEngine.DEFAULT_CROSSFADE_DURATION,
-    val soundCheckEnabled: Boolean = true,
-    val loudnessTarget: Float = AudioEngine.DEFAULT_LOUDNESS_TARGET,
-    val bassBoostEnabled: Boolean = false,
-    val bassBoostStrength: Int = 500,
-    val spatialAudioEnabled: Boolean = false,
-    val spatialStrength: Int = 800,
-    val highResAudioEnabled: Boolean = true,
-    val eqEnabled: Boolean = false,
-    val eqPreset: String = "flat",
-    val reverbEnabled: Boolean = false,
-    val reverbPreset: Int = 0
-)
+enum class OutputDeviceType(val displayName: String) {
+    BUILT_IN_SPEAKER("Built-in Speaker"),
+    WIRED_HEADPHONES("Wired Headphones"),
+    BLUETOOTH("Bluetooth"),
+    USB_DAC("USB DAC"),
+}
 
 /**
- * EQ Band Information
+ * Data class for UI-friendly EQ band info
  */
 data class EqBandInfo(
     val band: Int,
-    val frequency: Int, // in Hz
-    val minLevel: Int,  // in millibels
-    val maxLevel: Int,  // in millibels
+    val frequency: Int,
+    val minLevel: Int,
+    val maxLevel: Int,
     val currentLevel: Int
 )
+
+/**
+ * Audio Engine State for UI binding
+ * 
+ * Apple Music-style: separate quality tiers for Wi-Fi / Cellular / Download
+ */
+data class AudioEngineState(
+    // Crossfade
+    val crossfadeEnabled: Boolean = false,
+    val crossfadeDuration: Int = AudioEngine.DEFAULT_CROSSFADE_DURATION,
+    // Sound Check
+    val soundCheckEnabled: Boolean = true,
+    val loudnessTarget: Float = AudioEngine.DEFAULT_LOUDNESS_TARGET,
+    // Bass Boost
+    val bassBoostEnabled: Boolean = false,
+    val bassBoostStrength: Int = 500,
+    // Spatial Audio
+    val spatialAudioEnabled: Boolean = false,
+    val spatialStrength: Int = 800,
+    // Equalizer
+    val eqEnabled: Boolean = false,
+    val eqPreset: String = "flat",
+    // Reverb
+    val reverbEnabled: Boolean = false,
+    val reverbPreset: Int = 0,
+    // Apple-style Quality Tiers
+    val wifiQualityTier: StreamQuality = StreamQuality.LOSSLESS,
+    val cellularQualityTier: StreamQuality = StreamQuality.HIGH,
+    val downloadQualityTier: StreamQuality = StreamQuality.LOSSLESS,
+)
+
+

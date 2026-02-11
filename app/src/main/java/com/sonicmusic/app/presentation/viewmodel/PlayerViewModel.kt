@@ -7,7 +7,7 @@ import com.sonicmusic.app.data.repository.QueueRepositoryImpl
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
-import com.sonicmusic.app.domain.usecase.EqualizerManager
+
 import com.sonicmusic.app.domain.usecase.SleepTimerManager
 import com.sonicmusic.app.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -43,15 +43,14 @@ class PlayerViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
     private val queueRepository: QueueRepositoryImpl,
-    val sleepTimerManager: SleepTimerManager,
-    val equalizerManager: EqualizerManager
+    val sleepTimerManager: SleepTimerManager
 ) : ViewModel() {
 
     companion object {
         private const val TAG = "PlayerViewModel"
         private const val MAX_URL_RETRY_ATTEMPTS = 3
         private const val URL_RETRY_DELAY_MS = 1500L
-        private const val RECOMMENDATION_BATCH_SIZE = 3 // Process in small batches for instant feel
+        private const val RECOMMENDATION_BATCH_SIZE = 5 // Increased for faster population
         private const val RECOMMENDATION_FETCH_LIMIT = 15
     }
 
@@ -104,9 +103,13 @@ class PlayerViewModel @Inject constructor(
         
         // Set up callback for infinite queue (ViTune-style)
         playerServiceConnection.setOnQueueNeedsMoreSongs { songId ->
+            Log.d(TAG, "📥 Queue callback triggered for: $songId")
+            Log.d(TAG, "   Infinite mode: ${_infiniteModeEnabled.value}, Is fetching: $isRecommendationFetching")
             if (_infiniteModeEnabled.value && !isRecommendationFetching) {
                 Log.d(TAG, "🎵 Queue requested more songs for: $songId")
                 fetchAndAddRecommendations(songId)
+            } else {
+                Log.d(TAG, "⚠️ Skipping recommendation fetch - infinite mode: ${_infiniteModeEnabled.value}, fetching: $isRecommendationFetching")
             }
         }
         
@@ -120,16 +123,25 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             currentSong.collect { song ->
                 song?.let {
-                    // Update like status
-                    _isLiked.value = songRepository.isLiked(it.id)
-                    
-                    // Mark previous songs as played (ViTune-style)
-                    // This prevents them from being recommended again
-                    val currentIndex = currentQueueIndex.value
-                    if (currentIndex > 0) {
-                        queue.value.take(currentIndex).forEach { playedSong ->
-                            queueRepository.markSongAsPlayed(playedSong.id)
+                    try {
+                        // Update like status
+                        _isLiked.value = songRepository.isLiked(it.id)
+                        
+                        // Mark previous songs as played (ViTune-style)
+                        // This prevents them from being recommended again
+                        val currentIndex = currentQueueIndex.value
+                        val currentQueue = queue.value
+                        if (currentIndex > 0 && currentIndex <= currentQueue.size) {
+                            currentQueue.take(currentIndex).forEach { playedSong ->
+                                try {
+                                    queueRepository.markSongAsPlayed(playedSong.id)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed to mark song as played: ${playedSong.id}")
+                                }
+                            }
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in current song observer", e)
                     }
                 }
             }
@@ -138,15 +150,23 @@ class PlayerViewModel @Inject constructor(
         // Sync queue state with repository
         viewModelScope.launch {
             queue.collect { songs ->
-                val index = currentQueueIndex.value
-                queueRepository.syncQueueState(songs, index)
+                try {
+                    val index = currentQueueIndex.value
+                    queueRepository.syncQueueState(songs, index)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error syncing queue state", e)
+                }
             }
         }
         
         // Sync current index with repository
         viewModelScope.launch {
             currentQueueIndex.collect { index ->
-                queueRepository.updateCurrentIndex(index)
+                try {
+                    queueRepository.updateCurrentIndex(index)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error updating current index", e)
+                }
             }
         }
     }
@@ -217,6 +237,9 @@ class PlayerViewModel @Inject constructor(
             _error.value = null
 
             var lastException: Exception? = null
+            
+            // Immediate UI feedback
+            playerServiceConnection.preparePlayback(song)
 
             // Retry loop for initial playback
             repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
@@ -347,16 +370,24 @@ class PlayerViewModel @Inject constructor(
 
     /**
      * Add a song to the queue
+     * ViTune-style: Only add if it's valid music content
      */
     fun addToQueue(song: Song) {
         viewModelScope.launch {
             try {
+                // Filter non-music content
+                if (!song.isValidMusicContent()) {
+                    Log.d(TAG, "🎬 Cannot add non-music content to queue: ${song.title} (${song.contentType})")
+                    _error.value = "Cannot add ${song.contentType.name.lowercase().replace('_', ' ')} to queue"
+                    return@launch
+                }
+
                 // Check if already in queue (ViTune-style duplicate prevention)
                 if (queueRepository.isSongQueued(song.id)) {
                     Log.d(TAG, "⚠️ Song already in queue: ${song.title}")
                     return@launch
                 }
-                
+
                 val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                 result.onSuccess { streamUrl ->
                     playerServiceConnection.addToQueue(song, streamUrl)
@@ -369,6 +400,27 @@ class PlayerViewModel @Inject constructor(
                 Log.e(TAG, "Error adding to queue", e)
             }
         }
+    }
+
+    /**
+     * Filter queue to show only music songs
+     * ViTune-style: Remove videos, podcasts, live streams, etc.
+     */
+    fun filterQueueToMusicOnly() {
+        viewModelScope.launch {
+            val removedCount = queueRepository.removeNonMusicContent()
+            if (removedCount > 0) {
+                Log.d(TAG, "🎬 Filtered $removedCount non-music items from queue")
+                // Queue will auto-update through StateFlow from repository
+            }
+        }
+    }
+
+    /**
+     * Check if current queue has non-music content
+     */
+    fun hasNonMusicContent(): Boolean {
+        return queueRepository.hasNonMusicContent()
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -459,16 +511,38 @@ class PlayerViewModel @Inject constructor(
     // EQUALIZER
     // ═══════════════════════════════════════════════════════════════
 
-    val equalizerEnabled = equalizerManager.enabled
-    val equalizerBands = equalizerManager.bands
-    val equalizerPresets = equalizerManager.presets
-    val currentPreset = equalizerManager.currentPreset
+    // ═══════════════════════════════════════════════════════════════
+    // AUDIO ENGINE & EQUALIZER
+    // ═══════════════════════════════════════════════════════════════
 
-    fun setEqualizerEnabled(enabled: Boolean) = equalizerManager.setEnabled(enabled)
+    // Expose Audio Engine State
+    val audioEngineState = playerServiceConnection.audioEngine.audioEngineState
+    val currentStreamInfo = playerServiceConnection.audioEngine.currentStreamInfo
+    val outputDeviceType = playerServiceConnection.audioEngine.outputDeviceType
 
-    fun setBandLevel(bandId: Short, level: Short) = equalizerManager.setBandLevel(bandId, level)
+    // Equalizer
+    fun setEqualizerEnabled(enabled: Boolean) = playerServiceConnection.audioEngine.setEqualizer(enabled)
+    fun setEqPreset(preset: String) = playerServiceConnection.audioEngine.setEqualizer(true, preset)
+    fun setEqBandLevel(band: Int, level: Short) = playerServiceConnection.audioEngine.setEqBandLevel(band, level)
+    fun getEqBands() = playerServiceConnection.audioEngine.getEqBandInfo()
+    fun getEqPresets() = playerServiceConnection.audioEngine.getEqPresets()
 
-    fun usePreset(presetIndex: Short) = equalizerManager.usePreset(presetIndex)
+    // Bass Boost
+    fun setBassBoost(enabled: Boolean, strength: Int) = playerServiceConnection.audioEngine.setBassBoost(enabled, strength)
+
+    // Spatial Audio (Virtualizer)
+    fun setSpatialAudio(enabled: Boolean, strength: Int) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)
+    
+    // Reverb
+    fun setReverb(enabled: Boolean, preset: Int) = playerServiceConnection.audioEngine.setReverb(enabled, preset)
+    fun getReverbPresets() = playerServiceConnection.audioEngine.getReverbPresets()
+
+    // Sound Check
+    fun setSoundCheck(enabled: Boolean) = playerServiceConnection.audioEngine.setSoundCheck(enabled)
+
+    // Quality Tiers
+    fun setWifiQuality(quality: StreamQuality) = playerServiceConnection.audioEngine.setWifiQualityTier(quality)
+    fun setCellularQuality(quality: StreamQuality) = playerServiceConnection.audioEngine.setCellularQualityTier(quality)
 
     // ═══════════════════════════════════════════════════════════════
     // LIKE FUNCTIONALITY
@@ -529,6 +603,9 @@ class PlayerViewModel @Inject constructor(
      * Prevents duplicate fetches and handles edge cases
      */
     private fun fetchAndAddRecommendations(currentSongId: String) {
+        Log.d(TAG, "🔍 fetchAndAddRecommendations called for: $currentSongId")
+        Log.d(TAG, "   Last song ID: $lastRecommendationSongId, Is fetching: $isRecommendationFetching")
+        
         // Prevent duplicate fetches for the same song
         if (currentSongId == lastRecommendationSongId) {
             Log.d(TAG, "⚠️ Already fetching recommendations for: $currentSongId")
@@ -574,19 +651,22 @@ class PlayerViewModel @Inject constructor(
                         if (streamUrls.isNotEmpty()) {
                             val validSongs = batch.filter { streamUrls.containsKey(it.id) }
                             if (validSongs.isNotEmpty()) {
-                                // Add to queue immediately
+                                // Add to player for playback
                                 playerServiceConnection.addToQueue(validSongs, streamUrls)
                                 
-                                // Update repository tracking
+                                // Also add to repository for tracking and infinite queue
+                                queueRepository.addToQueue(validSongs)
+                                
+                                // Mark songs as queued
                                 validSongs.forEach { queueRepository.markSongAsQueued(it.id) }
                                 
-                                Log.d(TAG, "➕ Added batch of ${validSongs.size} to queue")
+                                Log.d(TAG, "➕ Added batch of ${validSongs.size} to queue (Player: ${playerServiceConnection.queue.value.size}, Repo: ${queueRepository.queue.value.size})")
                             }
                         }
                         
                         // Small delay between batches to not overwhelm the player
                         if (index < songs.size / RECOMMENDATION_BATCH_SIZE - 1) {
-                            delay(200)
+                            delay(100)
                         }
                     }
                     
@@ -651,18 +731,135 @@ class PlayerViewModel @Inject constructor(
     }
     
     /**
+     * Add a song to play next (immediate queue position after current)
+     * ViTune-style queue management
+     */
+    fun addToPlayNext(song: Song) {
+        viewModelScope.launch {
+            try {
+                // Check if already in queue
+                if (queueRepository.isSongQueued(song.id)) {
+                    Log.d(TAG, "⚠️ Song already in queue, moving to play next: ${song.title}")
+                    // Find and remove existing position
+                    val currentQueue = queue.value
+                    val existingIndex = currentQueue.indexOfFirst { it.id == song.id }
+                    if (existingIndex != -1) {
+                        playerServiceConnection.removeFromQueue(existingIndex)
+                        queueRepository.removeFromTracking(song.id)
+                    }
+                }
+
+                // Get stream URL
+                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+                    .onSuccess { streamUrl ->
+                        // Add to play next position
+                        playerServiceConnection.addToQueue(song, streamUrl)
+                        queueRepository.markSongAsQueued(song.id)
+                        Log.d(TAG, "⏭️ Added to play next: ${song.title}")
+                    }
+                    .onFailure { exception ->
+                        Log.e(TAG, "Failed to add to play next", exception)
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adding song to play next", e)
+            }
+        }
+    }
+
+    /**
+     * Move a song in the queue
+     */
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        playerServiceConnection.reorderQueue(fromIndex, toIndex)
+        queueRepository.moveSong(fromIndex, toIndex)
+        Log.d(TAG, "🔀 Moved queue item from $fromIndex to $toIndex")
+    }
+
+    /**
+     * Get upcoming songs (remaining in queue)
+     */
+    fun getUpcomingSongs(): List<Song> {
+        return queueRepository.getUpcomingSongs()
+    }
+
+    /**
      * Get queue stats for debugging
      */
     fun getQueueStats(): String {
         val (queued, played, repoQueue) = queueRepository.getTrackingStats()
         val playerQueue = queue.value.size
-        val remaining = playerServiceConnection.getRemainingQueueSize()
+        val remaining = queueRepository.getRemainingCount()
         return "Player: $playerQueue, Repository: $repoQueue, Tracked: $queued, Played: $played, Remaining: $remaining"
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PERSISTENT QUEUE - ViTune Style
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Save current queue state for persistence across app restarts
+     */
+    fun saveQueueState() {
+        viewModelScope.launch {
+            try {
+                queueRepository.saveQueueState()
+                Log.d(TAG, "💾 Queue state saved")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save queue state", e)
+            }
+        }
+    }
+
+    /**
+     * Restore queue state from persistent storage
+     * Returns true if queue was restored
+     */
+    suspend fun restoreQueueState(): Boolean {
+        return try {
+            val restored = queueRepository.restoreQueueState()
+            if (restored) {
+                Log.d(TAG, "📂 Queue state restored successfully")
+                // Sync with player service connection
+                val songs = queueRepository.queue.value
+                val index = queueRepository.currentIndex.value
+                if (songs.isNotEmpty()) {
+                    // TODO: Need to re-fetch stream URLs for restored songs
+                    Log.d(TAG, "Restored ${songs.size} songs at index $index")
+                }
+            }
+            restored
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to restore queue state", e)
+            false
+        }
+    }
+
+    /**
+     * Check if there's a saved queue to restore
+     */
+    suspend fun hasSavedQueue(): Boolean {
+        return queueRepository.hasSavedQueue()
+    }
+
+    /**
+     * Clear saved queue state
+     */
+    fun clearSavedQueue() {
+        viewModelScope.launch {
+            try {
+                queueRepository.clearSavedQueue()
+                Log.d(TAG, "🗑️ Saved queue cleared")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to clear saved queue", e)
+            }
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
         recommendationJob?.cancel()
+        // Save queue state before clearing
+        saveQueueState()
         // Don't disconnect - service should persist
     }
 }

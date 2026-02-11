@@ -52,7 +52,10 @@ import androidx.navigation.compose.rememberNavController
 import com.sonicmusic.app.presentation.ui.home.HomeScreen
 import com.sonicmusic.app.presentation.ui.library.LibraryScreen
 import com.sonicmusic.app.presentation.ui.library.LikedSongsScreen
+import com.sonicmusic.app.presentation.ui.library.LocalSongsScreen
 import com.sonicmusic.app.presentation.ui.library.PlaylistsScreen
+import com.sonicmusic.app.presentation.ui.library.PlaylistDetailScreen
+import com.sonicmusic.app.presentation.ui.library.RecentlyPlayedScreen
 import com.sonicmusic.app.presentation.ui.player.FullPlayerScreen
 import com.sonicmusic.app.presentation.ui.player.MiniPlayer
 import com.sonicmusic.app.presentation.ui.search.SearchScreen
@@ -245,6 +248,28 @@ fun SonicMusicApp() {
                             navController.navigate(SubScreens.playlistDetail(playlistId))
                         }
                     )
+                }
+                composable(SubScreens.RECENTLY_PLAYED) {
+                    RecentlyPlayedScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        onShowFullPlayer = { showFullPlayer = true }
+                    )
+                }
+                composable(SubScreens.LOCAL_SONGS) {
+                    LocalSongsScreen(
+                        onNavigateBack = { navController.popBackStack() },
+                        onShowFullPlayer = { showFullPlayer = true }
+                    )
+                }
+                composable(SubScreens.PLAYLIST_DETAIL) { backStackEntry ->
+                    val playlistId = backStackEntry.arguments?.getString("playlistId")?.toLongOrNull()
+                    if (playlistId != null) {
+                        PlaylistDetailScreen(
+                            playlistId = playlistId,
+                            onNavigateBack = { navController.popBackStack() },
+                            onShowFullPlayer = { showFullPlayer = true }
+                        )
+                    }
                 }
             }
         }

@@ -1,6 +1,7 @@
 package com.sonicmusic.app.data.remote.source
 
 import android.util.Log
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import kotlinx.coroutines.Dispatchers
@@ -11,19 +12,19 @@ import org.schabi.newpipe.extractor.localization.ContentCountry
 import org.schabi.newpipe.extractor.localization.Localization
 import org.schabi.newpipe.extractor.services.youtube.YoutubeService
 import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.stream.StreamExtractor
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * NewPipe Extractor Service
+ * NewPipe Extractor Service — Apple Music-Style Quality Selection
  * 
  * Uses the official NewPipe Extractor library for YouTube audio extraction.
- * This library handles:
- * - Cipher/signature decryption
- * - Age restriction bypass
- * - Various player client fallbacks
+ * Now with codec-aware stream selection:
+ * - LOSSLESS/BEST → OPUS preferred (transparent at 160kbps+)
+ * - HIGH → AAC preferred (256kbps, better compatibility)
+ * - MEDIUM → Any codec at 128kbps
+ * - LOW → Lowest available
  */
 @Singleton
 class NewPipeService @Inject constructor() {
@@ -48,7 +49,7 @@ class NewPipeService @Inject constructor() {
             NewPipe.init(
                 NewPipeDownloader.getInstance(),
                 Localization.DEFAULT,
-                ContentCountry.DEFAULT
+                ContentCountry.DEFAULT,
             )
             isInitialized = true
             Log.d(TAG, "✅ NewPipe Extractor initialized")
@@ -65,10 +66,14 @@ class NewPipeService @Inject constructor() {
     }
 
     /**
-     * Extract audio stream URL from a video ID
+     * Extract audio stream URL + metadata from a video ID.
+     * Returns URL and AudioStreamInfo for quality badge display.
      */
-    suspend fun getStreamUrl(videoId: String, quality: StreamQuality): Result<String> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "🎵 Extracting audio for: $videoId")
+    suspend fun getStreamUrl(
+        videoId: String,
+        quality: StreamQuality,
+    ): Result<Pair<String, AudioStreamInfo>> = withContext(Dispatchers.IO) {
+        Log.d(TAG, "🎵 Extracting audio for: $videoId (tier: ${quality.displayName})")
         
         try {
             val url = "https://www.youtube.com/watch?v=$videoId"
@@ -84,10 +89,10 @@ class NewPipeService @Inject constructor() {
             
             // Log available streams for debugging
             audioStreams.forEach { stream ->
-                Log.d(TAG, "  - ${stream.format?.name}: ${stream.averageBitrate}kbps, URL: ${stream.content?.take(50)}...")
+                Log.d(TAG, "  📡 ${stream.format?.name}: ${stream.averageBitrate}kbps")
             }
             
-            // Select best stream based on quality preference
+            // Select best stream based on quality preference with codec awareness
             val selectedStream = selectBestAudioStream(audioStreams, quality)
             
             if (selectedStream == null) {
@@ -95,16 +100,36 @@ class NewPipeService @Inject constructor() {
                 return@withContext Result.failure(Exception("Could not select audio stream"))
             }
             
-            // Get the stream URL - content contains the direct URL
+            // Get the stream URL
             val streamUrl = selectedStream.content
             if (streamUrl.isNullOrEmpty()) {
                 Log.e(TAG, "❌ Stream URL is empty")
                 return@withContext Result.failure(Exception("Stream URL is empty"))
             }
             
-            Log.d(TAG, "✅ Selected stream: ${selectedStream.averageBitrate}kbps, format: ${selectedStream.format?.name}")
-            Log.d(TAG, "🔗 Stream URL: ${streamUrl.take(100)}...")
-            Result.success(streamUrl)
+            // Build AudioStreamInfo for quality badge display
+            val formatName = selectedStream.format?.name ?: "unknown"
+            val codec = AudioStreamInfo.codecFromMimeType(formatName)
+            val container = AudioStreamInfo.containerFromMimeType(formatName)
+            val bitrate = selectedStream.averageBitrate
+            val sampleRate = AudioStreamInfo.sampleRateFromCodec(codec)
+            val tier = AudioStreamInfo.qualityTierFromStream(codec, bitrate)
+            
+            val info = AudioStreamInfo(
+                codec = codec,
+                bitrate = bitrate,
+                sampleRate = sampleRate,
+                bitDepth = 16, // YouTube serves 16-bit
+                qualityTier = tier,
+                containerFormat = container,
+                channelCount = 2,
+            )
+            
+            Log.d(TAG, "✅ Selected: ${info.fullDescription}")
+            Log.d(TAG, "🏷️ Quality: ${info.qualityBadge}")
+            Log.d(TAG, "🔗 URL: ${streamUrl.take(80)}...")
+            
+            Result.success(Pair(streamUrl, info))
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Extraction failed: ${e.message}", e)
@@ -113,32 +138,62 @@ class NewPipeService @Inject constructor() {
     }
 
     /**
-     * Select the best audio stream based on quality preference
+     * Select the best audio stream based on quality preference.
+     * 
+     * Apple Music-style codec-aware selection:
+     * - LOSSLESS: OPUS at highest bitrate (transparent quality)
+     * - BEST/HIGH_RES: OPUS preferred, then highest bitrate
+     * - HIGH: AAC/M4A preferred at 256kbps (compatibility)
+     * - MEDIUM: Any codec at ~128kbps
+     * - LOW: Lowest available
      */
     private fun selectBestAudioStream(streams: List<AudioStream>, quality: StreamQuality): AudioStream? {
         if (streams.isEmpty()) return null
         
-        // Filter out DASH/WebM streams with issues, prefer M4A/MP4
-        val sortedStreams = streams
-            .filter { it.content?.isNotEmpty() == true }
-            .sortedWith(
-                compareByDescending<AudioStream> { it.averageBitrate }
-                    .thenBy { stream ->
-                        // Prefer M4A/MP4 for better compatibility
-                        when {
-                            stream.format?.name?.contains("m4a", true) == true -> 0
-                            stream.format?.name?.contains("mp4", true) == true -> 1
-                            stream.format?.name?.contains("webm", true) == true -> 2
-                            stream.format?.name?.contains("opus", true) == true -> 3
-                            else -> 4
-                        }
-                    }
-            )
+        val validStreams = streams.filter { it.content?.isNotEmpty() == true }
+        if (validStreams.isEmpty()) return null
         
         return when (quality) {
-            StreamQuality.BEST, StreamQuality.HIGH -> sortedStreams.firstOrNull()
-            StreamQuality.MEDIUM -> sortedStreams.getOrNull(sortedStreams.size / 2) ?: sortedStreams.firstOrNull()
-            StreamQuality.LOW -> sortedStreams.lastOrNull()
+            StreamQuality.LOSSLESS, StreamQuality.BEST -> {
+                // Prefer OPUS > 150kbps (usually itag 251 is ~160kbps)
+                validStreams.filter { 
+                    (it.format?.name?.contains("opus", true) == true || 
+                     it.format?.name?.contains("webm", true) == true) && 
+                    it.averageBitrate >= 150 
+                }.maxByOrNull { it.averageBitrate }
+                // Fallback to highest bitrate M4A/AAC
+                ?: validStreams.filter { 
+                     it.format?.name?.contains("m4a", true) == true || 
+                     it.format?.name?.contains("mp4", true) == true
+                }.maxByOrNull { it.averageBitrate }
+                // Fallback to highest overall
+                ?: validStreams.maxByOrNull { it.averageBitrate }
+            }
+            
+            StreamQuality.HIGH -> {
+                // Prefer AAC/M4A > 120kbps (itag 140 is 128k, 141 is 256k)
+                validStreams.filter { 
+                    (it.format?.name?.contains("m4a", true) == true || 
+                     it.format?.name?.contains("mp4", true) == true) &&
+                    it.averageBitrate >= 120
+                }.maxByOrNull { it.averageBitrate }
+                // Fallback to Opus optimized
+                ?: validStreams.filter { it.averageBitrate >= 120 }.maxByOrNull { it.averageBitrate }
+                // Fallback
+                ?: validStreams.maxByOrNull { it.averageBitrate }
+            }
+            
+            StreamQuality.MEDIUM -> {
+                // Target ~128kbps
+                 validStreams.filter { it.averageBitrate in 100..160 }
+                    .maxByOrNull { it.averageBitrate } // Get the highest in this range
+                    ?: validStreams.sortedBy { kotlin.math.abs(it.averageBitrate - 128) }.firstOrNull()
+            }
+            
+            StreamQuality.LOW -> {
+                // Lowest bitrate available
+                validStreams.minByOrNull { it.averageBitrate }
+            }
         }
     }
 
@@ -158,7 +213,7 @@ class NewPipeService @Inject constructor() {
                 title = streamInfo.name,
                 artist = streamInfo.uploaderName ?: "Unknown Artist",
                 duration = streamInfo.duration.toInt(),
-                thumbnailUrl = thumbnailUrl
+                thumbnailUrl = thumbnailUrl,
             )
             
             Result.success(song)
@@ -176,11 +231,10 @@ class NewPipeService @Inject constructor() {
             Log.d(TAG, "🔍 Searching: $query")
             
             val service = getYouTubeService()
-            // Use correct API: getSearchExtractor(query, contentFilters, sortFilter)
             val searchExtractor = service.getSearchExtractor(
                 query,
-                listOf("music_songs"), // Content filter for music
-                null // Default sort
+                listOf("music_songs"),
+                null,
             )
             
             searchExtractor.fetchPage()
@@ -195,8 +249,7 @@ class NewPipeService @Inject constructor() {
                             title = item.name,
                             artist = item.uploaderName ?: "Unknown",
                             duration = item.duration.toInt(),
-                            // Use maxresdefault for highest quality thumbnail
-                            thumbnailUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
+                            thumbnailUrl = "https://i.ytimg.com/vi/$videoId/hq720.jpg",
                         )
                     } else null
                 } catch (e: Exception) {

@@ -21,12 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.TrendingUp
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NorthWest
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -45,7 +41,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -57,90 +52,98 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.domain.model.RecentSearch
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.presentation.viewmodel.SearchUiState
 import com.sonicmusic.app.presentation.viewmodel.SearchViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
     onShowFullPlayer: () -> Unit = {},
-    viewModel: SearchViewModel = hiltViewModel()
+    viewModel: SearchViewModel = hiltViewModel(),
 ) {
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val searchResults by viewModel.searchResults.collectAsState()
-    val searchSuggestions by viewModel.searchSuggestions.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val recentSearches by viewModel.recentSearches.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    
+
     val focusManager = LocalFocusManager.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(error) {
-        error?.let {
-            snackbarHostState.showSnackbar(it)
+    // Show snackbar for Error state
+    LaunchedEffect(uiState) {
+        if (uiState is SearchUiState.Error) {
+            snackbarHostState.showSnackbar((uiState as SearchUiState.Error).message)
             viewModel.clearError()
         }
     }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MaterialTheme.colorScheme.background,
     ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
+                .padding(paddingValues),
         ) {
             // M3 Search Bar
             SearchBarSection(
                 query = searchQuery,
                 onQueryChange = viewModel::onSearchQueryChange,
                 onClear = viewModel::clearSearch,
-                onSearch = { 
+                onSearch = {
                     viewModel.submitSearch()
-                    focusManager.clearFocus() 
-                }
+                    focusManager.clearFocus()
+                },
             )
-            
-            // Suggestions dropdown (shows while typing)
-            AnimatedVisibility(
-                visible = searchQuery.isNotEmpty() && searchSuggestions.isNotEmpty() && searchResults.isEmpty(),
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut()
-            ) {
-                SuggestionsDropdown(
-                    suggestions = searchSuggestions,
-                    onSuggestionClick = { 
-                        viewModel.onSuggestionClick(it)
-                        focusManager.clearFocus()
-                    }
-                )
-            }
-            
-            // Content
+
+            // Content – single when block over sealed state
             Box(modifier = Modifier.fillMaxSize()) {
-                when {
-                    isLoading -> LoadingState()
-                    searchQuery.isEmpty() -> {
+                when (val state = uiState) {
+                    is SearchUiState.Initial -> {
                         RecentSearchesSection(
                             recentSearches = recentSearches,
                             onSearchClick = { viewModel.onRecentSearchClick(it) },
                             onDeleteSearch = { viewModel.deleteRecentSearch(it) },
                             onClearAll = { viewModel.clearAllRecentSearches() },
-                            onSuggestionClick = { viewModel.onSuggestionClick(it) }
+                            onSuggestionClick = { viewModel.onSuggestionClick(it) },
                         )
                     }
-                    searchResults.isEmpty() && !isLoading -> NoResultsState(query = searchQuery)
-                    else -> {
+
+                    is SearchUiState.Loading -> LoadingState()
+
+                    is SearchUiState.Suggestions -> {
+                        SuggestionsDropdown(
+                            suggestions = state.suggestions,
+                            onSuggestionClick = {
+                                viewModel.onSuggestionClick(it)
+                                focusManager.clearFocus()
+                            },
+                        )
+                    }
+
+                    is SearchUiState.Results -> {
                         SearchResultsSection(
-                            results = searchResults,
-                            onSongClick = { 
+                            results = state.songs,
+                            onSongClick = {
                                 viewModel.onSongClick(it)
-                                onShowFullPlayer() 
-                            }
+                                onShowFullPlayer()
+                            },
+                        )
+                    }
+
+                    is SearchUiState.Empty -> NoResultsState(query = state.query)
+
+                    is SearchUiState.Error -> {
+                        // Error already shown via snackbar; show initial content fallback
+                        RecentSearchesSection(
+                            recentSearches = recentSearches,
+                            onSearchClick = { viewModel.onRecentSearchClick(it) },
+                            onDeleteSearch = { viewModel.deleteRecentSearch(it) },
+                            onClearAll = { viewModel.clearAllRecentSearches() },
+                            onSuggestionClick = { viewModel.onSuggestionClick(it) },
                         )
                     }
                 }
@@ -154,7 +157,7 @@ private fun SearchBarSection(
     query: String,
     onQueryChange: (String) -> Unit,
     onClear: () -> Unit,
-    onSearch: () -> Unit
+    onSearch: () -> Unit,
 ) {
     Surface(
         modifier = Modifier
@@ -162,24 +165,24 @@ private fun SearchBarSection(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         shape = RoundedCornerShape(28.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        tonalElevation = 3.dp
+        tonalElevation = 3.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp)
                 .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 imageVector = Icons.Default.Search,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(24.dp),
             )
-            
+
             Spacer(modifier = Modifier.width(12.dp))
-            
+
             TextField(
                 value = query,
                 onValueChange = onQueryChange,
@@ -187,7 +190,7 @@ private fun SearchBarSection(
                     Text(
                         "Search songs, artists...",
                         style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
                 },
                 singleLine = true,
@@ -198,22 +201,22 @@ private fun SearchBarSection(
                     unfocusedContainerColor = Color.Transparent,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
-                    cursorColor = MaterialTheme.colorScheme.primary
+                    cursorColor = MaterialTheme.colorScheme.primary,
                 ),
                 textStyle = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
-            
+
             AnimatedVisibility(
                 visible = query.isNotEmpty(),
                 enter = fadeIn() + slideInVertically(),
-                exit = fadeOut() + slideOutVertically()
+                exit = fadeOut() + slideOutVertically(),
             ) {
                 IconButton(onClick = onClear) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Clear",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -224,7 +227,7 @@ private fun SearchBarSection(
 @Composable
 private fun SuggestionsDropdown(
     suggestions: List<String>,
-    onSuggestionClick: (String) -> Unit
+    onSuggestionClick: (String) -> Unit,
 ) {
     Surface(
         modifier = Modifier
@@ -232,7 +235,7 @@ private fun SuggestionsDropdown(
             .padding(horizontal = 16.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 2.dp
+        tonalElevation = 2.dp,
     ) {
         Column(modifier = Modifier.padding(vertical = 8.dp)) {
             suggestions.forEach { suggestion ->
@@ -241,30 +244,30 @@ private fun SuggestionsDropdown(
                         .fillMaxWidth()
                         .clickable { onSuggestionClick(suggestion) }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(20.dp),
                     )
-                    
+
                     Spacer(modifier = Modifier.width(16.dp))
-                    
+
                     Text(
                         text = suggestion,
                         style = MaterialTheme.typography.bodyLarge,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    
+
                     Icon(
                         imageVector = Icons.Default.NorthWest,
                         contentDescription = "Use suggestion",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(18.dp),
                     )
                 }
             }
@@ -276,21 +279,21 @@ private fun SuggestionsDropdown(
 private fun LoadingState() {
     Box(
         modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+        contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             CircularProgressIndicator(
                 modifier = Modifier.size(48.dp),
                 strokeWidth = 3.dp,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.primary,
             )
             Text(
                 text = "Searching...",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -299,10 +302,10 @@ private fun LoadingState() {
 @Composable
 private fun SearchResultsSection(
     results: List<Song>,
-    onSongClick: (Song) -> Unit
+    onSongClick: (Song) -> Unit,
 ) {
     LazyColumn(
-        contentPadding = PaddingValues(bottom = 16.dp)
+        contentPadding = PaddingValues(bottom = 16.dp),
     ) {
         item {
             Row(
@@ -310,35 +313,35 @@ private fun SearchResultsSection(
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = "Results",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
                 )
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
                 ) {
                     Text(
                         text = "${results.size} songs",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
             }
         }
-        
+
         itemsIndexed(
             items = results,
-            key = { _, song -> song.id }
+            key = { _, song -> song.id },
         ) { index, song ->
             SearchResultCard(
                 song = song,
                 index = index + 1,
-                onClick = { onSongClick(song) }
+                onClick = { onSongClick(song) },
             )
         }
     }
@@ -348,14 +351,14 @@ private fun SearchResultsSection(
 private fun SearchResultCard(
     song: Song,
     index: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
 ) {
     val animatedAlpha by animateFloatAsState(
         targetValue = 1f,
         animationSpec = tween(durationMillis = 300, delayMillis = minOf(index * 30, 300)),
-        label = "alpha"
+        label = "alpha",
     )
-    
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -363,73 +366,73 @@ private fun SearchResultCard(
             .padding(horizontal = 16.dp, vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        onClick = onClick
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             // Thumbnail with play overlay
             Box(
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(12.dp)),
             ) {
-                AsyncImage(
-                    model = song.thumbnailUrl,
+                SongThumbnail(
+                    artworkUrl = song.thumbnailUrl,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
                 )
-                
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Color.Black.copy(alpha = 0.25f)),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = null,
                         tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(24.dp),
                     )
                 }
             }
-            
+
             Spacer(modifier = Modifier.width(12.dp))
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = song.title,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
-                
+
                 Spacer(modifier = Modifier.height(2.dp))
-                
+
                 Text(
                     text = song.artist,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            
-            song.duration?.let { duration ->
+
+            if (song.duration > 0) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
                 ) {
                     Text(
-                        text = formatDuration(duration),
+                        text = formatDuration(song.duration),
                         style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     )
                 }
             }
@@ -444,38 +447,38 @@ private fun NoResultsState(query: String) {
             .fillMaxSize()
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Center,
     ) {
         Surface(
             modifier = Modifier.size(100.dp),
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Default.SearchOff,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        
+
         Spacer(modifier = Modifier.height(24.dp))
-        
+
         Text(
             text = "No results",
             style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
         )
-        
+
         Spacer(modifier = Modifier.height(8.dp))
-        
+
         Text(
             text = "Couldn't find \"$query\"\nTry different keywords",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -486,10 +489,10 @@ private fun RecentSearchesSection(
     onSearchClick: (String) -> Unit,
     onDeleteSearch: (String) -> Unit,
     onClearAll: () -> Unit,
-    onSuggestionClick: (String) -> Unit
+    onSuggestionClick: (String) -> Unit,
 ) {
     var showClearDialog by remember { mutableStateOf(false) }
-    
+
     if (showClearDialog) {
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
@@ -504,16 +507,16 @@ private fun RecentSearchesSection(
                 TextButton(onClick = { showClearDialog = false }) {
                     Text("Cancel")
                 }
-            }
+            },
         )
     }
-    
+
     LazyColumn(contentPadding = PaddingValues(bottom = 16.dp)) {
         // Quick suggestions
         item {
             QuickSuggestionsSection(onSuggestionClick = onSuggestionClick)
         }
-        
+
         // Recent searches
         if (recentSearches.isNotEmpty()) {
             item {
@@ -522,28 +525,28 @@ private fun RecentSearchesSection(
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
                         text = "Recent",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
                     )
                     TextButton(onClick = { showClearDialog = true }) {
                         Text("Clear All", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
-            
+
             items(items = recentSearches, key = { it.query }) { search ->
                 RecentSearchItem(
                     query = search.query,
                     onClick = { onSearchClick(search.query) },
-                    onDelete = { onDeleteSearch(search.query) }
+                    onDelete = { onDeleteSearch(search.query) },
                 )
             }
         }
-        
+
         // Browse categories
         item { BrowseCategoriesSection() }
     }
@@ -552,18 +555,18 @@ private fun RecentSearchesSection(
 @Composable
 private fun QuickSuggestionsSection(onSuggestionClick: (String) -> Unit) {
     val suggestions = listOf("Top Hits", "Chill", "Workout", "Bollywood", "Romantic", "Party")
-    
+
     Column(modifier = Modifier.padding(vertical = 8.dp)) {
         Text(
             text = "Quick Search",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         )
-        
+
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(suggestions) { suggestion ->
                 SuggestionChip(
@@ -571,8 +574,8 @@ private fun QuickSuggestionsSection(onSuggestionClick: (String) -> Unit) {
                     label = { Text(suggestion, style = MaterialTheme.typography.labelLarge) },
                     shape = RoundedCornerShape(20.dp),
                     colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                    )
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                    ),
                 )
             }
         }
@@ -583,7 +586,7 @@ private fun QuickSuggestionsSection(onSuggestionClick: (String) -> Unit) {
 private fun RecentSearchItem(
     query: String,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
 ) {
     Surface(
         modifier = Modifier
@@ -591,35 +594,35 @@ private fun RecentSearchItem(
             .padding(horizontal = 16.dp, vertical = 2.dp),
         shape = RoundedCornerShape(12.dp),
         color = Color.Transparent,
-        onClick = onClick
+        onClick = onClick,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
                 imageVector = Icons.Default.History,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(20.dp),
             )
-            
+
             Spacer(modifier = Modifier.width(16.dp))
-            
+
             Text(
                 text = query,
                 style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
-            
+
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                 Icon(
                     imageVector = Icons.Default.Close,
                     contentDescription = "Remove",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
@@ -633,32 +636,32 @@ private fun BrowseCategoriesSection() {
             text = "Browse",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
         )
-        
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             BrowseCategoryCard(
                 title = "Songs",
                 icon = Icons.Outlined.MusicNote,
                 color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Artists",
                 icon = Icons.Outlined.MicExternalOn,
                 color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Albums",
                 icon = Icons.Outlined.Album,
                 color = MaterialTheme.colorScheme.tertiaryContainer,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -669,31 +672,31 @@ private fun BrowseCategoryCard(
     title: String,
     icon: ImageVector,
     color: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     Surface(
         modifier = modifier.height(90.dp),
         shape = RoundedCornerShape(20.dp),
-        color = color.copy(alpha = 0.7f)
+        color = color.copy(alpha = 0.7f),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(12.dp),
             verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
                 modifier = Modifier.size(28.dp),
-                tint = MaterialTheme.colorScheme.onSurface
+                tint = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Medium
+                fontWeight = FontWeight.Medium,
             )
         }
     }

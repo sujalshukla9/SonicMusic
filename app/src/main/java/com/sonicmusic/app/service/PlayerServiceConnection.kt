@@ -12,6 +12,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +42,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class PlayerServiceConnection @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    val audioEngine: AudioEngine
 ) {
     companion object {
         private const val TAG = "PlayerServiceConnection"
@@ -103,6 +105,10 @@ class PlayerServiceConnection @Inject constructor(
     // Track if queue needs more songs (for UI indication)
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    // Apple Music-style: current stream quality info
+    private val _currentStreamInfo = MutableStateFlow<AudioStreamInfo?>(null)
+    val currentStreamInfo: StateFlow<AudioStreamInfo?> = _currentStreamInfo.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════
     // INTERNAL STATE
@@ -296,6 +302,28 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     /**
+     * Prepare for playback (immediate UI feedback)
+     * Sets the current song and loading state BEFORE fetching the URL
+     */
+    fun preparePlayback(song: Song) {
+        Log.d(TAG, "⏳ Preparing playback for: ${song.title}")
+        
+        // Pause current playback to prevent state mismatch
+        mediaController?.pause()
+        
+        // Update state immediately
+        _currentSong.value = song
+        _isBuffering.value = true
+        _playbackError.value = null
+        _currentPosition.value = 0
+        _progress.value = 0f
+        _duration.value = 0
+        
+        // Reset queue index if we're starting fresh
+        _currentQueueIndex.value = 0
+    }
+    
+    /**
      * Play a single song - ViTune Style (triggers instant recommendations)
      * 
      * @param song The song to play
@@ -470,17 +498,28 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun seekTo(progress: Float) {
         mediaController?.let { controller ->
-            // Use cached duration since controller.duration may be unreliable during drag
             val cachedDuration = _duration.value
             val controllerDuration = controller.duration
-            
-            // Use the larger of the two values (prefer cached if available)
             val durationToUse = if (cachedDuration > 0) cachedDuration else controllerDuration
             
             if (durationToUse > 0) {
                 val position = (progress * durationToUse).toLong().coerceIn(0, durationToUse)
+                
+                // Set seeking flag to pause updates
+                isSeeking = true
+                
+                // Immediately update UI state
+                _progress.value = progress.coerceIn(0f, 1f)
+                _currentPosition.value = position
+                
                 controller.seekTo(position)
                 Log.d("PlayerServiceConnection", "Seeking to ${position}ms (${(progress * 100).toInt()}%)")
+                
+                // Reset seeking flag after a short delay to allow player to catch up
+                scope.launch {
+                    delay(500) // 500ms grace period
+                    isSeeking = false
+                }
             }
         }
     }
@@ -714,17 +753,24 @@ class PlayerServiceConnection @Inject constructor(
         }
     }
 
+    // Track seeking state to prevent UI snap-back
+    private var isSeeking = false
+
     private fun startPositionUpdates() {
         stopPositionUpdates()
         positionUpdateJob = scope.launch {
             while (isActive) {
-                mediaController?.let { controller ->
-                    val pos = controller.currentPosition
-                    val dur = controller.duration
-                    _currentPosition.value = pos
-                    if (dur > 0) {
-                        _duration.value = dur
-                        _progress.value = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                if (!isSeeking) {
+                    mediaController?.let { controller ->
+                        val pos = controller.currentPosition
+                        val dur = controller.duration
+                        
+                        // Only update if we're not currently seeking
+                        _currentPosition.value = pos
+                        if (dur > 0) {
+                            _duration.value = dur
+                            _progress.value = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                        }
                     }
                 }
                 delay(POSITION_UPDATE_INTERVAL_MS) // Smooth position updates

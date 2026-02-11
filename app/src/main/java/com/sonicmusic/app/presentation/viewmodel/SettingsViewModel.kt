@@ -5,38 +5,50 @@ import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
+import com.sonicmusic.app.service.AudioEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val audioEngine: AudioEngine
 ) : ViewModel() {
 
-    val streamQuality: StateFlow<StreamQuality> = settingsRepository.streamQuality
+    // Audio Engine Settings
+    val wifiStreamingQuality = audioEngine.audioEngineState
+        .map { it.wifiQualityTier }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.LOSSLESS)
+
+    val cellularStreamingQuality = audioEngine.audioEngineState
+        .map { it.cellularQualityTier }
         .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.HIGH)
 
-    val downloadQuality: StateFlow<StreamQuality> = settingsRepository.downloadQuality
+    val downloadQuality: StateFlow<StreamQuality> = settingsRepository.downloadQuality // Keep download in repo for now or move to AE if AE handles it (AE does have setDownloadQualityTier)
         .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.BEST)
 
+    val normalizeVolume = audioEngine.audioEngineState
+        .map { it.soundCheckEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val crossfadeDuration = audioEngine.audioEngineState
+        .map { it.crossfadeDuration }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 3)
+
+    // Repository Settings
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode
         .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.SYSTEM)
 
     val dynamicColors: StateFlow<Boolean> = settingsRepository.dynamicColors
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val normalizeVolume: StateFlow<Boolean> = settingsRepository.normalizeVolume
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
-
     val gaplessPlayback: StateFlow<Boolean> = settingsRepository.gaplessPlayback
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
-
-    val crossfadeDuration: StateFlow<Int> = settingsRepository.crossfadeDuration
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 3)
 
     val cacheSizeLimit: StateFlow<Long> = settingsRepository.cacheSizeLimit
         .stateIn(viewModelScope, SharingStarted.Eagerly, 2048L)
@@ -53,15 +65,15 @@ class SettingsViewModel @Inject constructor(
     val autoQueueSimilar: StateFlow<Boolean> = settingsRepository.autoQueueSimilar
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    fun setStreamQuality(quality: StreamQuality) {
-        viewModelScope.launch {
-            settingsRepository.setStreamQuality(quality)
-        }
-    }
+    fun setWifiQuality(quality: StreamQuality) = audioEngine.setWifiQualityTier(quality)
+    
+    fun setCellularQuality(quality: StreamQuality) = audioEngine.setCellularQualityTier(quality)
 
     fun setDownloadQuality(quality: StreamQuality) {
         viewModelScope.launch {
             settingsRepository.setDownloadQuality(quality)
+            // Also update AE if needed, AE has setDownloadQualityTier
+            audioEngine.setDownloadQualityTier(quality) 
         }
     }
 
@@ -78,9 +90,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setNormalizeVolume(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setNormalizeVolume(enabled)
-        }
+        audioEngine.setSoundCheck(enabled)
     }
 
     fun setGaplessPlayback(enabled: Boolean) {
@@ -90,9 +100,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setCrossfadeDuration(seconds: Int) {
-        viewModelScope.launch {
-            settingsRepository.setCrossfadeDuration(seconds)
-        }
+        audioEngine.setCrossfade(seconds > 0, seconds * 1000)
     }
 
     fun setCacheSizeLimit(mb: Long) {

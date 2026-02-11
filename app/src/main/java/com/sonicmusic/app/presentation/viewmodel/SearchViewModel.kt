@@ -1,5 +1,6 @@
 package com.sonicmusic.app.presentation.viewmodel
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.domain.model.RecentSearch
@@ -7,10 +8,12 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.domain.repository.SongRepository
+import com.sonicmusic.app.domain.usecase.GetSearchSuggestionsUseCase
 import com.sonicmusic.app.domain.usecase.SearchSongsUseCase
 import com.sonicmusic.app.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,47 +23,85 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * Sealed UI state for the search page.
+ * 
+ * ALL visual states are captured here so the composable simply 
+ * pattern-matches on one flow instead of juggling 6 separate flows.
+ */
+sealed interface SearchUiState {
+    /** Default state – shows recent searches + browse categories */
+    data object Initial : SearchUiState
+
+    /** Loading indicator while fetching full results */
+    data object Loading : SearchUiState
+
+    /** Autocomplete suggestions (shown while typing, before submitting) */
+    @Immutable
+    data class Suggestions(
+        val query: String,
+        val suggestions: List<String>,
+    ) : SearchUiState
+
+    /** Full search results after an explicit submit */
+    @Immutable
+    data class Results(
+        val query: String,
+        val songs: List<Song>,
+    ) : SearchUiState
+
+    /** The query returned zero results */
+    @Immutable
+    data class Empty(val query: String) : SearchUiState
+
+    /** Something went wrong */
+    @Immutable
+    data class Error(val message: String) : SearchUiState
+}
+
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val searchSongsUseCase: SearchSongsUseCase,
+    private val getSearchSuggestionsUseCase: GetSearchSuggestionsUseCase,
     private val recentSearchRepository: RecentSearchRepository,
     private val playerServiceConnection: PlayerServiceConnection,
-    private val songRepository: SongRepository
+    private val songRepository: SongRepository,
 ) : ViewModel() {
+
+    // ═══════════════════════════════════════════════════════════════
+    // PUBLIC STATE
+    // ═══════════════════════════════════════════════════════════════
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _searchResults = MutableStateFlow<List<Song>>(emptyList())
-    val searchResults: StateFlow<List<Song>> = _searchResults.asStateFlow()
-    
-    // Search suggestions while typing (shows matching artists/song titles)
-    private val _searchSuggestions = MutableStateFlow<List<String>>(emptyList())
-    val searchSuggestions: StateFlow<List<String>> = _searchSuggestions.asStateFlow()
+    private val _uiState = MutableStateFlow<SearchUiState>(SearchUiState.Initial)
+    val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
 
     private val _recentSearches = MutableStateFlow<List<RecentSearch>>(emptyList())
     val recentSearches: StateFlow<List<RecentSearch>> = _recentSearches.asStateFlow()
 
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+    // ═══════════════════════════════════════════════════════════════
+    // INTERNAL STATE
+    // ═══════════════════════════════════════════════════════════════
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-    
-    // Track if search was explicitly submitted
-    private var lastSubmittedQuery: String = ""
+    /** Active search/suggestions job – cancelled whenever the query changes */
+    private var activeJob: Job? = null
 
     init {
-        // Debounce search queries for live results (but don't save to history)
+        // Debounce typing → fetch suggestions (NOT full search)
         _searchQuery
-            .debounce(300)
+            .debounce(400)
             .onEach { query ->
                 if (query.isNotBlank() && query.length >= 2) {
-                    performLiveSearch(query)
-                } else {
-                    _searchResults.value = emptyList()
-                    _searchSuggestions.value = emptyList()
+                    // Only fetch suggestions if we're NOT already showing Results
+                    val current = _uiState.value
+                    if (current !is SearchUiState.Results && current !is SearchUiState.Loading) {
+                        fetchSuggestions(query)
+                    }
+                } else if (query.isEmpty()) {
+                    _uiState.value = SearchUiState.Initial
                 }
             }
             .launchIn(viewModelScope)
@@ -68,100 +109,81 @@ class SearchViewModel @Inject constructor(
         loadRecentSearches()
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // QUERY MUTATIONS
+    // ═══════════════════════════════════════════════════════════════
+
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
+
+        // If user clears the field, reset immediately (no debounce)
+        if (query.isEmpty()) {
+            cancelActiveJob()
+            _uiState.value = SearchUiState.Initial
+        }
     }
 
     fun clearSearch() {
+        cancelActiveJob()
         _searchQuery.value = ""
-        _searchResults.value = emptyList()
-        _searchSuggestions.value = emptyList()
+        _uiState.value = SearchUiState.Initial
     }
-    
+
+    // ═══════════════════════════════════════════════════════════════
+    // SEARCH ACTIONS
+    // ═══════════════════════════════════════════════════════════════
+
     /**
-     * Called when user explicitly submits search (press Enter/Search button)
-     * This saves to search history
+     * Called when user explicitly submits (Enter / button).
+     * Saves to history and performs full search.
      */
     fun submitSearch() {
         val query = _searchQuery.value.trim()
-        if (query.isNotBlank() && query.length >= 2) {
-            lastSubmittedQuery = query
-            viewModelScope.launch {
-                recentSearchRepository.addSearch(query)
-            }
-        }
-    }
-    
-    /**
-     * Live search - doesn't save to history, just shows results
-     */
-    private fun performLiveSearch(query: String) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            _error.value = null
+        if (query.isBlank() || query.length < 2) return
+
+        cancelActiveJob()
+        activeJob = viewModelScope.launch {
+            // Save to history
+            recentSearchRepository.addSearch(query)
+
+            // Show loading
+            _uiState.value = SearchUiState.Loading
 
             searchSongsUseCase(query)
                 .onSuccess { songs ->
-                    _searchResults.value = songs
-                    
-                    // Generate suggestions from results (unique artists + song titles)
-                    val suggestions = mutableListOf<String>()
-                    
-                    // Add matching artists
-                    val artists = songs
-                        .map { it.artist }
-                        .distinct()
-                        .filter { it.contains(query, ignoreCase = true) }
-                        .take(3)
-                    suggestions.addAll(artists)
-                    
-                    // Add matching song titles
-                    val titles = songs
-                        .map { it.title }
-                        .filter { it.contains(query, ignoreCase = true) }
-                        .take(3)
-                    suggestions.addAll(titles)
-                    
-                    _searchSuggestions.value = suggestions.distinct().take(5)
+                    _uiState.value = if (songs.isEmpty()) {
+                        SearchUiState.Empty(query)
+                    } else {
+                        SearchUiState.Results(query, songs)
+                    }
                 }
                 .onFailure { exception ->
-                    _error.value = exception.message ?: "Search failed"
-                }
-
-            _isLoading.value = false
-        }
-    }
-
-    private fun loadRecentSearches() {
-        viewModelScope.launch {
-            recentSearchRepository.getRecentSearches(10)
-                .collect { searches ->
-                    _recentSearches.value = searches
+                    _uiState.value = SearchUiState.Error(
+                        exception.message ?: "Search failed",
+                    )
                 }
         }
     }
 
     /**
-     * When user clicks on a recent search
+     * When user clicks on a recent search item.
      */
     fun onRecentSearchClick(query: String) {
         _searchQuery.value = query
-        // This is an intentional search action, save it
-        viewModelScope.launch {
-            recentSearchRepository.addSearch(query)
-        }
+        submitSearch()
     }
-    
+
     /**
-     * When user clicks on a suggestion
+     * When user clicks on a suggestion.
      */
     fun onSuggestionClick(suggestion: String) {
         _searchQuery.value = suggestion
-        // This is an intentional search action, save it
-        viewModelScope.launch {
-            recentSearchRepository.addSearch(suggestion)
-        }
+        submitSearch()
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // RECENT SEARCH MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════
 
     fun deleteRecentSearch(query: String) {
         viewModelScope.launch {
@@ -175,30 +197,78 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // SONG PLAYBACK
+    // ═══════════════════════════════════════════════════════════════
+
     /**
-     * When user clicks on a song to play
-     * Save the current search query to history (not the song title)
+     * When user taps a song to play.
+     * Saves the *search query* (not song title) to history.
      */
     fun onSongClick(song: Song) {
         viewModelScope.launch {
-            // Save the search query (not song title) to recent searches
             val currentQuery = _searchQuery.value.trim()
             if (currentQuery.isNotBlank() && currentQuery.length >= 2) {
                 recentSearchRepository.addSearch(currentQuery)
             }
-            
-            // Get stream URL and play
+
             songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }
                 .onFailure { exception ->
-                    _error.value = "Failed to play: ${exception.message}"
+                    _uiState.value = SearchUiState.Error(
+                        "Failed to play: ${exception.message}",
+                    )
                 }
         }
     }
 
+    /**
+     * Dismiss error state – returns to Initial or re-shows last results.
+     */
     fun clearError() {
-        _error.value = null
+        if (_uiState.value is SearchUiState.Error) {
+            _uiState.value = if (_searchQuery.value.isEmpty()) {
+                SearchUiState.Initial
+            } else {
+                SearchUiState.Initial // allow retry
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PRIVATE HELPERS
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Fetch autocomplete suggestions (does NOT save to history).
+     */
+    private fun fetchSuggestions(query: String) {
+        cancelActiveJob()
+        activeJob = viewModelScope.launch {
+            getSearchSuggestionsUseCase(query)
+                .onSuccess { suggestions ->
+                    if (suggestions.isNotEmpty()) {
+                        _uiState.value = SearchUiState.Suggestions(query, suggestions)
+                    }
+                    // If suggestions are empty, stay on current state (don't flash)
+                }
+            // Silently ignore suggestion failures (not critical)
+        }
+    }
+
+    private fun loadRecentSearches() {
+        viewModelScope.launch {
+            recentSearchRepository.getRecentSearches(10)
+                .collect { searches ->
+                    _recentSearches.value = searches
+                }
+        }
+    }
+
+    private fun cancelActiveJob() {
+        activeJob?.cancel()
+        activeJob = null
     }
 }

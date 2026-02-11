@@ -2,17 +2,18 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
 }
 
 android {
     namespace = "com.sonicmusic.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 
@@ -93,9 +94,12 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)
-    
+
     // DataStore
     implementation(libs.androidx.datastore)
+
+    // Kotlinx Serialization
+    implementation(libs.kotlinx.serialization.json)
     
     // Palette
     implementation(libs.androidx.palette)
@@ -119,4 +123,11 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+}
+
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlinx:kotlinx-serialization-core:1.6.2")
+        force("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    }
 }

@@ -13,7 +13,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+
 import com.sonicmusic.app.domain.model.Song
 
 @Composable
@@ -35,8 +35,8 @@ fun SongCard(
                 .clip(RoundedCornerShape(8.dp)),
             tonalElevation = 2.dp
         ) {
-            AsyncImage(
-                model = song.thumbnailUrl,
+            SongThumbnail(
+                artworkUrl = song.thumbnailUrl,
                 contentDescription = "${song.title} album art",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -84,10 +84,11 @@ fun SongCardCompact(
                 .clip(RoundedCornerShape(4.dp)),
             tonalElevation = 2.dp
         ) {
-            AsyncImage(
-                model = song.thumbnailUrl,
+            SongThumbnail(
+                artworkUrl = song.thumbnailUrl,
                 contentDescription = null,
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
         }
         

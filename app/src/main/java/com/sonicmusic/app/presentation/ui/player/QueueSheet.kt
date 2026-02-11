@@ -1,8 +1,6 @@
 package com.sonicmusic.app.presentation.ui.player
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,26 +21,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -59,9 +46,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -74,7 +60,6 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
  * - Refresh button for manual recommendations
  * - Song thumbnails for visual identification
  * - Drag-to-reorder with smooth animations
- * - Swipe-to-remove with delete confirmation
  * - Playing indicator with equalizer animation
  * - Clear header with song count
  *
@@ -82,7 +67,6 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
  * @param onDismiss Callback when sheet is dismissed
  * @param queue List of songs in queue
  * @param currentIndex Index of currently playing song
- * @param onRemove Callback when a song is removed
  * @param onReorder Callback when songs are reordered
  * @param onClearQueue Callback when queue is cleared
  * @param onPlay Callback when a song is clicked
@@ -103,10 +87,6 @@ fun QueueSheet(
     onReorder: (from: Int, to: Int) -> Unit = { _, _ -> },
     onClearQueue: () -> Unit,
     onPlay: (Int) -> Unit,
-    infiniteModeEnabled: Boolean = true,
-    onToggleInfiniteMode: () -> Unit = {},
-    isLoadingMore: Boolean = false,
-    onRefreshRecommendations: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (!isVisible) return
@@ -194,89 +174,6 @@ fun QueueSheet(
                 }
             }
 
-            // ═══════════════════════════════════════════
-            // INFINITE MODE TOGGLE - ViTune Style
-            // ═══════════════════════════════════════════
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                color = colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Repeat,
-                            contentDescription = null,
-                            tint = if (infiniteModeEnabled) colorScheme.primary else colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        
-                        Column {
-                            Text(
-                                text = "Infinite Queue",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium,
-                                color = colorScheme.onSurface
-                            )
-                            Text(
-                                text = if (infiniteModeEnabled) "Auto-add similar songs" else "Manual queue only",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        // Refresh button (only show when infinite mode is on)
-                        if (infiniteModeEnabled) {
-                            IconButton(
-                                onClick = onRefreshRecommendations,
-                                enabled = !isLoadingMore
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh recommendations",
-                                    tint = colorScheme.primary
-                                )
-                            }
-                        }
-                        
-                        // Loading indicator
-                        if (isLoadingMore) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp,
-                                color = colorScheme.primary
-                            )
-                        }
-                        
-                        // Toggle switch
-                        Switch(
-                            checked = infiniteModeEnabled,
-                            onCheckedChange = { onToggleInfiniteMode() },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = colorScheme.primary,
-                                checkedTrackColor = colorScheme.primaryContainer
-                            )
-                        )
-                    }
-                }
-            }
-
             Spacer(modifier = Modifier.height(8.dp))
 
             // ═══════════════════════════════════════════
@@ -305,10 +202,7 @@ fun QueueSheet(
                             color = colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = if (infiniteModeEnabled) 
-                                "Play a song to get recommendations" 
-                            else 
-                                "Add songs to start playing",
+                            text = "Add songs to start playing",
                             style = MaterialTheme.typography.bodyMedium,
                             color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
@@ -321,101 +215,34 @@ fun QueueSheet(
                 ) {
                     itemsIndexed(
                         items = localQueue,
-                        key = { index, song -> "${song.id}_$index" }
+                        key = { _, song -> song.id }
                     ) { index, song ->
                         val isPlaying = index == currentIndex
 
-                        ReorderableItem(reorderableState, key = "${song.id}_$index") { isDragging ->
+                        ReorderableItem(reorderableState, key = song.id) { isDragging ->
                             val elevation by animateDpAsState(
                                 targetValue = if (isDragging) 8.dp else 0.dp,
                                 label = "DragElevation"
                             )
 
-                            val dismissState = rememberSwipeToDismissBoxState(
-                                confirmValueChange = {
-                                    if (it == SwipeToDismissBoxValue.EndToStart) {
-                                        onRemove(index)
-                                        true
-                                    } else false
-                                }
-                            )
-
-                            SwipeToDismissBox(
-                                state = dismissState,
-                                enableDismissFromStartToEnd = false,
-                                enableDismissFromEndToStart = !isDragging,
-                                backgroundContent = {
-                                    val color by animateColorAsState(
-                                        if (dismissState.targetValue == SwipeToDismissBoxValue.EndToStart)
-                                            colorScheme.errorContainer
-                                        else colorScheme.surface,
-                                        label = "DismissColor"
-                                    )
-                                    val scale by animateFloatAsState(
-                                        if (dismissState.targetValue == SwipeToDismissBoxValue.EndToStart) 1f else 0.75f,
-                                        label = "DismissScale"
-                                    )
-                                    Box(
-                                        Modifier
-                                            .fillMaxSize()
-                                            .background(color)
-                                            .padding(horizontal = 24.dp),
-                                        contentAlignment = Alignment.CenterEnd
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Delete,
-                                            contentDescription = "Delete",
-                                            modifier = Modifier.scale(scale),
-                                            tint = colorScheme.onErrorContainer
-                                        )
-                                    }
-                                },
-                                content = {
-                                    Surface(
-                                        modifier = Modifier.shadow(elevation),
-                                        color = if (isDragging)
-                                            colorScheme.surfaceContainerHigh
-                                        else Color.Transparent
-                                    ) {
-                                        QueueItemCard(
-                                            song = song,
-                                            isPlaying = isPlaying,
-                                            isDragging = isDragging,
-                                            onClick = { onPlay(index) },
-                                            dragModifier = Modifier.draggableHandle()
-                                        )
-                                    }
-                                }
-                            )
-                        }
-                    }
-                    
-                    // Loading indicator at bottom
-                    if (isLoadingMore) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                contentAlignment = Alignment.Center
+                            Surface(
+                                modifier = Modifier.shadow(elevation),
+                                color = if (isDragging)
+                                    colorScheme.surfaceContainerHigh
+                                else Color.Transparent
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp
-                                    )
-                                    Text(
-                                        text = "Loading more songs...",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colorScheme.onSurfaceVariant
-                                    )
-                                }
+                                QueueItemCard(
+                                    song = song,
+                                    isPlaying = isPlaying,
+                                    isDragging = isDragging,
+                                    onClick = { onPlay(index) },
+                                    dragModifier = Modifier.draggableHandle()
+                                )
                             }
                         }
                     }
+                    
+
                 }
             }
         }
@@ -465,13 +292,8 @@ private fun QueueItemCard(
             color = colorScheme.surfaceContainerHigh
         ) {
             Box {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(song.thumbnailUrl)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                SongThumbnail(
+                    artworkUrl = song.thumbnailUrl,
                     modifier = Modifier.fillMaxSize()
                 )
                 

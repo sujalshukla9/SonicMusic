@@ -19,6 +19,22 @@
 -keep class com.sonicmusic.app.domain.model.** { *; }
 -keep class com.sonicmusic.app.data.remote.model.** { *; }
 
+# Kotlinx Serialization
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
+-keepclassmembers class kotlinx.serialization.json.** { *; }
+-keepclassmembers class * extends kotlinx.serialization.json.** { *; }
+
+# Keep serializers for Song and ContentType
+-keepclassmembers class com.sonicmusic.app.domain.model.Song {
+    <init>(...);
+    <fields>;
+}
+-keepclassmembers class com.sonicmusic.app.domain.model.ContentType {
+    <init>(...);
+    <fields>;
+}
+
 # Keep Hilt components
 -keep class dagger.hilt.** { *; }
 -keep class * extends dagger.hilt.android.HiltAndroidApp

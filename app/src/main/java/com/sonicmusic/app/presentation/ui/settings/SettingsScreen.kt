@@ -39,7 +39,8 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val streamQuality by viewModel.streamQuality.collectAsState()
+    val wifiStreamingQuality by viewModel.wifiStreamingQuality.collectAsState()
+    val cellularStreamingQuality by viewModel.cellularStreamingQuality.collectAsState()
     val downloadQuality by viewModel.downloadQuality.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val dynamicColors by viewModel.dynamicColors.collectAsState()
@@ -134,36 +135,63 @@ fun SettingsScreen(
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
             // ═══════════════════════════════════════════
-            // AUDIO QUALITY SECTION
+            // AUDIO QUALITY SECTION (Apple Music-Style)
             // ═══════════════════════════════════════════
             item {
                 SettingsSectionTitle("Audio Quality")
             }
-            
+
             item {
-                SettingsDropdownItem(
-                    title = "Streaming Quality",
-                    subtitle = "Quality used when streaming over network",
-                    currentValue = streamQuality.displayName,
-                    options = StreamQuality.entries.map { it.displayName },
-                    selectedIndex = StreamQuality.entries.indexOf(streamQuality),
-                    onSelect = { index ->
-                        viewModel.setStreamQuality(StreamQuality.entries[index])
-                    }
+                AudioQualityDropdownItem(
+                    title = "Wi-Fi Streaming",
+                    subtitle = "Audio quality when connected to Wi-Fi",
+                    currentQuality = wifiStreamingQuality,
+                    onSelect = { viewModel.setWifiQuality(it) }
                 )
             }
 
             item {
-                SettingsDropdownItem(
-                    title = "Download Quality",
-                    subtitle = "Quality used when downloading for offline playback",
-                    currentValue = downloadQuality.displayName,
-                    options = StreamQuality.entries.map { it.displayName },
-                    selectedIndex = StreamQuality.entries.indexOf(downloadQuality),
-                    onSelect = { index ->
-                        viewModel.setDownloadQuality(StreamQuality.entries[index])
-                    }
+                AudioQualityDropdownItem(
+                    title = "Cellular Streaming",
+                    subtitle = "Audio quality when using mobile data",
+                    currentQuality = cellularStreamingQuality,
+                    onSelect = { viewModel.setCellularQuality(it) }
                 )
+            }
+
+            item {
+                AudioQualityDropdownItem(
+                    title = "Download Quality",
+                    subtitle = "Audio quality for offline downloads",
+                    currentQuality = downloadQuality,
+                    onSelect = { viewModel.setDownloadQuality(it) }
+                )
+            }
+
+            // Apple Music-style info card
+            item {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = MaterialTheme.shapes.medium,
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "About Audio Quality",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "High-Res Lossless streams use approximately 2.5× more data than High Quality. " +
+                                "An external DAC may be required for the best Hi-Res experience.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
 
             item {
@@ -554,5 +582,95 @@ private fun SettingsSliderItem(
             steps = steps,
             modifier = Modifier.fillMaxWidth()
         )
+    }
+}
+
+/**
+ * Apple Music-style quality dropdown with tier descriptions and badges
+ */
+@Composable
+private fun AudioQualityDropdownItem(
+    title: String,
+    subtitle: String? = null,
+    currentQuality: StreamQuality,
+    onSelect: (StreamQuality) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        ListItem(
+            headlineContent = { Text(title) },
+            supportingContent = subtitle?.let { { Text(it) } },
+            modifier = Modifier.clickable { expanded = true },
+            trailingContent = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // Show quality badge for high-res/lossless
+                    if (currentQuality.isHighRes || currentQuality.isLossless) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = MaterialTheme.shapes.extraSmall,
+                        ) {
+                            Text(
+                                text = currentQuality.shortLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                    Text(
+                        text = currentQuality.displayName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            StreamQuality.entries.forEach { quality ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                text = quality.displayName,
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = quality.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = {
+                        onSelect(quality)
+                        expanded = false
+                    },
+                    trailingIcon = {
+                        if (quality == currentQuality) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Selected",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    },
+                )
+            }
+        }
     }
 }
