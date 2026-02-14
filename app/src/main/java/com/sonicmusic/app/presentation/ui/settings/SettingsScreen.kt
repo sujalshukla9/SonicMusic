@@ -2,18 +2,24 @@ package com.sonicmusic.app.presentation.ui.settings
 
 import android.content.Context
 import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Policy
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -25,38 +31,57 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.presentation.viewmodel.SettingsViewModel
 import kotlinx.coroutines.launch
 
+private enum class SettingsSheet {
+    None, Theme, SeekBarStyle, WifiQuality, CellularQuality, DownloadQuality
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val wifiStreamingQuality by viewModel.wifiStreamingQuality.collectAsState()
     val cellularStreamingQuality by viewModel.cellularStreamingQuality.collectAsState()
     val downloadQuality by viewModel.downloadQuality.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
+    val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsState()
     val dynamicColors by viewModel.dynamicColors.collectAsState()
+    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsState()
     val normalizeVolume by viewModel.normalizeVolume.collectAsState()
     val gaplessPlayback by viewModel.gaplessPlayback.collectAsState()
     val crossfadeDuration by viewModel.crossfadeDuration.collectAsState()
     val pauseHistory by viewModel.pauseHistory.collectAsState()
     val skipSilence by viewModel.skipSilence.collectAsState()
     val albumArtBlur by viewModel.albumArtBlur.collectAsState()
+    val cacheSize by viewModel.cacheSize.collectAsState()
+    val enhancedAudio by viewModel.enhancedAudio.collectAsState()
     
+    val regionCode by viewModel.regionCode.collectAsState()
+    val countryCode by viewModel.countryCode.collectAsState()
+    val countryName by viewModel.countryName.collectAsState()
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     
     var showClearCacheDialog by remember { mutableStateOf(false) }
     var showClearHistoryDialog by remember { mutableStateOf(false) }
+    var activeSheet by remember { mutableStateOf(SettingsSheet.None) }
 
     // Clear cache confirmation dialog
     if (showClearCacheDialog) {
@@ -115,65 +140,81 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { 
                     Text(
                         "Settings",
-                        style = MaterialTheme.typography.headlineMedium
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     ) 
                 },
-                windowInsets = TopAppBarDefaults.windowInsets
+                scrollBehavior = scrollBehavior,
+                windowInsets = WindowInsets.statusBars
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                top = paddingValues.calculateTopPadding() + 16.dp,
+                bottom = bottomPadding + 16.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             // ═══════════════════════════════════════════
-            // AUDIO QUALITY SECTION (Apple Music-Style)
+            // AUDIO QUALITY SECTION
             // ═══════════════════════════════════════════
             item {
-                SettingsSectionTitle("Audio Quality")
-            }
-
-            item {
-                AudioQualityDropdownItem(
-                    title = "Wi-Fi Streaming",
-                    subtitle = "Audio quality when connected to Wi-Fi",
-                    currentQuality = wifiStreamingQuality,
-                    onSelect = { viewModel.setWifiQuality(it) }
-                )
-            }
-
-            item {
-                AudioQualityDropdownItem(
-                    title = "Cellular Streaming",
-                    subtitle = "Audio quality when using mobile data",
-                    currentQuality = cellularStreamingQuality,
-                    onSelect = { viewModel.setCellularQuality(it) }
-                )
-            }
-
-            item {
-                AudioQualityDropdownItem(
-                    title = "Download Quality",
-                    subtitle = "Audio quality for offline downloads",
-                    currentQuality = downloadQuality,
-                    onSelect = { viewModel.setDownloadQuality(it) }
-                )
-            }
-
-            // Apple Music-style info card
-            item {
+                SettingsGroup(
+                    title = "Audio Quality",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    AudioQualityItem(
+                        title = "Wi-Fi Streaming",
+                        subtitle = "Audio quality when connected to Wi-Fi",
+                        currentQuality = wifiStreamingQuality,
+                        onClick = { activeSheet = SettingsSheet.WifiQuality }
+                    )
+                    SettingsDivider()
+                    AudioQualityItem(
+                        title = "Cellular Streaming",
+                        subtitle = "Audio quality when using mobile data",
+                        currentQuality = cellularStreamingQuality,
+                        onClick = { activeSheet = SettingsSheet.CellularQuality }
+                    )
+                    SettingsDivider()
+                    AudioQualityItem(
+                        title = "Download Quality",
+                        subtitle = "Audio quality for offline downloads",
+                        currentQuality = downloadQuality,
+                        onClick = { activeSheet = SettingsSheet.DownloadQuality }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Normalize Volume",
+                        subtitle = "Adjust volume levels to maintain consistent loudness",
+                        checked = normalizeVolume,
+                        onCheckedChange = { viewModel.setNormalizeVolume(it) }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Enhanced Audio (FFmpeg)",
+                        subtitle = "Transcode to M4A Lossless via cloud backend",
+                        checked = enhancedAudio,
+                        onCheckedChange = { viewModel.setEnhancedAudio(it) }
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // Info card
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = 24.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                     shape = MaterialTheme.shapes.medium,
                 ) {
@@ -185,8 +226,7 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "High-Res Lossless streams use approximately 2.5× more data than High Quality. " +
-                                "An external DAC may be required for the best Hi-Res experience.",
+                            text = "High-Res streams use more data than High Quality. An external DAC may be required for the best listening experience.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -194,189 +234,428 @@ fun SettingsScreen(
                 }
             }
 
-            item {
-                SettingsSwitchItem(
-                    title = "Normalize Volume",
-                    subtitle = "Adjust volume levels to maintain consistent loudness",
-                    checked = normalizeVolume,
-                    onCheckedChange = { viewModel.setNormalizeVolume(it) }
-                )
-            }
-
             // ═══════════════════════════════════════════
             // PLAYBACK SECTION
             // ═══════════════════════════════════════════
             item {
-                SettingsSectionTitle("Playback")
+                SettingsGroup(
+                    title = "Playback",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsSwitchItem(
+                        title = "Gapless Playback",
+                        subtitle = "Seamlessly transition between songs",
+                        checked = gaplessPlayback,
+                        onCheckedChange = { viewModel.setGaplessPlayback(it) }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Skip Silence",
+                        subtitle = "Automatically skip silent parts",
+                        checked = skipSilence,
+                        onCheckedChange = { viewModel.setSkipSilence(it) }
+                    )
+                    SettingsDivider()
+                    SettingsSliderItem(
+                        title = "Crossfade Duration",
+                        subtitle = "Blend audio when transitioning",
+                        value = crossfadeDuration.toFloat(),
+                        valueRange = 0f..12f,
+                        steps = 11,
+                        valueText = if (crossfadeDuration == 0) "Off" else "${crossfadeDuration}s",
+                        onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Device Equalizer",
+                        subtitle = "Open system audio effects panel",
+                        icon = Icons.Default.GraphicEq,
+                        onClick = {
+                            if (!openDeviceEqualizerPanel(context)) {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("No device equalizer found")
+                                }
+                            }
+                        }
+                    )
+                }
             }
 
-            item {
-                SettingsSwitchItem(
-                    title = "Gapless Playback",
-                    subtitle = "Seamlessly transition between songs without silence",
-                    checked = gaplessPlayback,
-                    onCheckedChange = { viewModel.setGaplessPlayback(it) }
-                )
-            }
+            // ═══════════════════════════════════════════
+            // REGIONAL SECTION
+            // ═══════════════════════════════════════════
+            // ═══════════════════════════════════════════
+            // REGIONAL SECTION
+            // ═══════════════════════════════════════════
             
             item {
-                SettingsSwitchItem(
-                    title = "Skip Silence",
-                    subtitle = "Automatically skip silent parts in songs",
-                    checked = skipSilence,
-                    onCheckedChange = { viewModel.setSkipSilence(it) }
-                )
-            }
-
-            item {
-                SettingsSliderItem(
-                    title = "Crossfade Duration",
-                    subtitle = "Blend audio when transitioning between songs",
-                    value = crossfadeDuration.toFloat(),
-                    valueRange = 0f..12f,
-                    steps = 11,
-                    valueText = if (crossfadeDuration == 0) "Off" else "${crossfadeDuration}s",
-                    onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) }
-                )
+                SettingsGroup(
+                    title = "Regional",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsInfoItem(
+                        title = "Country",
+                        subtitle = countryName ?: countryCode ?: "Detecting...",
+                        icon = Icons.Default.Public,
+                        trailingContent = {
+                            IconButton(onClick = { viewModel.refreshRegion() }) {
+                                Icon(
+                                    imageVector = Icons.Default.RestartAlt,
+                                    contentDescription = "Refresh Region",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    )
+                    SettingsDivider()
+                    SettingsInfoItem(
+                        title = "Region Code",
+                        subtitle = regionCode ?: "Detecting...",
+                        icon = Icons.Default.Place
+                    )
+                }
             }
 
             // ═══════════════════════════════════════════
             // APPEARANCE SECTION
             // ═══════════════════════════════════════════
             item {
-                SettingsSectionTitle("Appearance")
-            }
-
-            item {
-                SettingsDropdownItem(
-                    title = "Theme",
-                    subtitle = "Choose light, dark, or follow system theme",
-                    currentValue = when (themeMode) {
-                        ThemeMode.LIGHT -> "Light"
-                        ThemeMode.DARK -> "Dark"
-                        ThemeMode.SYSTEM -> "System Default"
-                    },
-                    options = listOf("Light", "Dark", "System Default"),
-                    selectedIndex = ThemeMode.entries.indexOf(themeMode),
-                    onSelect = { index ->
-                        viewModel.setThemeMode(ThemeMode.entries[index])
+                SettingsGroup(
+                    title = "Appearance",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsActionItem(
+                        title = "Theme",
+                        subtitle = "Choose app appearance",
+                        value = when (themeMode) {
+                            ThemeMode.LIGHT -> "Light"
+                            ThemeMode.DARK -> "Dark"
+                            ThemeMode.SYSTEM -> "System"
+                        },
+                        onClick = { activeSheet = SettingsSheet.Theme }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Seek Bar Style",
+                        subtitle = "Choose style for player progress bar",
+                        value = fullPlayerStyleMenuLabel(fullPlayerStyle),
+                        onClick = { activeSheet = SettingsSheet.SeekBarStyle }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Dynamic Colors",
+                        subtitle = "Interface adapts to current album artwork",
+                        checked = dynamicColors,
+                        onCheckedChange = { viewModel.setDynamicColors(it) }
+                    )
+                    if (dynamicColors) {
+                        SettingsDivider()
+                        SettingsSliderItem(
+                            title = "Theme Vibrancy",
+                            subtitle = "Adjust the strength of extracted album colors",
+                            value = dynamicColorIntensity.toFloat(),
+                            valueRange = 0f..100f,
+                            steps = 99,
+                            valueText = "${dynamicColorIntensity}%",
+                            onValueChange = { viewModel.setDynamicColorIntensity(it.toInt()) }
+                        )
                     }
-                )
-            }
-
-            item {
-                SettingsSwitchItem(
-                    title = "Dynamic Colors",
-                    subtitle = "Use Material You colors from your wallpaper",
-                    checked = dynamicColors,
-                    onCheckedChange = { viewModel.setDynamicColors(it) }
-                )
-            }
-            
-            item {
-                SettingsSwitchItem(
-                    title = "Album Art Blur",
-                    subtitle = "Show blurred album art in player background",
-                    checked = albumArtBlur,
-                    onCheckedChange = { viewModel.setAlbumArtBlur(it) }
-                )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Album Art Blur",
+                        subtitle = "Show blurred background in player",
+                        checked = albumArtBlur,
+                        onCheckedChange = { viewModel.setAlbumArtBlur(it) }
+                    )
+                }
             }
 
             // ═══════════════════════════════════════════
-            // STORAGE & CACHE SECTION
+            // STORAGE & PRIVACY
             // ═══════════════════════════════════════════
             item {
-                SettingsSectionTitle("Storage & Cache")
-            }
-
-            item {
-                SettingsActionItem(
-                    title = "Clear Cache",
-                    subtitle = "Remove cached audio data to free up space",
-                    icon = Icons.Default.Storage,
-                    onClick = { showClearCacheDialog = true }
-                )
-            }
-
-            // ═══════════════════════════════════════════
-            // PRIVACY SECTION
-            // ═══════════════════════════════════════════
-            item {
-                SettingsSectionTitle("Privacy")
-            }
-
-            item {
-                SettingsSwitchItem(
-                    title = "Pause History",
-                    subtitle = "Temporarily stop recording playback history",
-                    checked = pauseHistory,
-                    onCheckedChange = { viewModel.setPauseHistory(it) }
-                )
-            }
-
-            item {
-                SettingsActionItem(
-                    title = "Clear Search History",
-                    subtitle = "Remove all your search history",
-                    icon = Icons.Default.DeleteForever,
-                    onClick = { showClearHistoryDialog = true }
-                )
+                SettingsGroup(
+                    title = "Storage & Privacy",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsActionItem(
+                        title = "Clear Cache",
+                        subtitle = "Using $cacheSize",
+                        icon = Icons.Default.Storage,
+                        onClick = { showClearCacheDialog = true }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Pause History",
+                        subtitle = "Stop recording listening history",
+                        checked = pauseHistory,
+                        onCheckedChange = { viewModel.setPauseHistory(it) }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Clear Search History",
+                        subtitle = "Remove past searches",
+                        icon = Icons.Default.DeleteForever,
+                        onClick = { showClearHistoryDialog = true }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Reset to Defaults",
+                        subtitle = "Restore all settings to factory values",
+                        icon = Icons.Default.RestartAlt,
+                        onClick = {
+                            viewModel.resetToDefaults()
+                            scope.launch {
+                                snackbarHostState.showSnackbar("Settings reset to defaults")
+                            }
+                        }
+                    )
+                }
             }
 
             // ═══════════════════════════════════════════
             // ABOUT SECTION
             // ═══════════════════════════════════════════
             item {
-                SettingsSectionTitle("About")
-            }
-
-            item {
-                SettingsInfoItem(
-                    title = "App Version",
-                    subtitle = "1.0.0 (Build 1)",
-                    icon = Icons.Default.Info
-                )
-            }
-            
-            item {
-                SettingsActionItem(
-                    title = "Source Code",
-                    subtitle = "View project on GitHub",
-                    icon = Icons.Default.Code,
-                    onClick = {
-                        openUrl(context, "https://github.com/sonicmusic/app")
-                    }
-                )
-            }
-            
-            item {
-                SettingsActionItem(
-                    title = "Privacy Policy",
-                    subtitle = "Read our privacy policy",
-                    icon = Icons.Default.Policy,
-                    onClick = {
-                        openUrl(context, "https://sonicmusic.app/privacy")
-                    }
-                )
-            }
-            
-            item {
-                SettingsActionItem(
-                    title = "Help & Feedback",
-                    subtitle = "Get help or send feedback",
-                    icon = Icons.AutoMirrored.Filled.HelpOutline,
-                    onClick = {
-                        openUrl(context, "https://sonicmusic.app/help")
-                    }
-                )
+                SettingsGroup(
+                    title = "About",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsInfoItem(
+                        title = "App Version",
+                        subtitle = viewModel.appVersion,
+                        icon = Icons.Default.Info
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Source Code",
+                        subtitle = "View on GitHub",
+                        icon = Icons.Default.Code,
+                        onClick = {
+                            openUrl(context, "https://github.com/sonicmusic/app")
+                        }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Privacy Policy",
+                        subtitle = "Read our policy",
+                        icon = Icons.Default.Policy,
+                        onClick = {
+                            openUrl(context, "https://sonicmusic.app/privacy")
+                        }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Help & Feedback",
+                        subtitle = "Get support",
+                        icon = Icons.AutoMirrored.Filled.HelpOutline,
+                        onClick = {
+                            openUrl(context, "https://sonicmusic.app/help")
+                        }
+                    )
+                }
             }
             
             // Bottom spacing
             item {
-                Spacer(modifier = Modifier.height(100.dp))
+                Spacer(modifier = Modifier.height(32.dp))
             }
         }
     }
+
+    if (activeSheet != SettingsSheet.None) {
+        ModalBottomSheet(
+            onDismissRequest = { activeSheet = SettingsSheet.None },
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    text = when (activeSheet) {
+                        SettingsSheet.Theme -> "Select Theme"
+                        SettingsSheet.SeekBarStyle -> "Seek Bar Style"
+                        SettingsSheet.WifiQuality -> "Wi-Fi Streaming Quality"
+                        SettingsSheet.CellularQuality -> "Mobile Streaming Quality"
+                        SettingsSheet.DownloadQuality -> "Download Quality"
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                )
+                
+                when (activeSheet) {
+                    SettingsSheet.Theme -> {
+                        ThemeMode.entries.forEach { mode ->
+                             OptionItem(
+                                 text = when(mode) {
+                                     ThemeMode.LIGHT -> "Light"
+                                     ThemeMode.DARK -> "Dark"
+                                     ThemeMode.SYSTEM -> "System"
+                                 },
+                                 selected = themeMode == mode,
+                                 onClick = {
+                                     viewModel.setThemeMode(mode)
+                                     activeSheet = SettingsSheet.None
+                                 }
+                             )
+                        }
+                    }
+                    SettingsSheet.SeekBarStyle -> {
+                        FullPlayerStyle.entries.forEach { style ->
+                            OptionItem(
+                                text = fullPlayerStyleMenuLabel(style),
+                                selected = fullPlayerStyle == style,
+                                onClick = {
+                                    viewModel.setFullPlayerStyle(style)
+                                    activeSheet = SettingsSheet.None
+                                }
+                            )
+                        }
+                    }
+                    SettingsSheet.WifiQuality -> {
+                        menuQualityEntries.forEach { quality ->
+                            QualityOptionItem(
+                                quality = quality,
+                                selected = wifiStreamingQuality == quality,
+                                onClick = {
+                                    viewModel.setWifiQuality(quality)
+                                    activeSheet = SettingsSheet.None
+                                }
+                            )
+                        }
+                    }
+                    SettingsSheet.CellularQuality -> {
+                        menuQualityEntries.forEach { quality ->
+                            QualityOptionItem(
+                                quality = quality,
+                                selected = cellularStreamingQuality == quality,
+                                onClick = {
+                                    viewModel.setCellularQuality(quality)
+                                    activeSheet = SettingsSheet.None
+                                }
+                            )
+                        }
+                    }
+                    SettingsSheet.DownloadQuality -> {
+                        menuQualityEntries.forEach { quality ->
+                            QualityOptionItem(
+                                quality = quality,
+                                selected = downloadQuality == quality,
+                                onClick = {
+                                    viewModel.setDownloadQuality(quality)
+                                    activeSheet = SettingsSheet.None
+                                }
+                            )
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OptionItem(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = { Text(text) },
+        trailingContent = {
+            if (selected) {
+                 Icon(
+                     imageVector = Icons.Default.Check,
+                     contentDescription = "Selected",
+                     tint = MaterialTheme.colorScheme.primary
+                 )
+            }
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = Color.Transparent,
+            headlineColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+        ),
+        modifier = Modifier.clickable(onClick = onClick)
+    )
+}
+
+@Composable
+private fun QualityOptionItem(
+    quality: StreamQuality,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = { Text(qualityMenuLabel(quality)) },
+        supportingContent = { Text(qualityMenuDescription(quality)) },
+        leadingContent = {
+             if (quality == StreamQuality.BEST || quality == StreamQuality.LOSSLESS) {
+                 Surface(
+                     color = MaterialTheme.colorScheme.primaryContainer,
+                     shape = MaterialTheme.shapes.extraSmall,
+                 ) {
+                     Text(
+                         text = qualityBadge(quality),
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.onPrimaryContainer,
+                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                     )
+                 }
+             }
+        },
+        trailingContent = {
+            if (selected) {
+                 Icon(
+                     imageVector = Icons.Default.Check,
+                     contentDescription = "Selected",
+                     tint = MaterialTheme.colorScheme.primary
+                 )
+            }
+        },
+        colors = ListItemDefaults.colors(
+            containerColor = Color.Transparent,
+            headlineColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+        ),
+        modifier = Modifier.clickable(onClick = onClick)
+    )
+}
+
+@Composable
+private fun SettingsGroup(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+        )
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    )
 }
 
 private fun openUrl(context: Context, url: String) {
@@ -384,14 +663,12 @@ private fun openUrl(context: Context, url: String) {
     context.startActivity(intent)
 }
 
-@Composable
-private fun SettingsSectionTitle(title: String) {
-    Text(
-        text = title,
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 8.dp)
-    )
+private fun openDeviceEqualizerPanel(context: Context): Boolean {
+    val intent = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL).apply {
+        putExtra(AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+        putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
+    }
+    return runCatching { context.startActivity(intent) }.isSuccess
 }
 
 @Composable
@@ -402,7 +679,7 @@ private fun SettingsSwitchItem(
     onCheckedChange: (Boolean) -> Unit
 ) {
     ListItem(
-        headlineContent = { Text(title) },
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
         supportingContent = subtitle?.let { { Text(it) } },
         trailingContent = {
             Switch(
@@ -410,6 +687,7 @@ private fun SettingsSwitchItem(
                 onCheckedChange = onCheckedChange
             )
         },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable { onCheckedChange(!checked) }
     )
 }
@@ -418,11 +696,12 @@ private fun SettingsSwitchItem(
 private fun SettingsActionItem(
     title: String,
     subtitle: String? = null,
+    value: String? = null,
     icon: ImageVector? = null,
     onClick: () -> Unit
 ) {
     ListItem(
-        headlineContent = { Text(title) },
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
         supportingContent = subtitle?.let { { Text(it) } },
         leadingContent = icon?.let {
             {
@@ -433,13 +712,24 @@ private fun SettingsActionItem(
                 )
             }
         },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.clickable(onClick = onClick),
         trailingContent = {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+             Row(verticalAlignment = Alignment.CenterVertically) {
+                 if (value != null) {
+                     Text(
+                         text = value,
+                         style = MaterialTheme.typography.bodyMedium,
+                         color = MaterialTheme.colorScheme.primary
+                     )
+                     Spacer(modifier = Modifier.width(4.dp))
+                 }
+                 Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+             }
         }
     )
 }
@@ -448,10 +738,11 @@ private fun SettingsActionItem(
 private fun SettingsInfoItem(
     title: String,
     subtitle: String,
-    icon: ImageVector? = null
+    icon: ImageVector? = null,
+    trailingContent: @Composable (() -> Unit)? = null
 ) {
     ListItem(
-        headlineContent = { Text(title) },
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
         supportingContent = { Text(subtitle) },
         leadingContent = icon?.let {
             {
@@ -461,70 +752,10 @@ private fun SettingsInfoItem(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        }
+        },
+        trailingContent = trailingContent,
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
     )
-}
-
-@Composable
-private fun SettingsDropdownItem(
-    title: String,
-    subtitle: String? = null,
-    currentValue: String,
-    options: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box {
-        ListItem(
-            headlineContent = { Text(title) },
-            supportingContent = subtitle?.let { { Text(it) } },
-            modifier = Modifier.clickable { expanded = true },
-            trailingContent = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = currentValue,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        )
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            options.forEachIndexed { index, option ->
-                DropdownMenuItem(
-                    text = { Text(option) },
-                    onClick = {
-                        onSelect(index)
-                        expanded = false
-                    },
-                    trailingIcon = {
-                        if (index == selectedIndex) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = "Selected",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                )
-            }
-        }
-    }
 }
 
 @Composable
@@ -550,7 +781,8 @@ private fun SettingsSliderItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title, 
-                    style = MaterialTheme.typography.bodyLarge
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium
                 )
                 subtitle?.let {
                     Text(
@@ -585,92 +817,94 @@ private fun SettingsSliderItem(
     }
 }
 
-/**
- * Apple Music-style quality dropdown with tier descriptions and badges
- */
 @Composable
-private fun AudioQualityDropdownItem(
+private fun AudioQualityItem(
     title: String,
     subtitle: String? = null,
     currentQuality: StreamQuality,
-    onSelect: (StreamQuality) -> Unit,
+    onClick: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Box {
-        ListItem(
-            headlineContent = { Text(title) },
-            supportingContent = subtitle?.let { { Text(it) } },
-            modifier = Modifier.clickable { expanded = true },
-            trailingContent = {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // Show quality badge for high-res/lossless
-                    if (currentQuality.isHighRes || currentQuality.isLossless) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = MaterialTheme.shapes.extraSmall,
-                        ) {
-                            Text(
-                                text = currentQuality.shortLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
+    ListItem(
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
+        supportingContent = subtitle?.let { { Text(it) } },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+        modifier = Modifier.clickable(onClick = onClick),
+        trailingContent = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (currentQuality.isHighRes || currentQuality.isLossless) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = MaterialTheme.shapes.extraSmall,
+                    ) {
+                        Text(
+                            text = qualityBadge(currentQuality),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
                     }
-                    Text(
-                        text = currentQuality.displayName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                 }
-            }
-        )
-
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            StreamQuality.entries.forEach { quality ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(
-                                text = quality.displayName,
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                            Text(
-                                text = quality.description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    },
-                    onClick = {
-                        onSelect(quality)
-                        expanded = false
-                    },
-                    trailingIcon = {
-                        if (quality == currentQuality) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = "Selected",
-                                tint = MaterialTheme.colorScheme.primary,
-                            )
-                        }
-                    },
+                Text(
+                    text = qualityMenuLabel(currentQuality),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
+    )
+}
+
+private val menuQualityEntries = listOf(
+    StreamQuality.LOW,
+    StreamQuality.MEDIUM,
+    StreamQuality.HIGH,
+    StreamQuality.BEST,
+    StreamQuality.LOSSLESS
+)
+
+private fun fullPlayerStyleMenuLabel(style: FullPlayerStyle): String {
+    return when (style) {
+        FullPlayerStyle.NORMAL -> "Normal"
+        FullPlayerStyle.WAVY -> "Wavy"
+    }
+}
+
+private fun qualityMenuLabel(quality: StreamQuality): String {
+    return when (quality) {
+        StreamQuality.LOW -> "Low"
+        StreamQuality.MEDIUM -> "Medium"
+        StreamQuality.HIGH -> "High"
+        StreamQuality.BEST -> "Very High"
+        StreamQuality.LOSSLESS -> "Lossless"
+    }
+}
+
+private fun qualityMenuDescription(quality: StreamQuality): String {
+    return when (quality) {
+        StreamQuality.LOW -> "Lower quality, saves data"
+        StreamQuality.MEDIUM -> "Balanced quality and data usage"
+        StreamQuality.HIGH -> "High quality streaming"
+        StreamQuality.BEST -> "High-res quality with efficient data usage"
+        StreamQuality.LOSSLESS -> "Highest quality, uses more data"
+    }
+}
+
+private fun qualityBadge(quality: StreamQuality): String {
+    return when (quality) {
+        StreamQuality.LOSSLESS -> "LL"
+        StreamQuality.BEST -> "VH"
+        StreamQuality.LOW,
+        StreamQuality.MEDIUM,
+        StreamQuality.HIGH -> ""
     }
 }

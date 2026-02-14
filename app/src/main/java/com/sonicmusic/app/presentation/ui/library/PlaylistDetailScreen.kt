@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlaylistDetailViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -30,6 +31,7 @@ fun PlaylistDetailScreen(
     playlistId: Long,
     onNavigateBack: () -> Unit,
     onShowFullPlayer: () -> Unit = {},
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: PlaylistDetailViewModel = hiltViewModel()
 ) {
     val playlist by viewModel.playlist.collectAsState()
@@ -43,6 +45,7 @@ fun PlaylistDetailScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text(playlist?.name ?: "Playlist") },
@@ -87,8 +90,8 @@ fun PlaylistDetailScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                    .padding(top = paddingValues.calculateTopPadding()),
+                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 // Playlist header
                 item {
@@ -105,15 +108,23 @@ fun PlaylistDetailScreen(
                             color = MaterialTheme.colorScheme.primaryContainer,
                             tonalElevation = 4.dp
                         ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = playlist!!.name.take(2).uppercase(),
-                                    style = MaterialTheme.typography.displayLarge,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                            if (!playlist!!.coverArtUrl.isNullOrBlank()) {
+                                SongThumbnail(
+                                    artworkUrl = playlist!!.coverArtUrl,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentDescription = null
                                 )
+                            } else {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = playlist!!.name.take(2).uppercase(),
+                                        style = MaterialTheme.typography.displayLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
                             }
                         }
 

@@ -1,260 +1,401 @@
 package com.sonicmusic.app.presentation.viewmodel
 
-import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.sonicmusic.app.domain.model.RecentSearch
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
+import com.sonicmusic.app.domain.repository.SearchRepository
 import com.sonicmusic.app.domain.repository.SongRepository
-import com.sonicmusic.app.domain.usecase.GetSearchSuggestionsUseCase
-import com.sonicmusic.app.domain.usecase.SearchSongsUseCase
+import com.sonicmusic.app.presentation.state.ErrorType
+import com.sonicmusic.app.presentation.state.PaginationState
+import com.sonicmusic.app.presentation.state.SearchAction
+import com.sonicmusic.app.presentation.state.SearchEffect
+import com.sonicmusic.app.presentation.state.SearchFilters
+import com.sonicmusic.app.presentation.state.SearchState
 import com.sonicmusic.app.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.Calendar
+import java.util.Locale
 import javax.inject.Inject
 
 /**
- * Sealed UI state for the search page.
- * 
- * ALL visual states are captured here so the composable simply 
- * pattern-matches on one flow instead of juggling 6 separate flows.
+ * Enhanced Search ViewModel with MVI pattern, pagination, and improved state management
  */
-sealed interface SearchUiState {
-    /** Default state – shows recent searches + browse categories */
-    data object Initial : SearchUiState
-
-    /** Loading indicator while fetching full results */
-    data object Loading : SearchUiState
-
-    /** Autocomplete suggestions (shown while typing, before submitting) */
-    @Immutable
-    data class Suggestions(
-        val query: String,
-        val suggestions: List<String>,
-    ) : SearchUiState
-
-    /** Full search results after an explicit submit */
-    @Immutable
-    data class Results(
-        val query: String,
-        val songs: List<Song>,
-    ) : SearchUiState
-
-    /** The query returned zero results */
-    @Immutable
-    data class Empty(val query: String) : SearchUiState
-
-    /** Something went wrong */
-    @Immutable
-    data class Error(val message: String) : SearchUiState
-}
-
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class SearchViewModel @Inject constructor(
-    private val searchSongsUseCase: SearchSongsUseCase,
-    private val getSearchSuggestionsUseCase: GetSearchSuggestionsUseCase,
+    private val searchRepository: SearchRepository,
     private val recentSearchRepository: RecentSearchRepository,
-    private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
+    private val playerServiceConnection: PlayerServiceConnection
 ) : ViewModel() {
 
-    // ═══════════════════════════════════════════════════════════════
-    // PUBLIC STATE
-    // ═══════════════════════════════════════════════════════════════
+    // State
+    private val _searchState = MutableStateFlow<SearchState>(SearchState.Initial)
+    val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _uiState = MutableStateFlow<SearchUiState>(SearchUiState.Initial)
-    val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
+    private val _recentSearches = MutableStateFlow<List<String>>(emptyList())
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
 
-    private val _recentSearches = MutableStateFlow<List<RecentSearch>>(emptyList())
-    val recentSearches: StateFlow<List<RecentSearch>> = _recentSearches.asStateFlow()
+    // Effects (one-time events)
+    private val _effects = Channel<SearchEffect>()
+    val effects = _effects.receiveAsFlow()
 
-    // ═══════════════════════════════════════════════════════════════
-    // INTERNAL STATE
-    // ═══════════════════════════════════════════════════════════════
+    // Pagination
+    private val pageSize = 50
+    private var currentQuery: String = ""
+    private var currentFilters: SearchFilters = SearchFilters()
+    private var activeSearchToken: Long = 0L
 
-    /** Active search/suggestions job – cancelled whenever the query changes */
-    private var activeJob: Job? = null
+    // Jobs
+    private var searchJob: Job? = null
+    private var suggestionsJob: Job? = null
+
+    // Trending searches
+    private val _trendingSearches = MutableStateFlow<List<String>>(emptyList())
+    val trendingSearches: StateFlow<List<String>> = _trendingSearches.asStateFlow()
 
     init {
-        // Debounce typing → fetch suggestions (NOT full search)
+        // Debounced query changes for suggestions
         _searchQuery
-            .debounce(400)
+            .debounce(300)
             .onEach { query ->
                 if (query.isNotBlank() && query.length >= 2) {
-                    // Only fetch suggestions if we're NOT already showing Results
-                    val current = _uiState.value
-                    if (current !is SearchUiState.Results && current !is SearchUiState.Loading) {
-                        fetchSuggestions(query)
-                    }
+                    fetchSuggestions(query)
                 } else if (query.isEmpty()) {
-                    _uiState.value = SearchUiState.Initial
+                    _searchState.value = SearchState.Initial
                 }
             }
             .launchIn(viewModelScope)
 
         loadRecentSearches()
+        loadTrendingSearches()
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // QUERY MUTATIONS
-    // ═══════════════════════════════════════════════════════════════
-
-    fun onSearchQueryChange(query: String) {
-        _searchQuery.value = query
-
-        // If user clears the field, reset immediately (no debounce)
-        if (query.isEmpty()) {
-            cancelActiveJob()
-            _uiState.value = SearchUiState.Initial
+    private fun loadTrendingSearches() {
+        viewModelScope.launch {
+            searchRepository.getTrendingSearches()
+                .onSuccess { _trendingSearches.value = it }
+                .onFailure {
+                    _trendingSearches.value = getFallbackTrendingSearches()
+                }
         }
     }
 
-    fun clearSearch() {
-        cancelActiveJob()
-        _searchQuery.value = ""
-        _uiState.value = SearchUiState.Initial
+    private fun getFallbackTrendingSearches(): List<String> {
+        val countryName = Locale.getDefault().displayCountry.takeIf { it.isNotBlank() }
+        val year = Calendar.getInstance().get(Calendar.YEAR)
+        return if (countryName != null) {
+            listOf(
+                "Top Hits in $countryName",
+                "Trending Songs $year",
+                "New Releases",
+                "Workout Mix",
+                "Chill Vibes",
+                "Party Mix"
+            )
+        } else {
+            listOf(
+                "Top Hits",
+                "Trending Songs",
+                "New Releases",
+                "Workout Mix",
+                "Chill Vibes",
+                "Party Mix"
+            )
+        }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // SEARCH ACTIONS
-    // ═══════════════════════════════════════════════════════════════
-
     /**
-     * Called when user explicitly submits (Enter / button).
-     * Saves to history and performs full search.
+     * Handle search actions (MVI pattern)
      */
-    fun submitSearch() {
-        val query = _searchQuery.value.trim()
-        if (query.isBlank() || query.length < 2) return
+    fun onAction(action: SearchAction) {
+        when (action) {
+            is SearchAction.QueryChanged -> handleQueryChange(action.query)
+            is SearchAction.SubmitSearch -> submitSearch(action.query)
+            is SearchAction.SuggestionClicked -> handleSuggestionClick(action.suggestion)
+            is SearchAction.RecentSearchClicked -> handleRecentSearchClick(action.query)
+            is SearchAction.SongClicked -> handleSongClick(action.song)
+            is SearchAction.DeleteRecentSearch -> deleteRecentSearch(action.query)
+            is SearchAction.ClearAllRecentSearches -> clearAllRecentSearches()
+            is SearchAction.ClearSearch -> clearSearch()
+            is SearchAction.RetrySearch -> retrySearch()
+            is SearchAction.LoadMore -> loadMoreResults()
+            is SearchAction.UpdateFilters -> updateFilters(action.filters)
+            is SearchAction.DismissError -> dismissError()
+        }
+    }
 
-        cancelActiveJob()
-        activeJob = viewModelScope.launch {
-            // Save to history
-            recentSearchRepository.addSearch(query)
+    private fun handleQueryChange(query: String) {
+        _searchQuery.value = query
 
-            // Show loading
-            _uiState.value = SearchUiState.Loading
+        if (query.isBlank()) {
+            cancelActiveJobs()
+            currentQuery = ""
+            _searchState.value = SearchState.Initial
+        }
+    }
 
-            searchSongsUseCase(query)
-                .onSuccess { songs ->
-                    _uiState.value = if (songs.isEmpty()) {
-                        SearchUiState.Empty(query)
+    private fun submitSearch(query: String) {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.length < 2) return
+
+        cancelActiveJobs()
+        currentQuery = trimmedQuery
+        _searchQuery.value = trimmedQuery
+        activeSearchToken += 1L
+        val searchToken = activeSearchToken
+
+        _searchState.value = SearchState.LoadingResults(trimmedQuery)
+
+        searchJob = viewModelScope.launch {
+            searchRepository.searchSongs(
+                query = trimmedQuery,
+                limit = pageSize,
+                offset = 0,
+                filters = currentFilters
+            ).fold(
+                onSuccess = { result ->
+                    if (searchToken != activeSearchToken) return@fold
+
+                    val songs = result.songs.distinctBy { it.id }
+                    if (songs.isEmpty()) {
+                        _searchState.value = SearchState.Empty(
+                            query = trimmedQuery,
+                            suggestions = getAlternativeSuggestions(trimmedQuery)
+                        )
                     } else {
-                        SearchUiState.Results(query, songs)
+                        recentSearchRepository.addSearch(trimmedQuery)
+                        _searchState.value = SearchState.Results(
+                            query = trimmedQuery,
+                            songs = songs,
+                            totalCount = songs.size,
+                            paginationState = if (result.hasMore) {
+                                PaginationState.Idle
+                            } else {
+                                PaginationState.NoMoreData
+                            },
+                            filters = currentFilters
+                        )
+                        _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
                     }
-                }
-                .onFailure { exception ->
-                    _uiState.value = SearchUiState.Error(
-                        exception.message ?: "Search failed",
+                },
+                onFailure = { exception ->
+                    if (searchToken != activeSearchToken) return@fold
+                    _searchState.value = SearchState.Error(
+                        message = getErrorMessage(exception),
+                        query = trimmedQuery,
+                        errorType = classifyError(exception)
                     )
                 }
+            )
         }
     }
 
-    /**
-     * When user clicks on a recent search item.
-     */
-    fun onRecentSearchClick(query: String) {
-        _searchQuery.value = query
-        submitSearch()
+    private fun fetchSuggestions(query: String) {
+        suggestionsJob?.cancel()
+
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.length < 2) return
+
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results && currentState.query == trimmedQuery) {
+            return
+        }
+
+        _searchState.value = SearchState.LoadingSuggestions(trimmedQuery)
+
+        suggestionsJob = viewModelScope.launch {
+            searchRepository.getSearchSuggestions(trimmedQuery).fold(
+                onSuccess = { suggestions ->
+                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmedQuery,
+                        suggestions = suggestions,
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
+                            .take(3)
+                    )
+                },
+                onFailure = {
+                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmedQuery,
+                        suggestions = emptyList(),
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
+                            .take(3)
+                    )
+                }
+            )
+        }
     }
 
-    /**
-     * When user clicks on a suggestion.
-     */
-    fun onSuggestionClick(suggestion: String) {
+    private fun handleSuggestionClick(suggestion: String) {
         _searchQuery.value = suggestion
-        submitSearch()
+        submitSearch(suggestion)
+        viewModelScope.launch {
+            _effects.send(SearchEffect.ClearFocus)
+        }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // RECENT SEARCH MANAGEMENT
-    // ═══════════════════════════════════════════════════════════════
+    private fun handleRecentSearchClick(query: String) {
+        _searchQuery.value = query
+        submitSearch(query)
+        viewModelScope.launch {
+            _effects.send(SearchEffect.ClearFocus)
+        }
+    }
 
-    fun deleteRecentSearch(query: String) {
+    private fun handleSongClick(song: Song) {
+        viewModelScope.launch {
+            // Save current query to recent searches with metadata
+            val currentQuery = _searchQuery.value.trim()
+            if (currentQuery.isNotBlank() && currentQuery.length >= 2) {
+                recentSearchRepository.addSearch(
+                    query = currentQuery,
+                    resultId = song.id,
+                    resultType = song.contentType.name
+                )
+            }
+
+            // Get stream URL and play
+            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+                .fold(
+                    onSuccess = { streamUrl ->
+                        playerServiceConnection.playSong(song, streamUrl)
+                        _effects.send(SearchEffect.NavigateToPlayer(song))
+                    },
+                    onFailure = { exception ->
+                        _effects.send(
+                            SearchEffect.ShowSnackbar(
+                                "Failed to play: ${exception.message}"
+                            )
+                        )
+                    }
+                )
+        }
+    }
+
+    private fun deleteRecentSearch(query: String) {
         viewModelScope.launch {
             recentSearchRepository.deleteSearch(query)
         }
     }
 
-    fun clearAllRecentSearches() {
+    private fun clearAllRecentSearches() {
         viewModelScope.launch {
             recentSearchRepository.clearAllSearches()
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // SONG PLAYBACK
-    // ═══════════════════════════════════════════════════════════════
+    private fun clearSearch() {
+        cancelActiveJobs()
+        _searchQuery.value = ""
+        _searchState.value = SearchState.Initial
+    }
 
-    /**
-     * When user taps a song to play.
-     * Saves the *search query* (not song title) to history.
-     */
-    fun onSongClick(song: Song) {
+    private fun retrySearch() {
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results && currentState.paginationState is PaginationState.Error) {
+            loadMoreResults()
+            return
+        }
+
+        val query = when (currentState) {
+            is SearchState.Error -> currentState.query
+            is SearchState.Empty -> currentState.query
+            else -> _searchQuery.value
+        }
+        
+        if (!query.isNullOrBlank()) {
+            submitSearch(query)
+        }
+    }
+
+    private fun loadMoreResults() {
+        val currentState = _searchState.value
+        if (currentState !is SearchState.Results) return
+        if (currentState.paginationState is PaginationState.Loading) return
+        if (currentState.paginationState is PaginationState.NoMoreData) return
+
+        _searchState.value = currentState.copy(
+            paginationState = PaginationState.Loading
+        )
+
         viewModelScope.launch {
-            val currentQuery = _searchQuery.value.trim()
-            if (currentQuery.isNotBlank() && currentQuery.length >= 2) {
-                recentSearchRepository.addSearch(currentQuery)
-            }
+            val offset = currentState.songs.size
 
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    playerServiceConnection.playSong(song, streamUrl)
-                }
-                .onFailure { exception ->
-                    _uiState.value = SearchUiState.Error(
-                        "Failed to play: ${exception.message}",
+            searchRepository.searchSongs(
+                query = currentState.query,
+                limit = pageSize,
+                offset = offset,
+                filters = currentState.filters
+            ).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    val existingIds = latestState.songs.asSequence().map { it.id }.toHashSet()
+                    val appendedSongs = result.songs.filterNot { existingIds.contains(it.id) }
+                    val mergedSongs = latestState.songs + appendedSongs
+                    val hasMoreData = result.hasMore && appendedSongs.isNotEmpty()
+
+                    _searchState.value = latestState.copy(
+                        songs = mergedSongs,
+                        totalCount = mergedSongs.size,
+                        paginationState = if (hasMoreData) {
+                            PaginationState.Idle
+                        } else {
+                            PaginationState.NoMoreData
+                        }
+                    )
+                },
+                onFailure = { exception ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    _searchState.value = latestState.copy(
+                        paginationState = PaginationState.Error(
+                            getErrorMessage(exception)
+                        )
                     )
                 }
+            )
         }
     }
 
-    /**
-     * Dismiss error state – returns to Initial or re-shows last results.
-     */
-    fun clearError() {
-        if (_uiState.value is SearchUiState.Error) {
-            _uiState.value = if (_searchQuery.value.isEmpty()) {
-                SearchUiState.Initial
-            } else {
-                SearchUiState.Initial // allow retry
-            }
+    private fun updateFilters(filters: SearchFilters) {
+        currentFilters = filters
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results) {
+            _searchState.value = currentState.copy(filters = filters)
+            // Re-submit search with new filters
+            submitSearch(currentState.query)
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // PRIVATE HELPERS
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Fetch autocomplete suggestions (does NOT save to history).
-     */
-    private fun fetchSuggestions(query: String) {
-        cancelActiveJob()
-        activeJob = viewModelScope.launch {
-            getSearchSuggestionsUseCase(query)
-                .onSuccess { suggestions ->
-                    if (suggestions.isNotEmpty()) {
-                        _uiState.value = SearchUiState.Suggestions(query, suggestions)
-                    }
-                    // If suggestions are empty, stay on current state (don't flash)
-                }
-            // Silently ignore suggestion failures (not critical)
+    private fun dismissError() {
+        val currentState = _searchState.value
+        if (currentState is SearchState.Error) {
+            _searchState.value = SearchState.Initial
         }
     }
 
@@ -262,13 +403,53 @@ class SearchViewModel @Inject constructor(
         viewModelScope.launch {
             recentSearchRepository.getRecentSearches(10)
                 .collect { searches ->
-                    _recentSearches.value = searches
+                    val recentQueries = searches.map { it.query }
+                    _recentSearches.value = recentQueries
+
+                    val state = _searchState.value
+                    if (state is SearchState.Suggestions) {
+                        _searchState.value = state.copy(
+                            recentSearches = recentQueries
+                                .filter { it.contains(state.query, ignoreCase = true) }
+                                .take(3)
+                        )
+                    }
                 }
         }
     }
 
-    private fun cancelActiveJob() {
-        activeJob?.cancel()
-        activeJob = null
+    private fun cancelActiveJobs() {
+        searchJob?.cancel()
+        suggestionsJob?.cancel()
+    }
+
+    private fun getAlternativeSuggestions(query: String): List<String> {
+        return listOf(
+            "$query official",
+            "$query lyrics",
+            "$query audio",
+            "$query cover"
+        )
+    }
+
+    private fun getErrorMessage(exception: Throwable): String {
+        return when (exception) {
+            is SocketTimeoutException -> "Connection timed out. Please try again."
+            is IOException -> "No internet connection. Check your network."
+            else -> exception.message ?: "An unexpected error occurred"
+        }
+    }
+
+    private fun classifyError(exception: Throwable): ErrorType {
+        return when (exception) {
+            is SocketTimeoutException -> ErrorType.Timeout
+            is IOException -> ErrorType.Network
+            else -> ErrorType.Unknown
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cancelActiveJobs()
     }
 }

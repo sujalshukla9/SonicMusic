@@ -16,38 +16,43 @@ class GetHomeContentUseCase @Inject constructor(
     private val recommendationRepository: RecommendationRepository,
     private val userTasteRepository: UserTasteRepository
 ) {
+    companion object {
+        private const val HOME_SECTION_LIMIT = 100
+        private const val TOP_ARTIST_SECTION_COUNT = 8
+    }
+
     suspend operator fun invoke(): Result<HomeContent> {
         return try {
             coroutineScope {
                 val listenAgainDeferred = async { 
                     try {
-                        historyRepository.getRecentlyPlayedSongs(30).first()
+                        historyRepository.getRecentlyPlayedSongs(HOME_SECTION_LIMIT).first()
                     } catch (e: Exception) {
                         emptyList()
                     }
                 }
                 val quickPicksDeferred = async { 
-                    recommendationRepository.getQuickPicks(20) 
+                    recommendationRepository.getQuickPicks(HOME_SECTION_LIMIT) 
                 }
                 val newReleasesDeferred = async { 
-                    songRepository.getNewReleases(25) 
+                    songRepository.getNewReleases(HOME_SECTION_LIMIT) 
                 }
                 val trendingDeferred = async { 
-                    songRepository.getTrending(30) 
+                    songRepository.getTrending(HOME_SECTION_LIMIT) 
                 }
                 val englishHitsDeferred = async { 
-                    songRepository.getEnglishHits(25) 
+                    songRepository.getEnglishHits(HOME_SECTION_LIMIT) 
                 }
                 val artistsDeferred = async { 
-                    recommendationRepository.getTopArtistSongs(8) 
+                    recommendationRepository.getTopArtistSongs(TOP_ARTIST_SECTION_COUNT) 
                 }
                 // Fetch personalized recommendations based on user taste
                 val personalizedDeferred = async {
-                    userTasteRepository.getPersonalizedMix(20)
+                    userTasteRepository.getPersonalizedMix(HOME_SECTION_LIMIT)
                 }
                 // Fetch forgotten favorites (songs played often but not recently)
                 val forgottenDeferred = async {
-                    recommendationRepository.getForgottenFavorites(15)
+                    recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT)
                 }
 
                 // Wait for all results

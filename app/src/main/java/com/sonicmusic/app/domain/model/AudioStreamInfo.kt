@@ -14,13 +14,14 @@ data class AudioStreamInfo(
     val qualityTier: StreamQuality = StreamQuality.HIGH,
     val containerFormat: String = "",
     val channelCount: Int = 2,
+    val isEnhanced: Boolean = false,
 ) {
     /**
      * Whether this stream qualifies as lossless
      * OPUS at 160kbps+ is perceptually transparent (lossless for most listeners)
      */
     val isLossless: Boolean
-        get() = qualityTier.isLossless || (codec.equals("OPUS", true) && bitrate >= 160)
+        get() = qualityTier.isLossless || (codec.equals("OPUS", true) && bitrate >= 160) || isEnhanced
 
     /**
      * Whether this stream qualifies as high-res
@@ -30,10 +31,12 @@ data class AudioStreamInfo(
 
     /**
      * Human-readable quality badge like Apple Music shows
-     * e.g., "Lossless", "Hi-Res Lossless", "Hi-Res", "AAC"
+     * e.g., "Lossless", "Hi-Res Lossless", "Hi-Res", "AAC", "Enhanced"
      */
     val qualityBadge: String
         get() = when {
+            isEnhanced && isLossless && sampleRate > 48000 -> "Enhanced · Hi-Res"
+            isEnhanced -> "Enhanced · Lossless"
             isLossless && sampleRate > 48000 -> "Hi-Res Lossless"
             isLossless -> "Lossless"
             isHighRes -> "Hi-Res"

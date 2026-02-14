@@ -13,13 +13,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -47,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicmusic.app.domain.model.Playlist
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlaylistsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -54,6 +56,7 @@ import com.sonicmusic.app.presentation.viewmodel.PlaylistsViewModel
 fun PlaylistsScreen(
     onNavigateBack: () -> Unit,
     onPlaylistClick: (Long) -> Unit,
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: PlaylistsViewModel = hiltViewModel()
 ) {
     val playlists by viewModel.playlists.collectAsState()
@@ -62,6 +65,7 @@ fun PlaylistsScreen(
     var newPlaylistName by remember { mutableStateOf("") }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Playlists") },
@@ -101,7 +105,7 @@ fun PlaylistsScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.Default.PlaylistPlay,
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
@@ -124,8 +128,13 @@ fun PlaylistsScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(16.dp),
+                    .padding(top = paddingValues.calculateTopPadding()),
+                contentPadding = PaddingValues(
+                    start = 16.dp, 
+                    end = 16.dp, 
+                    top = 16.dp, 
+                    bottom = 16.dp + bottomPadding
+                ),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(playlists, key = { it.id }) { playlist ->
@@ -198,23 +207,33 @@ private fun PlaylistCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                tonalElevation = 2.dp
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+            if (!playlist.coverArtUrl.isNullOrBlank()) {
+                SongThumbnail(
+                    artworkUrl = playlist.coverArtUrl,
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentDescription = null
+                )
+            } else {
+                Surface(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    tonalElevation = 2.dp
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PlaylistPlay,
-                        contentDescription = null,
-                        modifier = Modifier.size(32.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
                 }
             }
             

@@ -20,10 +20,12 @@ class RecentSearchRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun addSearch(query: String) {
+    override suspend fun addSearch(query: String, resultId: String?, resultType: String?) {
         val entity = RecentSearchEntity(
             query = query,
-            searchedAt = System.currentTimeMillis()
+            searchedAt = System.currentTimeMillis(),
+            resultId = resultId,
+            resultType = resultType
         )
         recentSearchDao.insertSearch(entity)
         recentSearchDao.pruneOldSearches(20)
@@ -40,7 +42,9 @@ class RecentSearchRepositoryImpl @Inject constructor(
     private fun RecentSearchEntity.toRecentSearch(): RecentSearch {
         return RecentSearch(
             query = query,
-            searchedAt = searchedAt
+            searchedAt = searchedAt,
+            resultId = resultId,
+            resultType = resultType
         )
     }
 }

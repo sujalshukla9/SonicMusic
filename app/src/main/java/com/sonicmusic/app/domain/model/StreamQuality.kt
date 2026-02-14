@@ -39,7 +39,7 @@ enum class StreamQuality(
     BEST(
         bitrate = 256,
         displayName = "High-Res",
-        description = "OPUS 256 kbps · Transparent, near-lossless",
+        description = "OPUS 256 kbps · Best available audio quality",
         isHighRes = true,
         preferredCodec = "opus",
     ),

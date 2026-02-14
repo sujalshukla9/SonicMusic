@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.QueueRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonConfiguration
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -62,7 +62,9 @@ class QueueRepositoryImpl @Inject constructor(
         private const val MIN_QUEUE_SIZE = 3
         private const val RECOMMENDATION_BATCH_SIZE = 20
         private const val MAX_HISTORY_SIZE = 100 // Prevent memory bloat
-        private const val RECOMMENDATION_DEBOUNCE_MS = 2000L // 2s debounce for snappier response
+        private const val RECOMMENDATION_DEBOUNCE_MS = 2000L // Same-seed debounce
+        private const val DIFFERENT_SONG_GUARD_MS = 350L // Avoid rapid bursts across songs
+        private const val MIN_PRIMARY_RECOMMENDATIONS = 6
         
         // JSON configuration for safe serialization
         private val json = Json {
@@ -91,11 +93,11 @@ class QueueRepositoryImpl @Inject constructor(
     
     // Vary recommendation queries for variety
     private var lastQueryType = 0
-    private var lastRecommendationSongId: String? = null
     
     // Prevent duplicate recommendation fetches
     private var isFetchingRecommendations = false
     private var lastFetchTime = 0L
+    private var lastFetchSongId: String? = null
     
     // Cache last song details to avoid redundant API calls
     private var cachedSongDetails: Song? = null
@@ -105,10 +107,13 @@ class QueueRepositoryImpl @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
 
     override suspend fun getRelatedSongs(songId: String, limit: Int): Result<List<Song>> {
+        val targetLimit = limit.coerceAtLeast(1)
+
         // Debounce: prevent rapid recommendation fetches
         val now = System.currentTimeMillis()
-        if (now - lastFetchTime < RECOMMENDATION_DEBOUNCE_MS) {
-            Log.d(TAG, "⚠️ Debouncing recommendation fetch (too soon)")
+        val minGap = if (lastFetchSongId == songId) RECOMMENDATION_DEBOUNCE_MS else DIFFERENT_SONG_GUARD_MS
+        if (now - lastFetchTime < minGap) {
+            Log.d(TAG, "⚠️ Debouncing recommendation fetch (too soon, seed=$songId)")
             return Result.success(emptyList())
         }
         
@@ -119,61 +124,61 @@ class QueueRepositoryImpl @Inject constructor(
         }
         
         isFetchingRecommendations = true
-        lastRecommendationSongId = songId
         lastFetchTime = now
+        lastFetchSongId = songId
         
         Log.d(TAG, "🎵 Getting related songs for: $songId")
         
         return try {
-            // Priority 1: Get official "Up Next" from YouTube Music (Fastest & Best Quality)
-            val upNextResult = youTubeiService.getUpNext(songId)
-            
-            if (upNextResult.isSuccess) {
-                val songs = upNextResult.getOrNull()
-                if (!songs.isNullOrEmpty()) {
-                    val newSongs = filterNewSongs(songs, songId).take(limit)
-                    if (newSongs.isNotEmpty()) {
-                        Log.d(TAG, "✅ Used YouTube Music Up Next: ${newSongs.size} songs")
-                        return Result.success(newSongs)
+            val seedSong = getSongDetailsForId(songId)
+            val upNextSongs = youTubeiService.getUpNext(songId).getOrNull().orEmpty()
+            val radioSongs = fetchRadioMix(songId, targetLimit * 2)
+            val blendedCandidates = interleaveRecommendations(
+                primary = upNextSongs,
+                secondary = radioSongs,
+                maxSize = targetLimit * 4
+            )
+
+            val rankedCandidates = rankCandidates(seedSong, blendedCandidates)
+            val primaryNewSongs = filterNewSongs(rankedCandidates, songId)
+            if (primaryNewSongs.size >= minOf(targetLimit, MIN_PRIMARY_RECOMMENDATIONS)) {
+                Log.d(
+                    TAG,
+                    "✅ Used blended Up Next + Radio: ${primaryNewSongs.size} songs (upNext=${upNextSongs.size}, radio=${radioSongs.size})"
+                )
+                return Result.success(primaryNewSongs.take(targetLimit))
+            }
+
+            Log.d(TAG, "⚠️ Up Next + Radio insufficient (${primaryNewSongs.size}), enriching with fallbacks...")
+
+            val collected = LinkedHashMap<String, Song>()
+            fun collect(candidates: List<Song>) {
+                filterNewSongs(rankCandidates(seedSong, candidates), songId).forEach { candidate ->
+                    if (collected.size < targetLimit) {
+                        collected.putIfAbsent(candidate.id, candidate)
                     }
                 }
             }
-            
-            Log.d(TAG, "⚠️ Up Next returned insufficient results, trying radio mix...")
 
-            // Priority 2: YouTube Music Radio Mix (song-based radio)
-            val radioResult = fetchRadioMix(songId, limit)
-            if (radioResult.isNotEmpty()) {
-                val newSongs = filterNewSongs(radioResult, songId).take(limit)
-                if (newSongs.isNotEmpty()) {
-                    Log.d(TAG, "✅ Used Radio Mix: ${newSongs.size} songs")
-                    return Result.success(newSongs)
-                }
+            collect(primaryNewSongs)
+            if (collected.size < targetLimit) {
+                collect(fetchSongMix(songId, targetLimit * 2))
+            }
+            if (collected.size < targetLimit) {
+                collect(fetchArtistSongs(songId, targetLimit * 2))
+            }
+            if (collected.size < targetLimit) {
+                collect(fetchDiscoveryRecommendations(songId, targetLimit * 2))
+            }
+            if (collected.size < targetLimit) {
+                val broadQuery = seedSong?.let { "${it.artist} radio songs mix" } ?: "trending songs now"
+                val broadFallback = youTubeiService.searchSongs(broadQuery, targetLimit * 2).getOrNull().orEmpty()
+                collect(broadFallback)
             }
 
-            // Fallback: Try manual strategies in sequence
-            var songs = listOf<Song>()
-            
-            // Strategy 3: Context-aware song mix
-            if (songs.isEmpty()) {
-                songs = fetchSongMix(songId, limit)
-            }
-            
-            // Strategy 4: Artist deep dive
-            if (songs.isEmpty()) {
-                songs = fetchArtistSongs(songId, limit)
-            }
-            
-            // Strategy 5: Genre-aware discovery
-            if (songs.isEmpty()) {
-                songs = fetchDiscoveryRecommendations(songId, limit)
-            }
-            
-            // Filter out duplicates and already played
-            val newSongs = filterNewSongs(songs, songId).take(limit)
-            
-            Log.d(TAG, "✅ Found ${newSongs.size} unique recommendations from fallback")
-            Result.success(newSongs)
+            val resultSongs = collected.values.take(targetLimit)
+            Log.d(TAG, "✅ Final related songs: ${resultSongs.size} (target=$targetLimit)")
+            Result.success(resultSongs)
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to get related songs", e)
@@ -201,12 +206,16 @@ class QueueRepositoryImpl @Inject constructor(
      * ViTune-style: Only keep actual songs
      */
     private fun filterNewSongs(songs: List<Song>, excludeSongId: String): List<Song> {
-        val filtered = songs.filter { song ->
-            song.id != excludeSongId &&
-            !queuedSongIds.contains(song.id) &&
-            !playedSongIds.contains(song.id) &&
-            song.isValidMusicContent() // Only songs, not videos/podcasts/live streams
-        }
+        val filtered = songs
+            .asSequence()
+            .filter { song ->
+                song.id != excludeSongId &&
+                    !queuedSongIds.contains(song.id) &&
+                    !playedSongIds.contains(song.id) &&
+                    song.isStrictQueueSong() // Only songs, not videos/podcasts/live streams
+            }
+            .distinctBy { it.id }
+            .toList()
         
         val filteredCount = songs.size - filtered.size
         if (filteredCount > 0) {
@@ -215,6 +224,86 @@ class QueueRepositoryImpl @Inject constructor(
         }
         
         return filtered
+    }
+
+    private fun interleaveRecommendations(
+        primary: List<Song>,
+        secondary: List<Song>,
+        maxSize: Int
+    ): List<Song> {
+        val merged = mutableListOf<Song>()
+        val seen = HashSet<String>()
+        var primaryIndex = 0
+        var secondaryIndex = 0
+
+        fun addCandidate(song: Song) {
+            if (seen.add(song.id)) {
+                merged.add(song)
+            }
+        }
+
+        while (merged.size < maxSize && (primaryIndex < primary.size || secondaryIndex < secondary.size)) {
+            repeat(2) {
+                if (primaryIndex < primary.size) {
+                    addCandidate(primary[primaryIndex])
+                    primaryIndex += 1
+                }
+            }
+            if (secondaryIndex < secondary.size) {
+                addCandidate(secondary[secondaryIndex])
+                secondaryIndex += 1
+            }
+        }
+
+        return merged
+    }
+
+    private fun rankCandidates(seedSong: Song?, candidates: List<Song>): List<Song> {
+        if (seedSong == null || candidates.isEmpty()) return candidates
+
+        val normalizedSeedArtist = normalizeArtist(seedSong.artist)
+        val seedTitleTokens = tokenize(seedSong.title)
+
+        return candidates.sortedByDescending { candidate ->
+            var score = 0
+            val normalizedCandidateArtist = normalizeArtist(candidate.artist)
+            val candidateTitleTokens = tokenize(candidate.title)
+
+            if (normalizedCandidateArtist == normalizedSeedArtist) {
+                score += 6
+            }
+
+            val overlap = seedTitleTokens.intersect(candidateTitleTokens).size
+            score += overlap * 2
+
+            if (candidate.duration in 90..420) {
+                score += 1
+            }
+
+            if (candidate.artist.isBlank() || candidate.artist.equals("Unknown Artist", ignoreCase = true)) {
+                score -= 2
+            }
+            if (candidate.title.length < 3) {
+                score -= 2
+            }
+
+            score
+        }
+    }
+
+    private fun normalizeArtist(value: String): String {
+        return value.lowercase()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun tokenize(value: String): Set<String> {
+        return value.lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .split(" ")
+            .map { it.trim() }
+            .filter { it.length >= 3 }
+            .toSet()
     }
 
     /**
@@ -367,7 +456,7 @@ class QueueRepositoryImpl @Inject constructor(
         // Filter out any duplicates AND non-music content (ViTune-style)
         val newSongs = songs
             .filter { !queuedSongIds.contains(it.id) }
-            .filter { it.isValidMusicContent() } // Only add songs, not videos/podcasts/etc.
+            .filter { it.isStrictQueueSong() } // Only add songs, not videos/podcasts/etc.
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add (all duplicates or non-music content)")
@@ -396,7 +485,6 @@ class QueueRepositoryImpl @Inject constructor(
         _currentIndex.value = 0
         queuedSongIds.clear()
         lastQueryType = 0
-        lastRecommendationSongId = null
         isFetchingRecommendations = false
         Log.d(TAG, "🗑️ Queue cleared, tracking reset")
     }
@@ -495,14 +583,18 @@ class QueueRepositoryImpl @Inject constructor(
      */
     fun syncQueueState(songs: List<Song>, currentIndex: Int) {
         // Filter to only valid music content
-        val filteredSongs = songs.filter { it.isValidMusicContent() }
+        val filteredSongs = songs.filter { it.isStrictQueueSong() }
 
         if (filteredSongs.size < songs.size) {
             Log.d(TAG, "🎬 Filtered ${songs.size - filteredSongs.size} non-music items from queue sync")
         }
 
         _queue.value = filteredSongs
-        _currentIndex.value = currentIndex.coerceIn(0, filteredSongs.size - 1)
+        _currentIndex.value = if (filteredSongs.isEmpty()) {
+            -1
+        } else {
+            currentIndex.coerceIn(0, filteredSongs.size - 1)
+        }
 
         // Update tracking set to match actual queue
         queuedSongIds.clear()
@@ -634,7 +726,7 @@ class QueueRepositoryImpl @Inject constructor(
         // Filter out duplicates AND non-music content
         val newSongs = songs
             .filter { !queuedSongIds.contains(it.id) }
-            .filter { it.isValidMusicContent() } // Only songs, not videos/podcasts
+            .filter { it.isStrictQueueSong() } // Only songs, not videos/podcasts
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add to play next (all duplicates or non-music)")
@@ -752,14 +844,14 @@ class QueueRepositoryImpl @Inject constructor(
      * Filters out videos, podcasts, live streams, shorts, etc.
      */
     fun getMusicSongsOnly(): List<Song> {
-        return _queue.value.filter { it.isValidMusicContent() }
+        return _queue.value.filter { it.isStrictQueueSong() }
     }
 
     /**
      * Check if queue contains any non-music content
      */
     fun hasNonMusicContent(): Boolean {
-        return _queue.value.any { !it.isValidMusicContent() }
+        return _queue.value.any { !it.isStrictQueueSong() }
     }
 
     /**
@@ -767,7 +859,7 @@ class QueueRepositoryImpl @Inject constructor(
      */
     fun removeNonMusicContent(): Int {
         val originalSize = _queue.value.size
-        val filteredQueue = _queue.value.filter { it.isValidMusicContent() }
+        val filteredQueue = _queue.value.filter { it.isStrictQueueSong() }
         val removedCount = originalSize - filteredQueue.size
 
         if (removedCount > 0) {
@@ -806,6 +898,14 @@ class QueueRepositoryImpl @Inject constructor(
                 iterator.remove()
                 count++
             }
+        }
+    }
+
+    private fun Song.isStrictQueueSong(): Boolean {
+        return when (contentType) {
+            ContentType.SONG -> true
+            ContentType.UNKNOWN -> duration == 0 || duration in 60..600
+            else -> false
         }
     }
 }

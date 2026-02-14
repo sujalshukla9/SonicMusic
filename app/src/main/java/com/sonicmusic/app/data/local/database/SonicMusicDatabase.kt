@@ -26,7 +26,7 @@ import com.sonicmusic.app.data.local.entity.SongEntity
         RecentSearchEntity::class,
         DownloadedSongEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class SonicMusicDatabase : RoomDatabase() {

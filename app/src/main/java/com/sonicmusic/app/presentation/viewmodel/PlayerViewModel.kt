@@ -3,9 +3,15 @@ package com.sonicmusic.app.presentation.viewmodel
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.data.downloadmanager.SongDownloadManager
 import com.sonicmusic.app.data.repository.QueueRepositoryImpl
+import com.sonicmusic.app.data.repository.SettingsRepository
+import com.sonicmusic.app.domain.model.FullPlayerStyle
+import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.repository.HistoryRepository
+import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 
 import com.sonicmusic.app.domain.usecase.SleepTimerManager
@@ -17,11 +23,15 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.currentCoroutineContext
 import javax.inject.Inject
 import kotlin.time.Duration
 
@@ -42,7 +52,11 @@ import kotlin.time.Duration
 class PlayerViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
+    private val songDownloadManager: SongDownloadManager,
+    private val historyRepository: HistoryRepository,
+    private val playlistRepository: PlaylistRepository,
     private val queueRepository: QueueRepositoryImpl,
+    private val settingsRepository: SettingsRepository,
     val sleepTimerManager: SleepTimerManager
 ) : ViewModel() {
 
@@ -52,6 +66,8 @@ class PlayerViewModel @Inject constructor(
         private const val URL_RETRY_DELAY_MS = 1500L
         private const val RECOMMENDATION_BATCH_SIZE = 5 // Increased for faster population
         private const val RECOMMENDATION_FETCH_LIMIT = 15
+        private const val SAME_SONG_RETRY_COOLDOWN_MS = 12000L
+        private const val HISTORY_DUPLICATE_WINDOW_MS = 2500L
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -88,10 +104,31 @@ class PlayerViewModel @Inject constructor(
     private val _infiniteModeEnabled = MutableStateFlow(true)
     val infiniteModeEnabled: StateFlow<Boolean> = _infiniteModeEnabled.asStateFlow()
 
+    val fullPlayerStyle: StateFlow<FullPlayerStyle> = settingsRepository.fullPlayerStyle
+        .stateIn(viewModelScope, SharingStarted.Eagerly, FullPlayerStyle.NORMAL)
+
+    val dynamicColorsEnabled: StateFlow<Boolean> = settingsRepository.dynamicColors
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val dynamicColorIntensity: StateFlow<Int> = settingsRepository.dynamicColorIntensity
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 85)
+
+    val albumArtBlurEnabled: StateFlow<Boolean> = settingsRepository.albumArtBlur
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val blacklistedSongIds: StateFlow<Set<String>> = settingsRepository.blacklistedSongIds
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
     // Track active recommendation fetch to prevent duplicates
     private var recommendationJob: Job? = null
     private var isRecommendationFetching = false
     private var lastRecommendationSongId: String? = null
+    private var lastRecommendationRequestAt: Long = 0L
+    private var lastHistorySongId: String? = null
+    private var lastHistoryRecordedAt: Long = 0L
 
     // ═══════════════════════════════════════════════════════════════
     // INITIALIZATION - ViTune Style
@@ -100,6 +137,15 @@ class PlayerViewModel @Inject constructor(
     init {
         // Connect to PlaybackService
         playerServiceConnection.connect()
+
+        // Keep infinite recommendations aligned with setting.
+        viewModelScope.launch {
+            settingsRepository.autoQueueSimilar.collect { enabled ->
+                _infiniteModeEnabled.value = enabled
+                queueRepository.setInfiniteMode(enabled)
+                Log.d(TAG, "♾️ Auto queue similar from settings: $enabled")
+            }
+        }
         
         // Set up callback for infinite queue (ViTune-style)
         playerServiceConnection.setOnQueueNeedsMoreSongs { songId ->
@@ -124,6 +170,16 @@ class PlayerViewModel @Inject constructor(
             currentSong.collect { song ->
                 song?.let {
                     try {
+                        val now = System.currentTimeMillis()
+                        val shouldRecordHistory = lastHistorySongId != it.id ||
+                            (now - lastHistoryRecordedAt) > HISTORY_DUPLICATE_WINDOW_MS
+                        if (shouldRecordHistory) {
+                            historyRepository.recordPlayback(it)
+                            lastHistorySongId = it.id
+                            lastHistoryRecordedAt = now
+                            Log.d(TAG, "📝 Recorded playback history: ${it.title}")
+                        }
+
                         // Update like status
                         _isLiked.value = songRepository.isLiked(it.id)
                         
@@ -249,6 +305,7 @@ class PlayerViewModel @Inject constructor(
                     // Clear and reset queue state
                     queueRepository.clearQueue()
                     lastRecommendationSongId = null
+                    lastRecommendationRequestAt = 0L
 
                     // Fetch stream URL
                     val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
@@ -306,60 +363,24 @@ class PlayerViewModel @Inject constructor(
             
             try {
                 Log.d(TAG, "▶️ Playing queue: ${songs.size} songs, starting at $startIndex")
-                
-                // 1. Prioritize starting the requested song immediately
-                val targetSong = songs.getOrNull(startIndex) ?: return@launch
-                
-                // Reset queue state
+
+                val safeStartIndex = startIndex.coerceIn(0, songs.lastIndex)
+                val targetSong = songs[safeStartIndex]
+
+                // Reset queue tracking before starting a new playback context.
                 queueRepository.clearQueue()
                 lastRecommendationSongId = null
+                lastRecommendationRequestAt = 0L
                 songs.forEach { queueRepository.markSongAsQueued(it.id) }
-                
-                // Fetch URL for ONLY the target song first (Fast Start)
-                val targetUrlResult = songRepository.getStreamUrl(targetSong.id, StreamQuality.BEST)
-                
-                targetUrlResult.onSuccess { targetUrl ->
-                    // Start playing immediately with what we have
-                    val initialMap = mapOf(targetSong.id to targetUrl)
-                    playerServiceConnection.playWithQueue(songs, initialMap, startIndex)
-                    
-                    _isLoading.value = false
-                    
-                    // Update like status
-                    _isLiked.value = songRepository.isLiked(targetSong.id)
 
-                    // 2. Fetch remaining URLs in background
-                    launch(Dispatchers.IO) {
-                        try {
-                            // Fetch rest of songs in batches to avoid network congestion
-                            val remainingSongs = songs.filter { it.id != targetSong.id }
-                            
-                            remainingSongs.chunked(5).forEach { batch ->
-                                if (!this.isActive) return@forEach
-                                val batchUrls = fetchStreamUrlsBatch(batch)
-                                if (batchUrls.isNotEmpty()) {
-                                    playerServiceConnection.updateStreamUrls(batchUrls)
-                                }
-                                delay(100) // Small delay between batches
-                            }
-                            
-                            // ViTune: Prefetch recommendations when queue is running low
-                            if (_infiniteModeEnabled.value) {
-                                val lastSong = songs.lastOrNull()
-                                lastSong?.let {
-                                    delay(1000) // Wait for initial playback to settle
-                                    fetchAndAddRecommendations(it.id)
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Background fetch failed", e)
-                        }
-                    }
-                }.onFailure { e ->
-                    _error.value = "Failed to play: ${e.message}"
-                    _isLoading.value = false
-                }
-                
+                playerServiceConnection.playSongsLazy(
+                    songs = songs,
+                    startIndex = safeStartIndex,
+                    songRepository = songRepository
+                )
+
+                _isLiked.value = songRepository.isLiked(targetSong.id)
+                _isLoading.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error playing queue", e)
                 _error.value = "Error: ${e.message}"
@@ -375,6 +396,11 @@ class PlayerViewModel @Inject constructor(
     fun addToQueue(song: Song) {
         viewModelScope.launch {
             try {
+                if (blacklistedSongIds.value.contains(song.id)) {
+                    _error.value = "\"${song.title}\" is blacklisted"
+                    return@launch
+                }
+
                 // Filter non-music content
                 if (!song.isValidMusicContent()) {
                     Log.d(TAG, "🎬 Cannot add non-music content to queue: ${song.title} (${song.contentType})")
@@ -444,10 +470,11 @@ class PlayerViewModel @Inject constructor(
     fun reorderQueue(from: Int, to: Int) = playerServiceConnection.reorderQueue(from, to)
     
     fun removeFromQueue(index: Int) {
+        val removedSongId = queue.value.getOrNull(index)?.id
         playerServiceConnection.removeFromQueue(index)
         // Update repository tracking
-        queue.value.getOrNull(index)?.let { song ->
-            queueRepository.removeFromTracking(song.id)
+        removedSongId?.let { songId ->
+            queueRepository.removeFromTracking(songId)
         }
     }
     
@@ -560,7 +587,7 @@ class PlayerViewModel @Inject constructor(
                         _isLiked.value = false
                         Log.d(TAG, "💔 Unliked: ${song.title}")
                     } else {
-                        songRepository.likeSong(song.id)
+                        songRepository.likeSong(song) // Pass full song object
                         _isLiked.value = true
                         Log.d(TAG, "❤️ Liked: ${song.title}")
                     }
@@ -581,6 +608,7 @@ class PlayerViewModel @Inject constructor(
     fun toggleInfiniteMode() {
         _infiniteModeEnabled.value = !_infiniteModeEnabled.value
         viewModelScope.launch {
+            settingsRepository.setAutoQueueSimilar(_infiniteModeEnabled.value)
             queueRepository.setInfiniteMode(_infiniteModeEnabled.value)
         }
         Log.d(TAG, "♾️ Infinite mode: ${_infiniteModeEnabled.value}")
@@ -592,6 +620,7 @@ class PlayerViewModel @Inject constructor(
     fun setInfiniteMode(enabled: Boolean) {
         _infiniteModeEnabled.value = enabled
         viewModelScope.launch {
+            settingsRepository.setAutoQueueSimilar(enabled)
             queueRepository.setInfiniteMode(enabled)
         }
         Log.d(TAG, "♾️ Infinite mode set to: $enabled")
@@ -605,10 +634,13 @@ class PlayerViewModel @Inject constructor(
     private fun fetchAndAddRecommendations(currentSongId: String) {
         Log.d(TAG, "🔍 fetchAndAddRecommendations called for: $currentSongId")
         Log.d(TAG, "   Last song ID: $lastRecommendationSongId, Is fetching: $isRecommendationFetching")
-        
-        // Prevent duplicate fetches for the same song
-        if (currentSongId == lastRecommendationSongId) {
-            Log.d(TAG, "⚠️ Already fetching recommendations for: $currentSongId")
+
+        val now = System.currentTimeMillis()
+        // Prevent immediate duplicate fetches for same seed song, but allow periodic refill.
+        if (currentSongId == lastRecommendationSongId &&
+            (now - lastRecommendationRequestAt) < SAME_SONG_RETRY_COOLDOWN_MS
+        ) {
+            Log.d(TAG, "⚠️ Same-song recommendation cooldown active for: $currentSongId")
             return
         }
         
@@ -623,58 +655,74 @@ class PlayerViewModel @Inject constructor(
             
             isRecommendationFetching = true
             lastRecommendationSongId = currentSongId
+            lastRecommendationRequestAt = now
             
             try {
                 Log.d(TAG, "🔄 Fetching recommendations for: $currentSongId")
-                
-                // Get related songs (Fast due to getUpNext optimization)
-                val result = queueRepository.getRelatedSongs(currentSongId, RECOMMENDATION_FETCH_LIMIT)
-                
-                result.onSuccess { songs ->
-                    if (songs.isEmpty()) {
-                        Log.d(TAG, "⚠️ No recommendations found")
-                        return@onSuccess
+
+                val primarySongs = queueRepository
+                    .getRelatedSongs(currentSongId, RECOMMENDATION_FETCH_LIMIT)
+                    .getOrElse { error ->
+                        Log.e(TAG, "❌ Failed to fetch related songs", error)
+                        emptyList()
                     }
-                    
-                    Log.d(TAG, "✅ Got ${songs.size} recommendations")
-                    
-                    // ViTune: PROCESS IN BATCHES (Chunk by 3)
-                    // This creates an "instant" feel as the first few songs appear immediately
-                    songs.chunked(RECOMMENDATION_BATCH_SIZE).forEachIndexed { index, batch ->
-                        if (!isActive) return@forEachIndexed
-                        
-                        Log.d(TAG, "📦 Processing batch ${index + 1} (${batch.size} songs)")
-                        
-                        // Fetch URLs for this batch in parallel
-                        val streamUrls = fetchStreamUrlsBatch(batch)
-                        
-                        if (streamUrls.isNotEmpty()) {
-                            val validSongs = batch.filter { streamUrls.containsKey(it.id) }
-                            if (validSongs.isNotEmpty()) {
-                                // Add to player for playback
-                                playerServiceConnection.addToQueue(validSongs, streamUrls)
-                                
-                                // Also add to repository for tracking and infinite queue
-                                queueRepository.addToQueue(validSongs)
-                                
-                                // Mark songs as queued
-                                validSongs.forEach { queueRepository.markSongAsQueued(it.id) }
-                                
-                                Log.d(TAG, "➕ Added batch of ${validSongs.size} to queue (Player: ${playerServiceConnection.queue.value.size}, Repo: ${queueRepository.queue.value.size})")
-                            }
-                        }
-                        
-                        // Small delay between batches to not overwhelm the player
-                        if (index < songs.size / RECOMMENDATION_BATCH_SIZE - 1) {
-                            delay(100)
-                        }
+
+                val candidateSongs = if (primarySongs.isNotEmpty()) {
+                    primarySongs
+                } else {
+                    Log.d(TAG, "⚠️ Related queue empty, trying mix fallback")
+                    queueRepository.getSongMix(currentSongId, RECOMMENDATION_FETCH_LIMIT).getOrDefault(emptyList())
+                }
+
+                val blacklist = blacklistedSongIds.value
+                val filteredCandidates = candidateSongs.filterNot { blacklist.contains(it.id) }
+
+                if (filteredCandidates.isEmpty()) {
+                    Log.d(TAG, "⚠️ No recommendations found")
+                    // Allow retry for the same seed song on the next queue check.
+                    lastRecommendationSongId = null
+                    lastRecommendationRequestAt = 0L
+                    return@launch
+                }
+
+                Log.d(TAG, "✅ Got ${filteredCandidates.size} recommendations")
+
+                var totalAdded = 0
+
+                filteredCandidates.chunked(RECOMMENDATION_BATCH_SIZE).forEachIndexed { index, batch ->
+                    if (!currentCoroutineContext().isActive) return@forEachIndexed
+
+                    Log.d(TAG, "📦 Processing batch ${index + 1} (${batch.size} songs)")
+
+                    val streamUrls = fetchStreamUrlsBatch(batch)
+                    if (streamUrls.isEmpty()) return@forEachIndexed
+
+                    val validSongs = batch.filter { streamUrls.containsKey(it.id) }
+                    if (validSongs.isEmpty()) return@forEachIndexed
+
+                    playerServiceConnection.addToQueue(validSongs, streamUrls)
+                    queueRepository.addToQueue(validSongs)
+                    totalAdded += validSongs.size
+
+                    Log.d(
+                        TAG,
+                        "➕ Added batch of ${validSongs.size} (total added: $totalAdded, player queue: ${playerServiceConnection.queue.value.size})"
+                    )
+
+                    if (index < filteredCandidates.size / RECOMMENDATION_BATCH_SIZE - 1) {
+                        delay(100)
                     }
-                    
-                }.onFailure { e ->
-                    Log.e(TAG, "❌ Failed to fetch recommendations", e)
+                }
+
+                if (totalAdded == 0) {
+                    // URL extraction failed for all candidates; retry later.
+                    lastRecommendationSongId = null
+                    lastRecommendationRequestAt = 0L
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error in recommendation fetch", e)
+                lastRecommendationSongId = null
+                lastRecommendationRequestAt = 0L
             } finally {
                 isRecommendationFetching = false
             }
@@ -726,7 +774,89 @@ class PlayerViewModel @Inject constructor(
     fun refreshRecommendations() {
         currentSong.value?.let { song ->
             lastRecommendationSongId = null // Reset to force new fetch
+            lastRecommendationRequestAt = 0L
             fetchAndAddRecommendations(song.id)
+        }
+    }
+
+    fun downloadCurrentSongOffline() {
+        viewModelScope.launch {
+            val song = currentSong.value ?: return@launch
+            runCatching {
+                songRepository.cacheSong(song)
+
+                if (songDownloadManager.isDownloaded(song.id)) {
+                    _error.value = "Already downloaded"
+                    return@runCatching
+                }
+
+                val downloadQuality = settingsRepository.downloadQuality.first()
+                songDownloadManager.downloadSong(song, downloadQuality).getOrThrow()
+            }.onSuccess {
+                _error.value = "Downloaded for offline"
+                Log.d(TAG, "⬇️ Downloaded for offline: ${song.title}")
+            }.onFailure { exception ->
+                _error.value = "Download failed: ${exception.message}"
+                Log.e(TAG, "Failed downloading song for offline", exception)
+            }
+        }
+    }
+
+    fun addCurrentSongToPlaylist(playlistId: Long) {
+        viewModelScope.launch {
+            val song = currentSong.value ?: return@launch
+            runCatching {
+                songRepository.cacheSong(song)
+                playlistRepository.addSongToPlaylist(playlistId, song.id).getOrThrow()
+            }.onSuccess {
+                _error.value = "Added to playlist"
+            }.onFailure { error ->
+                _error.value = "Failed to add to playlist: ${error.message}"
+                Log.e(TAG, "Failed adding current song to playlist", error)
+            }
+        }
+    }
+
+    fun createPlaylistAndAddCurrentSong(name: String, description: String? = null) {
+        viewModelScope.launch {
+            val trimmedName = name.trim()
+            if (trimmedName.isEmpty()) return@launch
+
+            val song = currentSong.value ?: return@launch
+            runCatching {
+                songRepository.cacheSong(song)
+                val playlistId = playlistRepository.createPlaylist(trimmedName, description).getOrThrow()
+                playlistRepository.addSongToPlaylist(playlistId, song.id).getOrThrow()
+            }.onSuccess {
+                _error.value = "Playlist created and song added"
+            }.onFailure { error ->
+                _error.value = "Failed to create playlist: ${error.message}"
+                Log.e(TAG, "Failed creating playlist from player", error)
+            }
+        }
+    }
+
+    fun addCurrentSongToBlacklist() {
+        viewModelScope.launch {
+            val song = currentSong.value ?: return@launch
+            val isAlreadyBlacklisted = blacklistedSongIds.value.contains(song.id)
+            if (isAlreadyBlacklisted) {
+                _error.value = "\"${song.title}\" is already blacklisted"
+                return@launch
+            }
+
+            runCatching {
+                settingsRepository.addBlacklistedSongId(song.id)
+            }.onSuccess {
+                val index = currentQueueIndex.value
+                if (index in queue.value.indices) {
+                    removeFromQueue(index)
+                }
+                _error.value = "Added to blacklist"
+            }.onFailure { error ->
+                _error.value = "Failed to blacklist song: ${error.message}"
+                Log.e(TAG, "Failed blacklisting song", error)
+            }
         }
     }
     
@@ -752,9 +882,18 @@ class PlayerViewModel @Inject constructor(
                 // Get stream URL
                 songRepository.getStreamUrl(song.id, StreamQuality.BEST)
                     .onSuccess { streamUrl ->
-                        // Add to play next position
+                        val insertIndex = (currentQueueIndex.value + 1).coerceAtLeast(0)
+
+                        // Add then move right after current song.
                         playerServiceConnection.addToQueue(song, streamUrl)
                         queueRepository.markSongAsQueued(song.id)
+
+                        val appendedIndex = queue.value.lastIndex
+                        if (appendedIndex > insertIndex) {
+                            playerServiceConnection.reorderQueue(appendedIndex, insertIndex)
+                            queueRepository.moveSong(appendedIndex, insertIndex)
+                        }
+
                         Log.d(TAG, "⏭️ Added to play next: ${song.title}")
                     }
                     .onFailure { exception ->

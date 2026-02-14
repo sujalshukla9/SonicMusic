@@ -15,6 +15,15 @@ interface PlaylistDao {
     @Query("SELECT * FROM playlists ORDER BY updatedAt DESC")
     fun getAllPlaylists(): Flow<List<PlaylistEntity>>
 
+    @Query("""
+        SELECT p.*, COUNT(ps.songId) as songCount 
+        FROM playlists p 
+        LEFT JOIN playlist_songs ps ON p.id = ps.playlistId 
+        GROUP BY p.id 
+        ORDER BY p.updatedAt DESC
+    """)
+    fun getPlaylistsWithSongCount(): Flow<List<PlaylistWithCount>>
+
     @Query("SELECT * FROM playlists WHERE id = :playlistId")
     suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
 
@@ -57,3 +66,13 @@ interface PlaylistDao {
         }
     }
 }
+
+data class PlaylistWithCount(
+    val id: Long,
+    val name: String,
+    val description: String?,
+    val coverArtUrl: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val songCount: Int
+)

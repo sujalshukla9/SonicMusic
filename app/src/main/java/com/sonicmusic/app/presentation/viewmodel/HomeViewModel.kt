@@ -4,22 +4,21 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.data.repository.QueueRepositoryImpl
+import com.sonicmusic.app.data.repository.RegionRepository
+import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.HomeContent
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.domain.model.StreamQuality
-import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.usecase.GetHomeContentUseCase
 import com.sonicmusic.app.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -37,13 +36,25 @@ class HomeViewModel @Inject constructor(
     private val getHomeContentUseCase: GetHomeContentUseCase,
     private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
-    private val historyRepository: HistoryRepository,
-    private val queueRepository: QueueRepositoryImpl
+    private val queueRepository: QueueRepositoryImpl,
+    private val regionRepository: RegionRepository,
+    private val settingsRepository: SettingsRepository
 ) : ViewModel() {
 
     companion object {
         private const val TAG = "HomeViewModel"
-        private const val MAX_RETRY_ATTEMPTS = 3
+        private const val SECTION_LIMIT = 100
+        private const val SECTION_ARTIST_PREFIX = "artist:"
+
+        const val SECTION_LISTEN_AGAIN = "listen_again"
+        const val SECTION_QUICK_PICKS = "quick_picks"
+        const val SECTION_TRENDING = "trending"
+        const val SECTION_NEW_RELEASES = "new_releases"
+        const val SECTION_ENGLISH_HITS = "english_hits"
+        const val SECTION_PERSONALIZED = "personalized"
+        const val SECTION_FORGOTTEN_FAVORITES = "forgotten_favorites"
+
+        fun artistSectionKey(artistId: String): String = "$SECTION_ARTIST_PREFIX$artistId"
     }
 
     private val _homeContent = MutableStateFlow<HomeContent>(HomeContent())
@@ -57,6 +68,9 @@ class HomeViewModel @Inject constructor(
 
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    val countryName: StateFlow<String?> = regionRepository.countryName
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     init {
         loadHomeContent()
@@ -115,53 +129,20 @@ class HomeViewModel @Inject constructor(
      */
     fun onSongClick(song: Song) {
         viewModelScope.launch {
-            _isLoading.value = true
-            _error.value = null
-
             try {
                 // Immediate UI feedback
                 playerServiceConnection.preparePlayback(song)
-                
-                // Record playback FIRST so history is immediately updated
-                historyRepository.recordPlayback(song)
 
-                // Clear any existing queue state for fresh start
-                queueRepository.clearQueue()
-
-                var lastException: Exception? = null
-
-                // Retry loop for better reliability
-                repeat(MAX_RETRY_ATTEMPTS) { attempt ->
-                    try {
-                        songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                            .onSuccess { streamUrl ->
-                                playerServiceConnection.playSong(song, streamUrl)
-                                _isLoading.value = false
-                                return@launch
-                            }
-                            .onFailure { exception ->
-                                Log.w(TAG, "Attempt ${attempt + 1} failed: ${exception.message}")
-                                lastException = exception as? Exception
-                            }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Attempt ${attempt + 1} error: ${e.message}")
-                        lastException = e
-                    }
-
-                    if (attempt < MAX_RETRY_ATTEMPTS - 1) {
-                        kotlinx.coroutines.delay(1000L * (attempt + 1))
-                    }
-                }
-
-                // All retries failed
-                _error.value = "Failed to play: ${lastException?.message ?: "Unknown error"}"
-
+                // Use robust lazy loading
+                playerServiceConnection.playSongsLazy(
+                    songs = listOf(song),
+                    startIndex = 0,
+                    songRepository = songRepository
+                )
             } catch (e: Exception) {
                 Log.e(TAG, "Error playing song", e)
                 _error.value = "Failed to play: ${e.message}"
             }
-
-            _isLoading.value = false
         }
     }
 
@@ -175,46 +156,32 @@ class HomeViewModel @Inject constructor(
      */
     fun onSongClickWithContext(song: Song, contextSongs: List<Song>, shuffle: Boolean = false) {
         viewModelScope.launch {
-            _isLoading.value = true
-            _error.value = null
-
             try {
-                // Record playback
-                historyRepository.recordPlayback(song)
+                // Prepare list
+                val songsToPlay = if (shuffle) {
+                    // If shuffle, put clicked song first, shuffle the rest
+                    val remaining = contextSongs.filter { it.id != song.id }.shuffled()
+                    listOf(song) + remaining
+                } else {
+                    contextSongs
+                }
+                
+                // Find index of clicked song
+                val startIndex = songsToPlay.indexOfFirst { it.id == song.id }.coerceAtLeast(0)
 
-                // Clear existing queue
-                queueRepository.clearQueue()
+                // Mark songs as queued (so they don't get re-added by recommendations immediately)
+                songsToPlay.forEach { queueRepository.markSongAsQueued(it.id) }
 
-                // Filter out the clicked song and shuffle if requested
-                val remainingSongs = contextSongs.filter { it.id != song.id }
-                val orderedSongs = if (shuffle) remainingSongs.shuffled() else remainingSongs
-
-                // Mark songs as queued
-                orderedSongs.forEach { queueRepository.markSongAsQueued(it.id) }
-
-                // Get stream URL for the clicked song first
-                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                    .onSuccess { streamUrl ->
-                        // Start playback immediately
-                        playerServiceConnection.playSong(song, streamUrl)
-
-                        // Add remaining songs in background
-                        if (orderedSongs.isNotEmpty()) {
-                            addSongsToQueueInBackground(orderedSongs)
-                        }
-
-                        _isLoading.value = false
-                    }
-                    .onFailure { exception ->
-                        Log.e(TAG, "Failed to get stream URL", exception)
-                        _error.value = "Failed to play: ${exception.message}"
-                        _isLoading.value = false
-                    }
+                // Play lazy
+                playerServiceConnection.playSongsLazy(
+                    songs = songsToPlay,
+                    startIndex = startIndex,
+                    songRepository = songRepository
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error playing song with context", e)
                 _error.value = "Failed to play: ${e.message}"
-                _isLoading.value = false
             }
         }
     }
@@ -223,58 +190,33 @@ class HomeViewModel @Inject constructor(
      * Play a song with ViTune Radio-style queue
      * When user clicks a song, it plays that song and starts radio recommendations
      * The queue fills automatically with similar songs (infinite radio)
-     * 
-     * NOTE: Queue generation is handled by PlayerViewModel's callback mechanism
-     * This just starts playback and enables infinite mode
      *
      * @param song The song to start radio from
      */
     fun onSongClickWithRadioQueue(song: Song) {
         viewModelScope.launch {
-            _isLoading.value = true
-            _error.value = null
-
             try {
                 Log.d(TAG, "🎵 Starting ViTune Radio for: ${song.title} (${song.id})")
 
                 // Immediate UI feedback
                 playerServiceConnection.preparePlayback(song)
+                
+                val autoQueueSimilar = settingsRepository.autoQueueSimilar.first()
+                queueRepository.setInfiniteMode(autoQueueSimilar)
+                if (autoQueueSimilar) {
+                    queueRepository.markSongAsQueued(song.id)
+                }
 
-                // Record playback
-                historyRepository.recordPlayback(song)
-
-                // Get stream URL for the song FIRST
-                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                    .onSuccess { streamUrl ->
-                        Log.d(TAG, "✅ Got stream URL, starting playback")
-                        
-                        // Clear any existing queue state
-                        queueRepository.clearQueue()
-                        
-                        // Start playback immediately - this creates the initial queue
-                        playerServiceConnection.playSong(song, streamUrl)
-
-                        // Enable infinite mode for radio-style behavior
-                        // This allows PlayerViewModel to auto-fill the queue
-                        queueRepository.setInfiniteMode(true)
-
-                        // Mark this song as queued
-                        queueRepository.markSongAsQueued(song.id)
-
-                        _isLoading.value = false
-                        Log.d(TAG, "🎵 Started ViTune Radio from: ${song.title}")
-                        Log.d(TAG, "📻 Queue will auto-fill via PlayerViewModel callback")
-                    }
-                    .onFailure { exception ->
-                        Log.e(TAG, "❌ Failed to start radio", exception)
-                        _error.value = "Failed to play: ${exception.message}"
-                        _isLoading.value = false
-                    }
+                // Play lazy
+                playerServiceConnection.playSongsLazy(
+                    songs = listOf(song),
+                    startIndex = 0,
+                    songRepository = songRepository
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error starting radio", e)
                 _error.value = "Failed to play: ${e.message}"
-                _isLoading.value = false
             }
         }
     }
@@ -289,132 +231,42 @@ class HomeViewModel @Inject constructor(
         if (songs.isEmpty()) return
 
         viewModelScope.launch {
-            _isLoading.value = true
-            _error.value = null
-
             try {
-                // Clear existing queue
-                queueRepository.clearQueue()
-
-                // Shuffle if requested
-                val orderedSongs = if (shuffle) songs.shuffled() else songs
-
-                // Get the first song
-                val firstSong = orderedSongs.first()
-
-                // Record playback
-                historyRepository.recordPlayback(firstSong)
+                // Prepare list
+                val songsToPlay = if (shuffle) songs.shuffled() else songs
 
                 // Mark all songs as queued
-                orderedSongs.forEach { queueRepository.markSongAsQueued(it.id) }
+                songsToPlay.forEach { queueRepository.markSongAsQueued(it.id) }
 
-                // Get stream URL for first song
-                songRepository.getStreamUrl(firstSong.id, StreamQuality.BEST)
-                    .onSuccess { streamUrl ->
-                        val remainingSongs = orderedSongs.drop(1)
-
-                        if (remainingSongs.isEmpty()) {
-                            // Single song - just play it
-                            playerServiceConnection.playSong(firstSong, streamUrl)
-                        } else {
-                            // Multiple songs - use queue
-                            val initialMap = mapOf(firstSong.id to streamUrl)
-                            playerServiceConnection.playWithQueue(orderedSongs, initialMap, 0)
-
-                            // Fetch remaining URLs in background
-                            addSongsToQueueInBackground(remainingSongs)
-                        }
-
-                        _isLoading.value = false
-                    }
-                    .onFailure { exception ->
-                        Log.e(TAG, "Failed to play queue", exception)
-                        _error.value = "Failed to play: ${exception.message}"
-                        _isLoading.value = false
-                    }
+                // Play lazy
+                playerServiceConnection.playSongsLazy(
+                    songs = songsToPlay,
+                    startIndex = 0, // Always start at beginning for Play All
+                    songRepository = songRepository
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error playing all songs", e)
                 _error.value = "Failed to play: ${e.message}"
-                _isLoading.value = false
             }
         }
     }
 
     /**
-     * Add a song to play next (queue position 1)
+     * Add a song to play next
      */
     fun playNext(song: Song) {
         viewModelScope.launch {
             try {
-                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                    .onSuccess { streamUrl ->
-                        playerServiceConnection.addToQueue(song, streamUrl)
-                        Log.d(TAG, "➕ Added to play next: ${song.title}")
-                    }
-                    .onFailure { exception ->
-                        Log.e(TAG, "Failed to add to queue", exception)
-                    }
+                // Use lazy add to queue - currently appends, but robust
+                playerServiceConnection.addSongsToQueueLazy(
+                    songs = listOf(song),
+                    songRepository = songRepository,
+                    isQueueAlreadyPopulated = true 
+                )
+                Log.d(TAG, "➕ Added to queue: ${song.title}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error adding song to queue", e)
-            }
-        }
-    }
-
-    /**
-     * Add songs to queue in background with parallel URL fetching
-     * Syncs both PlayerServiceConnection and QueueRepository
-     */
-    private suspend fun addSongsToQueueInBackground(songs: List<Song>) {
-        withContext(Dispatchers.IO) {
-            try {
-                Log.d(TAG, "⏳ Fetching URLs for ${songs.size} songs...")
-                
-                // Fetch URLs in batches to avoid overwhelming the network
-                songs.chunked(5).forEach { batch ->
-                    val jobs = batch.map { song ->
-                        async {
-                            try {
-                                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                                    .getOrNull()
-                                    ?.let { url -> 
-                                        Log.d(TAG, "🔗 Got URL for: ${song.title}")
-                                        song to url 
-                                    }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "⚠️ Failed to get URL for ${song.id}: ${e.message}")
-                                null
-                            }
-                        }
-                    }
-
-                    val results = jobs.awaitAll().filterNotNull()
-                    if (results.isNotEmpty()) {
-                        val urlMap = results.associate { it.first.id to it.second }
-                        val validSongs = results.map { it.first }
-                        
-                        Log.d(TAG, "➕ Adding ${validSongs.size} songs to queue...")
-                        
-                        // Add to PlayerServiceConnection for playback
-                        playerServiceConnection.addToQueue(validSongs, urlMap)
-                        
-                        // Also add to QueueRepository for tracking and infinite queue
-                        queueRepository.addToQueue(validSongs)
-                        
-                        // Mark songs as queued
-                        validSongs.forEach { queueRepository.markSongAsQueued(it.id) }
-                        
-                        Log.d(TAG, "✅ Added ${validSongs.size} songs to queue. Total: ${playerServiceConnection.queue.value.size}")
-                    } else {
-                        Log.w(TAG, "⚠️ No valid URLs fetched in this batch")
-                    }
-
-                    kotlinx.coroutines.delay(100) // Small delay between batches
-                }
-                
-                Log.d(TAG, "✅ Finished adding all songs to queue")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error adding songs to queue", e)
             }
         }
     }
@@ -431,15 +283,52 @@ class HomeViewModel @Inject constructor(
      * Get songs for a specific section
      */
     fun getSongsForSection(section: String): List<Song> {
+        val sectionSongs = when (section) {
+            SECTION_LISTEN_AGAIN -> _homeContent.value.listenAgain
+            SECTION_QUICK_PICKS -> _homeContent.value.quickPicks
+            SECTION_TRENDING -> _homeContent.value.trending
+            SECTION_NEW_RELEASES -> _homeContent.value.newReleases
+            SECTION_ENGLISH_HITS -> _homeContent.value.englishHits
+            SECTION_PERSONALIZED -> _homeContent.value.personalizedForYou
+            SECTION_FORGOTTEN_FAVORITES -> _homeContent.value.forgottenFavorites
+            else -> {
+                if (section.startsWith(SECTION_ARTIST_PREFIX)) {
+                    val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
+                    _homeContent.value.artists.firstOrNull { it.artist.id == artistId }?.songs.orEmpty()
+                } else {
+                    emptyList()
+                }
+            }
+        }
+
+        return sectionSongs.take(SECTION_LIMIT)
+    }
+
+    fun getSectionTitle(section: String): String {
         return when (section) {
-            "listen_again" -> _homeContent.value.listenAgain
-            "quick_picks" -> _homeContent.value.quickPicks
-            "trending" -> _homeContent.value.trending
-            "new_releases" -> _homeContent.value.newReleases
-            "english_hits" -> _homeContent.value.englishHits
-            "personalized" -> _homeContent.value.personalizedForYou
-            "forgotten_favorites" -> _homeContent.value.forgottenFavorites
-            else -> emptyList()
+            SECTION_LISTEN_AGAIN -> "Listen Again"
+            SECTION_QUICK_PICKS -> "Quick Picks"
+            SECTION_TRENDING -> "Trending Now"
+            SECTION_NEW_RELEASES -> "New Releases"
+            SECTION_ENGLISH_HITS -> "English Hits"
+            SECTION_PERSONALIZED -> "Made for You"
+            SECTION_FORGOTTEN_FAVORITES -> "Forgotten Favorites"
+            else -> {
+                if (section.startsWith(SECTION_ARTIST_PREFIX)) {
+                    val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
+                    val artistName = _homeContent.value.artists
+                        .firstOrNull { it.artist.id == artistId }
+                        ?.artist
+                        ?.name
+                    if (artistName.isNullOrBlank()) {
+                        "Artist Songs"
+                    } else {
+                        "More from $artistName"
+                    }
+                } else {
+                    "Songs"
+                }
+            }
         }
     }
 

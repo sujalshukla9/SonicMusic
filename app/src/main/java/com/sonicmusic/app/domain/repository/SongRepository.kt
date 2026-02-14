@@ -18,7 +18,8 @@ interface SongRepository {
     // URL cache management
     suspend fun clearCachedStreamUrl(songId: String)
     
-    suspend fun likeSong(songId: String)
+    suspend fun cacheSong(song: Song)
+    suspend fun likeSong(song: Song)
     suspend fun unlikeSong(songId: String)
     fun getLikedSongs(): Flow<List<Song>>
     suspend fun isLiked(songId: String): Boolean

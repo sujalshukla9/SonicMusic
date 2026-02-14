@@ -23,18 +23,29 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
+import com.sonicmusic.app.presentation.ui.components.permissions.AudioStoragePermissionHandler
+import androidx.compose.runtime.LaunchedEffect
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalSongsScreen(
     onNavigateBack: () -> Unit,
     onShowFullPlayer: () -> Unit = {},
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    val localSongs by viewModel.localSongs.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
+    AudioStoragePermissionHandler(
+        onPermissionGranted = {
+            // Trigger scan once permission is granted
+            LaunchedEffect(Unit) {
+                viewModel.refreshLocalMusic()
+            }
+
+            val localSongs by viewModel.localSongs.collectAsState()
+            val isLoading by viewModel.isLoading.collectAsState()
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Local Songs") },
@@ -87,8 +98,8 @@ fun LocalSongsScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                    .padding(top = paddingValues.calculateTopPadding()),
+                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 // Header with play controls
                 item {
@@ -139,6 +150,8 @@ fun LocalSongsScreen(
             }
         }
     }
+        }
+    ) // end AudioStoragePermissionHandler
 }
 
 @Composable

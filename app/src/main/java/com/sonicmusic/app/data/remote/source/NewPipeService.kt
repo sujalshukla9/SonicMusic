@@ -59,6 +59,22 @@ class NewPipeService @Inject constructor() {
     }
 
     /**
+     * Update NewPipe Content Country
+     */
+    fun updateRegion(countryCode: String) {
+        try {
+            NewPipe.init(
+                NewPipeDownloader.getInstance(),
+                Localization.DEFAULT,
+                ContentCountry(countryCode)
+            )
+            Log.d(TAG, "🌍 NewPipe region updated to: $countryCode")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to update NewPipe region", e)
+        }
+    }
+
+    /**
      * Get the YouTube service from NewPipe
      */
     private fun getYouTubeService(): YoutubeService {
@@ -155,18 +171,17 @@ class NewPipeService @Inject constructor() {
         
         return when (quality) {
             StreamQuality.LOSSLESS, StreamQuality.BEST -> {
-                // Prefer OPUS > 150kbps (usually itag 251 is ~160kbps)
+                // Priority: WebM (Opus) at highest bitrate
                 validStreams.filter { 
-                    (it.format?.name?.contains("opus", true) == true || 
-                     it.format?.name?.contains("webm", true) == true) && 
-                    it.averageBitrate >= 150 
+                    it.format?.name?.contains("webm", true) == true ||
+                    it.format?.name?.contains("opus", true) == true
                 }.maxByOrNull { it.averageBitrate }
-                // Fallback to highest bitrate M4A/AAC
+                // Fallback: Highest bitrate M4A/AAC
                 ?: validStreams.filter { 
-                     it.format?.name?.contains("m4a", true) == true || 
-                     it.format?.name?.contains("mp4", true) == true
+                    it.format?.name?.contains("m4a", true) == true || 
+                    it.format?.name?.contains("mp4", true) == true
                 }.maxByOrNull { it.averageBitrate }
-                // Fallback to highest overall
+                // Fallback: Highest bitrate overall
                 ?: validStreams.maxByOrNull { it.averageBitrate }
             }
             

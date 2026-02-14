@@ -11,6 +11,23 @@ interface PlaybackHistoryDao {
     @Query("SELECT * FROM playback_history ORDER BY playedAt DESC LIMIT :limit")
     fun getRecentlyPlayed(limit: Int): Flow<List<PlaybackHistoryEntity>>
 
+    @Query(
+        """
+        SELECT ph.*
+        FROM playback_history ph
+        INNER JOIN (
+            SELECT songId, MAX(playedAt) AS lastPlayedAt
+            FROM playback_history
+            GROUP BY songId
+        ) latest
+            ON ph.songId = latest.songId
+            AND ph.playedAt = latest.lastPlayedAt
+        ORDER BY ph.playedAt DESC
+        LIMIT :limit
+        """
+    )
+    fun getRecentlyPlayedUniqueSongs(limit: Int): Flow<List<PlaybackHistoryEntity>>
+
     @Query("SELECT DISTINCT songId FROM playback_history ORDER BY playedAt DESC LIMIT :limit")
     suspend fun getRecentSongIds(limit: Int): List<String>
 
@@ -29,6 +46,14 @@ interface PlaybackHistoryDao {
     @Query("SELECT * FROM playback_history WHERE playedAt > :since ORDER BY playedAt DESC")
     suspend fun getMostPlayedSince(since: Long): List<PlaybackHistoryEntity>
     
+    @Query("""
+        SELECT * FROM playback_history 
+        WHERE artist = :artist 
+        GROUP BY songId 
+        ORDER BY playedAt DESC
+    """)
+    fun getSongsByArtist(artist: String): Flow<List<PlaybackHistoryEntity>>
+    
     // ═══════════════════════════════════════════
     // TASTE ANALYSIS QUERIES
     // ═══════════════════════════════════════════
@@ -37,13 +62,30 @@ interface PlaybackHistoryDao {
      * Get top artists by play count
      */
     @Query("""
-        SELECT artist, COUNT(*) as playCount 
+        SELECT 
+            artist, 
+            COUNT(*) as playCount,
+            MAX(thumbnailUrl) as thumbnailUrl
         FROM playback_history 
         GROUP BY artist 
         ORDER BY playCount DESC 
         LIMIT :limit
     """)
     suspend fun getTopArtistsByPlayCount(limit: Int = 10): List<ArtistPlayCount>
+    
+    /**
+     * Get all distinct artists with play counts
+     */
+    @Query("""
+        SELECT 
+            artist, 
+            COUNT(*) as playCount,
+            MAX(thumbnailUrl) as thumbnailUrl
+        FROM playback_history 
+        GROUP BY artist 
+        ORDER BY playCount DESC
+    """)
+    fun getAllArtists(): Flow<List<ArtistPlayCount>>
     
     /**
      * Get playback count by hour of day (0-23)
@@ -91,7 +133,8 @@ interface PlaybackHistoryDao {
 // Data classes for query results
 data class ArtistPlayCount(
     val artist: String,
-    val playCount: Int
+    val playCount: Int,
+    val thumbnailUrl: String? = null
 )
 
 data class HourlyPlayback(

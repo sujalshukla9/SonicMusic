@@ -29,15 +29,22 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.google.common.collect.ImmutableList
 import com.sonicmusic.app.R
+import com.sonicmusic.app.data.local.datastore.SettingsDataStore
+import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.repository.SongRepository
 
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -63,6 +70,12 @@ class PlaybackService : MediaSessionService() {
     @Inject
     lateinit var audioEngine: AudioEngine
 
+    @Inject
+    lateinit var settingsDataStore: SettingsDataStore
+
+    @Inject
+    lateinit var songRepository: SongRepository
+
     companion object {
         private const val TAG = "PlaybackService"
         private const val CHANNEL_ID = "sonic_music_playback"
@@ -74,6 +87,7 @@ class PlaybackService : MediaSessionService() {
         const val ACTION_PREVIOUS = "com.sonicmusic.PREVIOUS"
         const val ACTION_STOP = "com.sonicmusic.STOP"
         const val ACTION_TOGGLE_SHUFFLE = "com.sonicmusic.TOGGLE_SHUFFLE"
+        const val ACTION_TOGGLE_LIKE = "com.sonicmusic.TOGGLE_LIKE"
         const val ACTION_TOGGLE_REPEAT = "com.sonicmusic.TOGGLE_REPEAT"
 
         // Buffer configuration constants for better streaming
@@ -92,6 +106,14 @@ class PlaybackService : MediaSessionService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentArtwork: Bitmap? = null
     private var mediaNotificationProvider: MediaNotificationProvider? = null
+    private var skipSilenceJob: Job? = null
+    private var gaplessPlaybackJob: Job? = null
+    private var crossfadeSettingsJob: Job? = null
+    private var crossfadeMonitorJob: Job? = null
+    private var crossfadeTransitionJob: Job? = null
+    private var crossfadeEnabled: Boolean = false
+    private var crossfadeDurationMs: Long = 0L
+    private var isCrossfadeTransitionRunning: Boolean = false
     
     // Binder for external access
     private val binder = Binder()
@@ -120,6 +142,7 @@ class PlaybackService : MediaSessionService() {
         super.onCreate()
         Log.d(TAG, "🎵 PlaybackService created")
         initializePlayer()
+        observePlaybackSettings()
         setupNotificationProvider()
     }
     
@@ -174,17 +197,135 @@ class PlaybackService : MediaSessionService() {
     }
     
     private fun setupNotificationProvider() {
-        mediaNotificationProvider = MediaNotificationProvider(this)
+        mediaNotificationProvider = MediaNotificationProvider(this) { songId ->
+            runBlocking { songRepository.isLiked(songId) }
+        }
         setMediaNotificationProvider(mediaNotificationProvider!!)
         Log.d(TAG, "✅ Modern notification provider set up")
     }
+
+    private fun observePlaybackSettings() {
+        skipSilenceJob?.cancel()
+        gaplessPlaybackJob?.cancel()
+        crossfadeSettingsJob?.cancel()
+
+        skipSilenceJob = serviceScope.launch {
+            settingsDataStore.skipSilence.collect { enabled ->
+                player?.skipSilenceEnabled = enabled
+                Log.d(TAG, "🔇 Skip silence: $enabled")
+            }
+        }
+
+        gaplessPlaybackJob = serviceScope.launch {
+            settingsDataStore.gaplessPlayback.collect { enabled ->
+                player?.pauseAtEndOfMediaItems = !enabled
+                Log.d(TAG, "🎚️ Gapless playback: $enabled")
+            }
+        }
+
+        crossfadeSettingsJob = serviceScope.launch {
+            settingsDataStore.crossfadeDuration.collect { seconds ->
+                val safeSeconds = seconds.coerceIn(0, 12)
+                crossfadeEnabled = safeSeconds > 0
+                crossfadeDurationMs = if (crossfadeEnabled) {
+                    (safeSeconds * 1000L).coerceIn(1000L, 12000L)
+                } else {
+                    0L
+                }
+
+                if (!crossfadeEnabled && !isCrossfadeTransitionRunning) {
+                    player?.volume = 1f
+                }
+                Log.d(
+                    TAG,
+                    if (crossfadeEnabled) {
+                        "🔀 Crossfade enabled: ${crossfadeDurationMs}ms"
+                    } else {
+                        "🔀 Crossfade disabled"
+                    }
+                )
+            }
+        }
+    }
+
+    private fun startCrossfadeMonitor() {
+        if (crossfadeMonitorJob?.isActive == true) return
+
+        crossfadeMonitorJob = serviceScope.launch {
+            while (isActive) {
+                val currentPlayer = player
+                if (
+                    currentPlayer != null &&
+                    crossfadeEnabled &&
+                    !isCrossfadeTransitionRunning &&
+                    currentPlayer.isPlaying &&
+                    currentPlayer.hasNextMediaItem()
+                ) {
+                    val duration = currentPlayer.duration
+                    val position = currentPlayer.currentPosition
+
+                    if (duration > 0 && duration != C.TIME_UNSET) {
+                        val remaining = duration - position
+                        if (remaining in 1..crossfadeDurationMs) {
+                            runCrossfadeTransition(currentPlayer, crossfadeDurationMs)
+                        }
+                    }
+                }
+
+                delay(180)
+            }
+        }
+    }
+
+    private fun stopCrossfadeMonitor() {
+        crossfadeMonitorJob?.cancel()
+        crossfadeMonitorJob = null
+        crossfadeTransitionJob?.cancel()
+        crossfadeTransitionJob = null
+        isCrossfadeTransitionRunning = false
+        player?.volume = 1f
+    }
+
+    private fun runCrossfadeTransition(currentPlayer: ExoPlayer, durationMs: Long) {
+        if (isCrossfadeTransitionRunning) return
+
+        crossfadeTransitionJob?.cancel()
+        crossfadeTransitionJob = serviceScope.launch {
+            isCrossfadeTransitionRunning = true
+            val halfDuration = (durationMs / 2L).coerceAtLeast(240L)
+            val steps = 8
+            val stepDelay = (halfDuration / steps).coerceAtLeast(16L)
+
+            try {
+                for (step in steps downTo 0) {
+                    currentPlayer.volume = step.toFloat() / steps.toFloat()
+                    delay(stepDelay)
+                }
+
+                if (currentPlayer.hasNextMediaItem()) {
+                    currentPlayer.seekToNext()
+                    if (!currentPlayer.isPlaying) {
+                        currentPlayer.play()
+                    }
+                }
+
+                for (step in 0..steps) {
+                    currentPlayer.volume = step.toFloat() / steps.toFloat()
+                    delay(stepDelay)
+                }
+            } finally {
+                currentPlayer.volume = 1f
+                isCrossfadeTransitionRunning = false
+            }
+        }
+    }
     
     private fun createCustomLayout(): ImmutableList<CommandButton> {
-        // Create custom command buttons for shuffle and repeat
-        val shuffleButton = CommandButton.Builder()
-            .setDisplayName("Shuffle")
-            .setIconResId(R.drawable.ic_notification_shuffle)
-            .setSessionCommand(SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
+        // Create custom command buttons for like and repeat
+        val likeButton = CommandButton.Builder()
+            .setDisplayName("Like")
+            .setIconResId(R.drawable.ic_notification_like)
+            .setSessionCommand(SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY))
             .build()
             
         val repeatButton = CommandButton.Builder()
@@ -193,16 +334,24 @@ class PlaybackService : MediaSessionService() {
             .setSessionCommand(SessionCommand(ACTION_TOGGLE_REPEAT, Bundle.EMPTY))
             .build()
             
-        return ImmutableList.of(shuffleButton, repeatButton)
+        return ImmutableList.of(likeButton, repeatButton)
     }
     
     private fun createPlayerListener() = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             Log.d(TAG, "📊 Playing: $isPlaying")
+            if (isPlaying) {
+                startCrossfadeMonitor()
+            } else {
+                stopCrossfadeMonitor()
+            }
         }
         
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             Log.d(TAG, "🎵 Track changed: ${mediaItem?.mediaMetadata?.title}")
+            if (!isCrossfadeTransitionRunning) {
+                player?.volume = 1f
+            }
         }
         
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -329,6 +478,9 @@ class PlaybackService : MediaSessionService() {
                     p.shuffleModeEnabled = !p.shuffleModeEnabled
                 }
             }
+            ACTION_TOGGLE_LIKE -> {
+                toggleLikeForCurrentSong()
+            }
             ACTION_TOGGLE_REPEAT -> {
                 player?.let { p ->
                     p.repeatMode = when (p.repeatMode) {
@@ -354,6 +506,10 @@ class PlaybackService : MediaSessionService() {
     
     override fun onDestroy() {
         Log.d(TAG, "🔚 PlaybackService destroyed")
+        skipSilenceJob?.cancel()
+        gaplessPlaybackJob?.cancel()
+        crossfadeSettingsJob?.cancel()
+        stopCrossfadeMonitor()
         serviceScope.cancel()
         mediaNotificationProvider?.release()
         mediaSession?.run {
@@ -375,7 +531,7 @@ class PlaybackService : MediaSessionService() {
             val connectionResult = super.onConnect(session, controller)
             val sessionCommands = connectionResult.availableSessionCommands
                 .buildUpon()
-                .add(SessionCommand(ACTION_TOGGLE_SHUFFLE, Bundle.EMPTY))
+                .add(SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY))
                 .add(SessionCommand(ACTION_TOGGLE_REPEAT, Bundle.EMPTY))
                 .build()
             
@@ -396,8 +552,8 @@ class PlaybackService : MediaSessionService() {
             args: Bundle
         ): com.google.common.util.concurrent.ListenableFuture<androidx.media3.session.SessionResult> {
             when (customCommand.customAction) {
-                ACTION_TOGGLE_SHUFFLE -> {
-                    session.player.shuffleModeEnabled = !session.player.shuffleModeEnabled
+                ACTION_TOGGLE_LIKE -> {
+                    toggleLikeForCurrentSong()
                 }
                 ACTION_TOGGLE_REPEAT -> {
                     session.player.repeatMode = when (session.player.repeatMode) {
@@ -410,6 +566,65 @@ class PlaybackService : MediaSessionService() {
             return com.google.common.util.concurrent.Futures.immediateFuture(
                 androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS)
             )
+        }
+    }
+
+    private fun toggleLikeForCurrentSong() {
+        val currentPlayer = player ?: return
+        val mediaItem = currentPlayer.currentMediaItem ?: return
+        val songId = mediaItem.mediaId
+        if (songId.isBlank()) return
+
+        val metadata = mediaItem.mediaMetadata
+        val durationSeconds = currentPlayer.duration
+            .takeIf { it > 0L && it != C.TIME_UNSET }
+            ?.div(1000L)
+            ?.toInt()
+            ?: 0
+
+        val song = Song(
+            id = songId,
+            title = metadata.title?.toString() ?: "Unknown",
+            artist = metadata.artist?.toString() ?: "Unknown Artist",
+            album = metadata.albumTitle?.toString(),
+            duration = durationSeconds,
+            thumbnailUrl = metadata.artworkUri?.toString() ?: ""
+        )
+
+        serviceScope.launch {
+            val wasLiked = withContext(Dispatchers.IO) {
+                runCatching { songRepository.isLiked(songId) }.getOrDefault(false)
+            }
+            val shouldLike = !wasLiked
+
+            // Optimistic update for immediate button feedback in notification.
+            mediaSession?.let { session ->
+                mediaNotificationProvider?.setLikedStateOverride(songId, shouldLike)
+                mediaNotificationProvider?.refreshNotification(session)
+            }
+
+            val saveResult = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (shouldLike) {
+                        songRepository.likeSong(song)
+                    } else {
+                        songRepository.unlikeSong(songId)
+                    }
+                }
+            }
+
+            saveResult.onSuccess {
+                mediaNotificationProvider?.clearLikedStateOverride(songId)
+                mediaSession?.let { session ->
+                    mediaNotificationProvider?.refreshNotification(session)
+                }
+            }.onFailure { error ->
+                Log.e(TAG, "Failed to toggle like from notification", error)
+                mediaNotificationProvider?.setLikedStateOverride(songId, wasLiked)
+                mediaSession?.let { session ->
+                    mediaNotificationProvider?.refreshNotification(session)
+                }
+            }
         }
     }
 }

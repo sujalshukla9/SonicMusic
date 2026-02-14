@@ -21,13 +21,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -38,11 +42,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,15 +55,6 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
 /**
  * Redesigned Queue Bottom Sheet - ViTune Style
  *
- * Features:
- * - Infinite mode toggle (ViTune-style)
- * - Loading indicator for recommendations
- * - Refresh button for manual recommendations
- * - Song thumbnails for visual identification
- * - Drag-to-reorder with smooth animations
- * - Playing indicator with equalizer animation
- * - Clear header with song count
- *
  * @param isVisible Whether the sheet is visible
  * @param onDismiss Callback when sheet is dismissed
  * @param queue List of songs in queue
@@ -70,10 +62,6 @@ import sh.calvin.reorderable.rememberReorderableLazyListState
  * @param onReorder Callback when songs are reordered
  * @param onClearQueue Callback when queue is cleared
  * @param onPlay Callback when a song is clicked
- * @param infiniteModeEnabled Whether infinite queue mode is on
- * @param onToggleInfiniteMode Callback to toggle infinite mode
- * @param isLoadingMore Whether more songs are being loaded
- * @param onRefreshRecommendations Callback to manually refresh recommendations
  * @param modifier Modifier for the sheet
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,12 +75,16 @@ fun QueueSheet(
     onReorder: (from: Int, to: Int) -> Unit = { _, _ -> },
     onClearQueue: () -> Unit,
     onPlay: (Int) -> Unit,
+    infiniteModeEnabled: Boolean,
+    onToggleInfiniteMode: (Boolean) -> Unit,
+    shuffleEnabled: Boolean,
+    onToggleShuffle: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (!isVisible) return
 
     var localQueue by remember(queue) { mutableStateOf(queue) }
-    
+
     val lazyListState = rememberLazyListState()
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
         localQueue = localQueue.toMutableList().apply {
@@ -113,12 +105,8 @@ fun QueueSheet(
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
-            // ═══════════════════════════════════════════
-            // HEADER - ViTune Style
-            // ═══════════════════════════════════════════
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -144,7 +132,7 @@ fun QueueSheet(
                             )
                         }
                     }
-                    
+
                     Column {
                         Text(
                             text = "Up Next",
@@ -160,10 +148,12 @@ fun QueueSheet(
                     }
                 }
 
-                // Clear button
                 if (localQueue.isNotEmpty()) {
                     TextButton(
-                        onClick = onClearQueue
+                        onClick = {
+                            onClearQueue()
+                            localQueue = emptyList()
+                        }
                     ) {
                         Text(
                             text = "Clear",
@@ -175,10 +165,73 @@ fun QueueSheet(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = colorScheme.surfaceContainerHigh
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Auto Queue Similar",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Keep queue filled with recommendations",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = infiniteModeEnabled,
+                            onCheckedChange = onToggleInfiniteMode
+                        )
+                    }
 
-            // ═══════════════════════════════════════════
-            // QUEUE LIST
-            // ═══════════════════════════════════════════
+                    HorizontalDivider(
+                        color = colorScheme.outlineVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.padding(horizontal = 14.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Shuffle",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Play queue in random order",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = shuffleEnabled,
+                            onCheckedChange = { onToggleShuffle() }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             if (localQueue.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -227,22 +280,28 @@ fun QueueSheet(
 
                             Surface(
                                 modifier = Modifier.shadow(elevation),
-                                color = if (isDragging)
+                                color = if (isDragging) {
                                     colorScheme.surfaceContainerHigh
-                                else Color.Transparent
+                                } else {
+                                    Color.Transparent
+                                }
                             ) {
                                 QueueItemCard(
                                     song = song,
                                     isPlaying = isPlaying,
                                     isDragging = isDragging,
                                     onClick = { onPlay(index) },
+                                    onRemove = {
+                                        onRemove(index)
+                                        if (index in localQueue.indices) {
+                                            localQueue = localQueue.toMutableList().apply { removeAt(index) }
+                                        }
+                                    },
                                     dragModifier = Modifier.draggableHandle()
                                 )
                             }
                         }
                     }
-                    
-
                 }
             }
         }
@@ -255,11 +314,12 @@ private fun QueueItemCard(
     isPlaying: Boolean,
     isDragging: Boolean,
     onClick: () -> Unit,
+    onRemove: () -> Unit,
     dragModifier: Modifier = Modifier,
     modifier: Modifier = Modifier
 ) {
     val colorScheme = MaterialTheme.colorScheme
-    
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -274,18 +334,15 @@ private fun QueueItemCard(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Drag Handle
         Icon(
             imageVector = Icons.Default.DragHandle,
             contentDescription = "Drag to reorder",
-            tint = if (isDragging) colorScheme.primary 
-                else colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+            tint = if (isDragging) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
             modifier = dragModifier.size(24.dp)
         )
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Thumbnail
         Surface(
             modifier = Modifier.size(48.dp),
             shape = RoundedCornerShape(8.dp),
@@ -296,8 +353,7 @@ private fun QueueItemCard(
                     artworkUrl = song.thumbnailUrl,
                     modifier = Modifier.fillMaxSize()
                 )
-                
-                // Playing overlay
+
                 if (isPlaying) {
                     Box(
                         modifier = Modifier
@@ -318,7 +374,6 @@ private fun QueueItemCard(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        // Song Info
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = song.title,
@@ -338,7 +393,6 @@ private fun QueueItemCard(
             )
         }
 
-        // Play indicator
         if (isPlaying) {
             Spacer(modifier = Modifier.width(8.dp))
             Surface(
@@ -346,6 +400,17 @@ private fun QueueItemCard(
                 color = colorScheme.primary,
                 modifier = Modifier.size(8.dp)
             ) {}
+        } else {
+            IconButton(
+                onClick = onRemove,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Remove from queue",
+                    tint = colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

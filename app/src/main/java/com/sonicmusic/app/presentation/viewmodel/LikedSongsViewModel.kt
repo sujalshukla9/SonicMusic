@@ -40,42 +40,25 @@ class LikedSongsViewModel @Inject constructor(
     }
 
     fun playSong(song: Song) {
-        viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    playerServiceConnection.playSong(song, streamUrl)
-                }
+        // Find index of this song in the list
+        val index = _likedSongs.value.indexOfFirst { it.id == song.id }
+        if (index != -1) {
+            playerServiceConnection.playSongsLazy(_likedSongs.value, index, songRepository)
         }
     }
 
     fun playAll() {
         val songs = _likedSongs.value
         if (songs.isNotEmpty()) {
-            playSong(songs.first())
-            // Add rest to queue
-            songs.drop(1).forEach { song ->
-                viewModelScope.launch {
-                    songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                        .onSuccess { streamUrl ->
-                            playerServiceConnection.addToQueue(song, streamUrl)
-                        }
-                }
-            }
+            playerServiceConnection.playSongsLazy(songs, 0, songRepository)
         }
     }
 
     fun shufflePlay() {
-        val songs = _likedSongs.value.shuffled()
+        val songs = _likedSongs.value
         if (songs.isNotEmpty()) {
-            playSong(songs.first())
-            songs.drop(1).forEach { song ->
-                viewModelScope.launch {
-                    songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                        .onSuccess { streamUrl ->
-                            playerServiceConnection.addToQueue(song, streamUrl)
-                        }
-                }
-            }
+            val shuffledSongs = songs.shuffled()
+            playerServiceConnection.playSongsLazy(shuffledSongs, 0, songRepository)
         }
     }
 }

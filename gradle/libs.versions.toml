@@ -25,6 +25,7 @@ newpipe = "v0.25.2"
 rhino = "1.7.14"
 reorderable = "2.4.3"
 media = "1.7.0"
+paging = "3.2.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -91,6 +92,8 @@ reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.r
 
 # AndroidX Media (for MediaStyle notification)
 androidx-media = { group = "androidx.media", name = "media", version.ref = "media" }
+androidx-paging-runtime = { group = "androidx.paging", name = "paging-runtime", version.ref = "paging" }
+androidx-paging-compose = { group = "androidx.paging", name = "paging-compose", version.ref = "paging" }
 
 # Kotlinx Serialization
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }

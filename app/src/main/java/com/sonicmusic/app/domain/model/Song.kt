@@ -24,7 +24,9 @@ enum class ContentType {
     @SerialName("playlist")
     PLAYLIST,       // Playlist (not individual song)
     @SerialName("unknown")
-    UNKNOWN         // Unidentified content type
+    UNKNOWN,         // Unidentified content type
+    @SerialName("artist")
+    ARTIST          // Artist profile
 }
 
 @Immutable
@@ -69,6 +71,7 @@ data class Song(
             ContentType.SHORT -> false  // Exclude shorts
             ContentType.ALBUM -> false  // Exclude full albums
             ContentType.PLAYLIST -> false // Exclude playlists
+            ContentType.ARTIST -> false // Exclude artists
             ContentType.UNKNOWN -> {
                 // For unknown content, accept if it has a reasonable duration for a song
                 // (between 30 seconds and 15 minutes)

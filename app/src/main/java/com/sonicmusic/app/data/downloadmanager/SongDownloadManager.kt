@@ -1,6 +1,7 @@
 package com.sonicmusic.app.data.downloadmanager
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.sonicmusic.app.data.local.dao.DownloadedSongDao
 import com.sonicmusic.app.data.local.entity.DownloadedSongEntity
@@ -8,6 +9,9 @@ import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,8 +23,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.io.RandomAccessFile
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Download Manager for offline song downloads with encryption
@@ -46,6 +55,13 @@ class SongDownloadManager @Inject constructor(
         private const val TAG = "SongDownloadManager"
         private const val DOWNLOADS_DIRECTORY = "downloads"
         private const val TEMP_DIRECTORY = "temp"
+        private const val IO_BUFFER_SIZE_BYTES = 64 * 1024
+        private const val UI_PROGRESS_STEP_PERCENT = 1
+        private const val UI_PROGRESS_UPDATE_INTERVAL_MS = 250L
+        private const val NOTIFICATION_PROGRESS_STEP_PERCENT = 10
+        private const val MAX_PARALLEL_SEGMENTS = 4
+        private const val MIN_PARALLEL_DOWNLOAD_SIZE_BYTES = 3L * 1024 * 1024
+        private const val MIN_SEGMENT_SIZE_BYTES = 1L * 1024 * 1024
     }
 
     private val _activeDownloads = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
@@ -58,6 +74,16 @@ class SongDownloadManager @Inject constructor(
     private val tempDir: File by lazy {
         File(context.cacheDir, TEMP_DIRECTORY).apply { mkdirs() }
     }
+
+    private data class DownloadProbe(
+        val supportsRanges: Boolean,
+        val totalBytes: Long
+    )
+
+    private data class ByteSegment(
+        val start: Long,
+        val endInclusive: Long
+    )
 
     /**
      * Download a song with encryption.
@@ -212,59 +238,306 @@ class SongDownloadManager @Inject constructor(
     private suspend fun downloadFile(url: String, outputFile: File, songId: String, title: String): Result<File> = 
         withContext(Dispatchers.IO) {
             try {
-                val request = Request.Builder().url(url).build()
-                val response = okHttpClient.newCall(request).execute()
+                val probe = probeDownload(url)
+                val canUseParallel = probe.supportsRanges && probe.totalBytes >= MIN_PARALLEL_DOWNLOAD_SIZE_BYTES
 
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(Exception("HTTP ${response.code}"))
-                }
-
-                val body = response.body ?: return@withContext Result.failure(Exception("Empty response"))
-                val contentLength = body.contentLength()
-
-                body.byteStream().use { inputStream ->
-                    FileOutputStream(outputFile).use { outputStream ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        var totalBytesRead = 0L
-
-                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-                            outputStream.write(buffer, 0, bytesRead)
-                            totalBytesRead += bytesRead
-
-                            // Update progress
-                            val progress = if (contentLength > 0) {
-                                ((totalBytesRead * 100) / contentLength).toInt()
-                            } else 0
-
-                            // Throttle updates to avoid spamming UI and notifications
-                            // Only update if progress changed significantly or it's been a while (optional optimization)
-                            // For now we rely on the helper or UI state observation to handle frequency if needed
-                            
-                            val status = DownloadProgress(
-                                songId = songId,
-                                title = title,
-                                progress = progress.coerceAtMost(98), // Reserve 99-100 for encryption
-                                bytesDownloaded = totalBytesRead.toInt(),
-                                bytesTotal = contentLength.toInt(),
-                                status = DownloadStatus.DOWNLOADING
-                            )
-                            updateProgress(songId, title, status)
-                            
-                            // Only notify every 5%
-                            if (progress % 5 == 0) {
-                                notificationHelper.showProgress(songId, title, progress)
-                            }
-                        }
+                if (canUseParallel) {
+                    val parallelResult = downloadFileInParallel(
+                        url = url,
+                        outputFile = outputFile,
+                        songId = songId,
+                        title = title,
+                        contentLength = probe.totalBytes
+                    )
+                    if (parallelResult.isSuccess) {
+                        return@withContext parallelResult
                     }
+
+                    Log.w(TAG, "Parallel download failed, falling back to single stream", parallelResult.exceptionOrNull())
+                    outputFile.delete()
                 }
 
-                Result.success(outputFile)
+                downloadFileSequential(url, outputFile, songId, title)
             } catch (e: Exception) {
                 outputFile.delete()
                 Result.failure(e)
             }
         }
+
+    private fun probeDownload(url: String): DownloadProbe {
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Range", "bytes=0-0")
+                .addHeader("Accept-Encoding", "identity")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                val contentRange = response.header("Content-Range")
+                val totalBytes = contentRange
+                    ?.substringAfter('/')
+                    ?.takeIf { it.isNotBlank() && it != "*" }
+                    ?.toLongOrNull()
+                    ?: response.header("Content-Length")?.toLongOrNull()
+                    ?: -1L
+
+                val supportsRanges = response.code == 206 &&
+                    !contentRange.isNullOrBlank() &&
+                    contentRange.contains("bytes", ignoreCase = true)
+
+                DownloadProbe(
+                    supportsRanges = supportsRanges,
+                    totalBytes = totalBytes.coerceAtLeast(-1L)
+                )
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Range probe failed, using single-stream download", e)
+            DownloadProbe(supportsRanges = false, totalBytes = -1L)
+        }
+    }
+
+    private suspend fun downloadFileSequential(
+        url: String,
+        outputFile: File,
+        songId: String,
+        title: String
+    ): Result<File> {
+        return try {
+            val request = Request.Builder().url(url).build()
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return Result.failure(Exception("HTTP ${response.code}"))
+                }
+
+                val body = response.body ?: return Result.failure(Exception("Empty response"))
+                val contentLength = body.contentLength().coerceAtLeast(0L)
+                val bytesTotal = contentLength.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                var lastUiProgress = -1
+                var lastNotificationProgress = -1
+                var lastUiUpdateTimeMs = SystemClock.elapsedRealtime()
+                var totalBytesRead = 0L
+
+                body.byteStream().use { inputStream ->
+                    FileOutputStream(outputFile).buffered(IO_BUFFER_SIZE_BYTES).use { outputStream ->
+                        val buffer = ByteArray(IO_BUFFER_SIZE_BYTES)
+                        var bytesRead: Int
+
+                        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                            outputStream.write(buffer, 0, bytesRead)
+                            totalBytesRead += bytesRead
+
+                            val rawProgress = if (contentLength > 0L) {
+                                ((totalBytesRead * 100) / contentLength).toInt()
+                            } else {
+                                0
+                            }
+                            val progress = rawProgress.coerceIn(0, 98) // Reserve 99-100 for encryption
+
+                            val nowMs = SystemClock.elapsedRealtime()
+                            val shouldUpdateUi = progress != lastUiProgress && (
+                                lastUiProgress < 0 ||
+                                    (progress - lastUiProgress) >= UI_PROGRESS_STEP_PERCENT ||
+                                    (nowMs - lastUiUpdateTimeMs) >= UI_PROGRESS_UPDATE_INTERVAL_MS ||
+                                    progress >= 98
+                                )
+
+                            if (shouldUpdateUi) {
+                                updateProgress(songId, title, DownloadProgress(
+                                    songId = songId,
+                                    title = title,
+                                    progress = progress,
+                                    bytesDownloaded = totalBytesRead.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                                    bytesTotal = bytesTotal,
+                                    status = DownloadStatus.DOWNLOADING
+                                ))
+                                lastUiProgress = progress
+                                lastUiUpdateTimeMs = nowMs
+                            }
+
+                            val shouldNotify = progress != lastNotificationProgress && (
+                                lastNotificationProgress < 0 ||
+                                    (progress - lastNotificationProgress) >= NOTIFICATION_PROGRESS_STEP_PERCENT ||
+                                    progress >= 98
+                                )
+                            if (shouldNotify) {
+                                notificationHelper.showProgress(songId, title, progress)
+                                lastNotificationProgress = progress
+                            }
+                        }
+
+                        outputStream.flush()
+                    }
+                }
+
+                val finalDownloaded = totalBytesRead.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                if (lastUiProgress < 98) {
+                    updateProgress(songId, title, DownloadProgress(
+                        songId = songId,
+                        title = title,
+                        progress = 98,
+                        bytesDownloaded = finalDownloaded,
+                        bytesTotal = bytesTotal,
+                        status = DownloadStatus.DOWNLOADING
+                    ))
+                }
+                if (lastNotificationProgress < 98) {
+                    notificationHelper.showProgress(songId, title, 98)
+                }
+            }
+
+            Result.success(outputFile)
+        } catch (e: Exception) {
+            outputFile.delete()
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun downloadFileInParallel(
+        url: String,
+        outputFile: File,
+        songId: String,
+        title: String,
+        contentLength: Long
+    ): Result<File> {
+        if (contentLength <= 0L) {
+            return Result.failure(Exception("Invalid content length for parallel download"))
+        }
+
+        return try {
+            val segmentCount = calculateSegmentCount(contentLength)
+            val segments = buildSegments(contentLength, segmentCount)
+            val bytesTotal = contentLength.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+            RandomAccessFile(outputFile, "rw").use { raf ->
+                raf.setLength(contentLength)
+            }
+
+            val totalBytesRead = AtomicLong(0L)
+            val progressLock = Any()
+            var lastUiProgress = -1
+            var lastNotificationProgress = -1
+            var lastUiUpdateTimeMs = SystemClock.elapsedRealtime()
+
+            coroutineScope {
+                segments.map { segment ->
+                    async(Dispatchers.IO) {
+                        val request = Request.Builder()
+                            .url(url)
+                            .addHeader("Range", "bytes=${segment.start}-${segment.endInclusive}")
+                            .addHeader("Accept-Encoding", "identity")
+                            .build()
+
+                        okHttpClient.newCall(request).execute().use { response ->
+                            if (response.code != 206) {
+                                throw IOException("Range not honored for segment ${segment.start}-${segment.endInclusive}, code=${response.code}")
+                            }
+
+                            val body = response.body ?: throw IOException("Empty segment response")
+                            val expectedBytes = segment.endInclusive - segment.start + 1
+                            var segmentBytesRead = 0L
+
+                            body.byteStream().use { inputStream ->
+                                RandomAccessFile(outputFile, "rw").use { raf ->
+                                    raf.seek(segment.start)
+                                    val buffer = ByteArray(IO_BUFFER_SIZE_BYTES)
+                                    var bytesRead: Int
+
+                                    while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                                        raf.write(buffer, 0, bytesRead)
+                                        segmentBytesRead += bytesRead
+                                        val downloaded = totalBytesRead.addAndGet(bytesRead.toLong())
+                                        val rawProgress = ((downloaded * 100) / contentLength).toInt()
+                                        val progress = rawProgress.coerceIn(0, 98)
+                                        val nowMs = SystemClock.elapsedRealtime()
+
+                                        synchronized(progressLock) {
+                                            val shouldUpdateUi = progress != lastUiProgress && (
+                                                lastUiProgress < 0 ||
+                                                    (progress - lastUiProgress) >= UI_PROGRESS_STEP_PERCENT ||
+                                                    (nowMs - lastUiUpdateTimeMs) >= UI_PROGRESS_UPDATE_INTERVAL_MS ||
+                                                    progress >= 98
+                                                )
+                                            if (shouldUpdateUi) {
+                                                updateProgress(songId, title, DownloadProgress(
+                                                    songId = songId,
+                                                    title = title,
+                                                    progress = progress,
+                                                    bytesDownloaded = downloaded.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                                                    bytesTotal = bytesTotal,
+                                                    status = DownloadStatus.DOWNLOADING
+                                                ))
+                                                lastUiProgress = progress
+                                                lastUiUpdateTimeMs = nowMs
+                                            }
+
+                                            val shouldNotify = progress != lastNotificationProgress && (
+                                                lastNotificationProgress < 0 ||
+                                                    (progress - lastNotificationProgress) >= NOTIFICATION_PROGRESS_STEP_PERCENT ||
+                                                    progress >= 98
+                                                )
+                                            if (shouldNotify) {
+                                                notificationHelper.showProgress(songId, title, progress)
+                                                lastNotificationProgress = progress
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (segmentBytesRead != expectedBytes) {
+                                throw IOException(
+                                    "Incomplete segment ${segment.start}-${segment.endInclusive}: expected=$expectedBytes actual=$segmentBytesRead"
+                                )
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val finalDownloaded = totalBytesRead.get().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            if (lastUiProgress < 98) {
+                updateProgress(songId, title, DownloadProgress(
+                    songId = songId,
+                    title = title,
+                    progress = 98,
+                    bytesDownloaded = finalDownloaded,
+                    bytesTotal = bytesTotal,
+                    status = DownloadStatus.DOWNLOADING
+                ))
+            }
+            if (lastNotificationProgress < 98) {
+                notificationHelper.showProgress(songId, title, 98)
+            }
+
+            Result.success(outputFile)
+        } catch (e: Exception) {
+            outputFile.delete()
+            Result.failure(e)
+        }
+    }
+
+    private fun calculateSegmentCount(contentLength: Long): Int {
+        val bySize = (contentLength / MIN_SEGMENT_SIZE_BYTES).toInt().coerceAtLeast(1)
+        return min(MAX_PARALLEL_SEGMENTS, max(2, bySize))
+    }
+
+    private fun buildSegments(contentLength: Long, segmentCount: Int): List<ByteSegment> {
+        val chunkSize = contentLength / segmentCount
+        var start = 0L
+        val segments = ArrayList<ByteSegment>(segmentCount)
+
+        for (index in 0 until segmentCount) {
+            val end = if (index == segmentCount - 1) {
+                contentLength - 1
+            } else {
+                (start + chunkSize - 1).coerceAtLeast(start)
+            }
+            segments.add(ByteSegment(start = start, endInclusive = end))
+            start = end + 1
+        }
+
+        return segments
+    }
 
     /**
      * Get a decrypted stream for playback.

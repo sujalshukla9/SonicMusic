@@ -9,6 +9,7 @@ import com.sonicmusic.app.data.repository.PlaylistRepositoryImpl
 import com.sonicmusic.app.data.repository.QueueRepositoryImpl
 import com.sonicmusic.app.data.repository.RecentSearchRepositoryImpl
 import com.sonicmusic.app.data.repository.RecommendationRepositoryImpl
+import com.sonicmusic.app.data.repository.SearchRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
@@ -16,6 +17,7 @@ import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.QueueRepository
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.domain.repository.RecommendationRepository
+import com.sonicmusic.app.domain.repository.SearchRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import dagger.Binds
 import dagger.Module
@@ -51,6 +53,12 @@ abstract class RepositoryModule {
     abstract fun bindRecentSearchRepository(
         impl: RecentSearchRepositoryImpl
     ): RecentSearchRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindSearchRepository(
+        impl: SearchRepositoryImpl
+    ): SearchRepository
 
     @Binds
     @Singleton

@@ -7,18 +7,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.IconCompat
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
-import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
@@ -26,11 +22,13 @@ import coil.ImageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import com.sonicmusic.app.R
+import com.sonicmusic.app.data.util.ThumbnailUrlUtils
 import com.sonicmusic.app.presentation.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Modern Media Notification Provider
@@ -51,6 +49,7 @@ import kotlinx.coroutines.launch
 @OptIn(UnstableApi::class)
 class MediaNotificationProvider(
     private val context: Context,
+    private val isSongLiked: (String) -> Boolean,
 ) : MediaNotification.Provider {
     
     companion object {
@@ -59,14 +58,20 @@ class MediaNotificationProvider(
         const val NOTIFICATION_ID = 1
         
         // Custom action commands
-        const val ACTION_TOGGLE_SHUFFLE = "sonic_music_toggle_shuffle"
+        const val ACTION_TOGGLE_LIKE = "sonic_music_toggle_like"
         const val ACTION_TOGGLE_REPEAT = "sonic_music_toggle_repeat"
         const val ACTION_CLOSE = "sonic_music_close"
+        private const val ARTWORK_SIZE_PX = 768
     }
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val imageLoader = ImageLoader.Builder(context).build()
+    @Volatile
+    private var activeArtworkUri: String? = null
     private var cachedArtwork: Bitmap? = null
     private var cachedArtworkUri: String? = null
+    private val likedStateLock = Any()
+    private val likedStateOverrides = mutableMapOf<String, Boolean>()
     
     init {
         createNotificationChannel()
@@ -125,10 +130,10 @@ class MediaNotificationProvider(
         val title = metadata?.title?.toString() ?: "Unknown"
         val artist = metadata?.artist?.toString() ?: "Unknown Artist"
         val album = metadata?.albumTitle?.toString()
+        val mediaId = mediaItem?.mediaId.orEmpty()
+        val isLiked = resolveLikedState(mediaId)
         
         val isPlaying = player.isPlaying
-        // Only show Next if there is a next item
-        val hasNext = player.hasNextMediaItem()
         
         // Create content intent to open app
         val contentIntent = PendingIntent.getActivity(
@@ -154,17 +159,16 @@ class MediaNotificationProvider(
         val actions = mutableListOf<NotificationCompat.Action>()
         val compactViewIndices = mutableListOf<Int>()
         
-        val shuffleEnabled = player.shuffleModeEnabled
         val repeatMode = player.repeatMode
         
-        // 1. Shuffle Action (Index 0) - Always added, but NOT in compact view usually
+        // 1. Like Action (Index 0) - Expanded view only
         actions.add(
             createAction(
-                R.drawable.ic_notification_shuffle,
-                if (shuffleEnabled) "Shuffle On" else "Shuffle Off",
-                PlaybackService.ACTION_TOGGLE_SHUFFLE,
+                if (isLiked) R.drawable.ic_notification_like else R.drawable.ic_notification_like_outline,
+                if (isLiked) "Unlike" else "Like",
+                PlaybackService.ACTION_TOGGLE_LIKE,
                 0,
-                true // Always enabled to allow toggling
+                true
             )
         )
         
@@ -256,8 +260,7 @@ class MediaNotificationProvider(
         actions.forEach { action -> builder.addAction(action) }
         
         // Set color extraction from artwork (Android 12+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && artwork != null) {
-            // Use dynamic color extraction
+        if (artwork != null) {
             builder.setColorized(true)
         }
         
@@ -289,41 +292,76 @@ class MediaNotificationProvider(
     }
     
     private fun loadArtworkAsync(uri: String?, onLoaded: (Bitmap?) -> Unit) {
-        if (uri == null) {
-            cachedArtwork = null
-            cachedArtworkUri = null
+        val artworkKey = uri?.trim()?.takeIf { it.isNotEmpty() }
+        val candidates = ThumbnailUrlUtils.buildCandidates(artworkKey)
+        activeArtworkUri = artworkKey
+
+        if (artworkKey.isNullOrBlank() || candidates.isEmpty()) {
+            updateCachedArtwork(bitmap = null, uri = null)
+            onLoaded(null)
             return
         }
-        
+
         // Return cached artwork if URI matches
-        if (uri == cachedArtworkUri && cachedArtwork != null) {
+        if (artworkKey == cachedArtworkUri && cachedArtwork != null) {
+            onLoaded(cachedArtwork)
             return
         }
-        
+
+        // Invalidate stale artwork for the new media item immediately.
+        if (artworkKey != cachedArtworkUri) {
+            updateCachedArtwork(bitmap = null, uri = null)
+        }
+
         scope.launch {
+            val bitmap = loadFirstAvailableArtwork(
+                artworkKey = artworkKey,
+                candidates = candidates
+            )
+            if (activeArtworkUri != artworkKey) {
+                return@launch
+            }
+
+            if (bitmap != null) {
+                updateCachedArtwork(bitmap = bitmap, uri = artworkKey)
+            } else {
+                // Keep URI cache empty so transient failures can recover on next update.
+                updateCachedArtwork(bitmap = null, uri = null)
+            }
+            withContext(Dispatchers.Main) { onLoaded(bitmap) }
+        }
+    }
+
+    private suspend fun loadFirstAvailableArtwork(
+        artworkKey: String,
+        candidates: List<String>
+    ): Bitmap? {
+        candidates.forEach { candidate ->
+            if (activeArtworkUri != artworkKey) return null
             try {
-                val loader = ImageLoader(context)
                 val request = ImageRequest.Builder(context)
-                    .data(uri)
+                    .data(candidate)
                     .allowHardware(false)
-                    .size(1024, 1024) // Higher quality for lockscreen/media controls
+                    .size(ARTWORK_SIZE_PX, ARTWORK_SIZE_PX)
                     .build()
-                
-                val result = loader.execute(request)
+
+                val result = imageLoader.execute(request)
                 if (result is SuccessResult) {
-                    val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-                    cachedArtwork = bitmap
-                    cachedArtworkUri = uri
-                    
-                    // Notify on main thread
-                    kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        onLoaded(bitmap)
-                    }
+                    return NotificationArtworkProcessor.fromDrawable(
+                        drawable = result.drawable,
+                        targetSize = ARTWORK_SIZE_PX
+                    )
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load artwork: ${e.message}")
+                Log.d(TAG, "Artwork candidate failed: $candidate (${e.message})")
             }
         }
+        return null
+    }
+
+    private fun updateCachedArtwork(bitmap: Bitmap?, uri: String?) {
+        cachedArtwork = bitmap
+        cachedArtworkUri = uri
     }
     
     override fun handleCustomCommand(
@@ -332,8 +370,12 @@ class MediaNotificationProvider(
         extras: Bundle
     ): Boolean {
         return when (action) {
-            ACTION_TOGGLE_SHUFFLE -> {
-                session.player.shuffleModeEnabled = !session.player.shuffleModeEnabled
+            ACTION_TOGGLE_LIKE -> {
+                context.startService(
+                    Intent(context, PlaybackService::class.java).apply {
+                        this.action = PlaybackService.ACTION_TOGGLE_LIKE
+                    }
+                )
                 true
             }
             ACTION_TOGGLE_REPEAT -> {
@@ -354,7 +396,39 @@ class MediaNotificationProvider(
     }
     
     fun release() {
-        cachedArtwork = null
-        cachedArtworkUri = null
+        activeArtworkUri = null
+        updateCachedArtwork(bitmap = null, uri = null)
+        synchronized(likedStateLock) {
+            likedStateOverrides.clear()
+        }
+    }
+
+    fun refreshNotification(mediaSession: MediaSession) {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val mediaNotification = createNotificationInternal(mediaSession, cachedArtwork)
+        manager.notify(NOTIFICATION_ID, mediaNotification.notification)
+    }
+
+    fun setLikedStateOverride(songId: String, isLiked: Boolean) {
+        if (songId.isBlank()) return
+        synchronized(likedStateLock) {
+            likedStateOverrides[songId] = isLiked
+        }
+    }
+
+    fun clearLikedStateOverride(songId: String) {
+        if (songId.isBlank()) return
+        synchronized(likedStateLock) {
+            likedStateOverrides.remove(songId)
+        }
+    }
+
+    private fun resolveLikedState(mediaId: String): Boolean {
+        if (mediaId.isBlank()) return false
+        synchronized(likedStateLock) {
+            likedStateOverrides[mediaId]
+        }?.let { return it }
+
+        return runCatching { isSongLiked(mediaId) }.getOrDefault(false)
     }
 }

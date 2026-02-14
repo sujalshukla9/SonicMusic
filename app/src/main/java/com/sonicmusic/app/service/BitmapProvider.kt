@@ -3,17 +3,18 @@ package com.sonicmusic.app.service
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import androidx.core.graphics.applyCanvas
 import androidx.core.graphics.createBitmap
 import coil.ImageLoader
-import coil.request.Disposable
 import coil.request.ImageRequest
 import coil.request.SuccessResult
-import android.graphics.drawable.BitmapDrawable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Efficient Bitmap Provider for notification thumbnails
@@ -45,7 +46,7 @@ class BitmapProvider(
         }
     
     private var lastIsSystemInDarkMode = false
-    private var currentRequest: Disposable? = null
+    private var loadJob: Job? = null
     
     private lateinit var defaultBitmap: Bitmap
     val bitmap: Bitmap get() = lastBitmap ?: defaultBitmap
@@ -106,27 +107,30 @@ class BitmapProvider(
         }
         
         // Cancel previous request
-        currentRequest?.dispose()
-        
+        loadJob?.cancel()
+
         // Load new bitmap
-        coroutineScope.launch {
+        loadJob = coroutineScope.launch {
+            val requestUri = uri
             try {
                 val request = ImageRequest.Builder(context)
-                    .data(uri)
+                    .data(requestUri)
                     .size(bitmapSize)
                     .allowHardware(false)
                     .build()
                 
                 val result = imageLoader.execute(request)
+                if (lastUri != requestUri) return@launch
                 if (result is SuccessResult) {
                     lastBitmap = (result.drawable as? BitmapDrawable)?.bitmap
                 } else {
                     lastBitmap = null
                 }
-                onDone(bitmap)
+                withContext(Dispatchers.Main) { onDone(bitmap) }
             } catch (e: Exception) {
+                if (lastUri != requestUri) return@launch
                 lastBitmap = null
-                onDone(bitmap)
+                withContext(Dispatchers.Main) { onDone(bitmap) }
             }
         }
     }
@@ -153,7 +157,7 @@ class BitmapProvider(
      * Release resources
      */
     fun release() {
-        currentRequest?.dispose()
+        loadJob?.cancel()
         if (::defaultBitmap.isInitialized && !defaultBitmap.isRecycled) {
             defaultBitmap.recycle()
         }

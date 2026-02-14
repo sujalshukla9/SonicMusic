@@ -34,24 +34,10 @@ class PlaylistDetailViewModel @Inject constructor(
     private var currentPlaylistId: Long? = null
 
     fun loadPlaylist(playlistId: Long) {
-        if (currentPlaylistId == playlistId) return
         currentPlaylistId = playlistId
 
         viewModelScope.launch {
-            _isLoading.value = true
-
-            // Load playlist details with songs
-            playlistRepository.getPlaylistById(playlistId)
-                .onSuccess { playlist ->
-                    _playlist.value = playlist
-                    _songs.value = playlist.songs
-                }
-                .onFailure {
-                    _playlist.value = null
-                    _songs.value = emptyList()
-                }
-
-            _isLoading.value = false
+            refreshCurrentPlaylist(showLoading = true)
         }
     }
 
@@ -96,6 +82,9 @@ class PlaylistDetailViewModel @Inject constructor(
         currentPlaylistId?.let { playlistId ->
             viewModelScope.launch {
                 playlistRepository.removeSongFromPlaylist(playlistId, songId)
+                    .onSuccess {
+                        refreshCurrentPlaylist()
+                    }
             }
         }
     }
@@ -112,7 +101,27 @@ class PlaylistDetailViewModel @Inject constructor(
         currentPlaylistId?.let { playlistId ->
             viewModelScope.launch {
                 playlistRepository.addSongToPlaylist(playlistId, songId)
+                    .onSuccess {
+                        refreshCurrentPlaylist()
+                    }
             }
         }
+    }
+
+    private suspend fun refreshCurrentPlaylist(showLoading: Boolean = false) {
+        val playlistId = currentPlaylistId ?: return
+        if (showLoading) _isLoading.value = true
+
+        playlistRepository.getPlaylistById(playlistId)
+            .onSuccess { playlist ->
+                _playlist.value = playlist
+                _songs.value = playlist.songs
+            }
+            .onFailure {
+                _playlist.value = null
+                _songs.value = emptyList()
+            }
+
+        if (showLoading) _isLoading.value = false
     }
 }

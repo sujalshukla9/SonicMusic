@@ -27,12 +27,14 @@ import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
 fun RecentlyPlayedScreen(
     onNavigateBack: () -> Unit,
     onShowFullPlayer: () -> Unit = {},
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Recently Played") },
@@ -81,8 +83,8 @@ fun RecentlyPlayedScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                    .padding(top = paddingValues.calculateTopPadding()),
+                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 item {
                     Text(

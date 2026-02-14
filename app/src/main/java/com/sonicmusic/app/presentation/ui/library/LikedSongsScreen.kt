@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,12 +52,14 @@ import com.sonicmusic.app.presentation.viewmodel.LikedSongsViewModel
 fun LikedSongsScreen(
     onNavigateBack: () -> Unit,
     onShowFullPlayer: () -> Unit = {},
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LikedSongsViewModel = hiltViewModel()
 ) {
     val likedSongs by viewModel.likedSongs.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Liked Songs") },
@@ -112,8 +115,8 @@ fun LikedSongsScreen(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(bottom = 80.dp)
+                    .padding(top = paddingValues.calculateTopPadding()),
+                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 // Header with play controls
                 item {

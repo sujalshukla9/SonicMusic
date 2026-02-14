@@ -96,6 +96,9 @@ class AudioEngine @Inject constructor(
         private val KEY_CELLULAR_QUALITY_TIER = stringPreferencesKey("cellular_quality_tier")
         private val KEY_DOWNLOAD_QUALITY_TIER = stringPreferencesKey("download_quality_tier")
         
+        // FFmpeg enhanced audio key
+        private val KEY_ENHANCED_AUDIO = booleanPreferencesKey("enhanced_audio_enabled")
+        
         // Default Values
         const val DEFAULT_CROSSFADE_DURATION = 3000
         const val DEFAULT_LOUDNESS_TARGET = -14f
@@ -105,6 +108,18 @@ class AudioEngine @Inject constructor(
     
     private val Context.audioPrefs by preferencesDataStore(name = "audio_engine_prefs")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    init {
+        // Load saved quality tiers immediately so Settings can show real values
+        // even before PlaybackService initializes audio effects.
+        scope.launch(Dispatchers.IO) {
+            try {
+                loadSavedPreferences()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load saved audio prefs at startup", e)
+            }
+        }
+    }
     
     // Audio Effects
     private var loudnessEnhancer: LoudnessEnhancer? = null
@@ -274,6 +289,7 @@ class AudioEngine @Inject constructor(
             wifiQualityTier = wifiTier,
             cellularQualityTier = cellularTier,
             downloadQualityTier = downloadTier,
+            enhancedAudioEnabled = prefs[KEY_ENHANCED_AUDIO] ?: false,
         )
         
         _audioEngineState.value = state
@@ -324,6 +340,25 @@ class AudioEngine @Inject constructor(
         }
         Log.d(TAG, "💾 Download quality tier: ${tier.displayName}")
     }
+    
+    /**
+     * Enable/disable FFmpeg enhanced audio (Opus → M4A Lossless via backend)
+     * 
+     * When enabled, stream URLs are routed through the FFmpeg backend API
+     * for transcoding from Opus/WebM to M4A/ALAC lossless format.
+     */
+    fun setEnhancedAudio(enabled: Boolean) {
+        _audioEngineState.value = _audioEngineState.value.copy(enhancedAudioEnabled = enabled)
+        scope.launch {
+            context.audioPrefs.edit { it[KEY_ENHANCED_AUDIO] = enabled }
+        }
+        Log.d(TAG, if (enabled) "🔊 Enhanced Audio ON (FFmpeg M4A/ALAC)" else "🔊 Enhanced Audio OFF")
+    }
+    
+    /**
+     * Check if FFmpeg enhanced audio is currently enabled.
+     */
+    fun isEnhancedAudioEnabled(): Boolean = _audioEngineState.value.enhancedAudioEnabled
     
     /**
      * Get the optimal quality tier based on current conditions.
@@ -897,6 +932,7 @@ data class AudioEngineState(
     val wifiQualityTier: StreamQuality = StreamQuality.LOSSLESS,
     val cellularQualityTier: StreamQuality = StreamQuality.HIGH,
     val downloadQualityTier: StreamQuality = StreamQuality.LOSSLESS,
+    // FFmpeg Enhanced Audio
+    val enhancedAudioEnabled: Boolean = false,
 )
-
 

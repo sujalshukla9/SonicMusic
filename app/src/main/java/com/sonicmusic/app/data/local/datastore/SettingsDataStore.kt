@@ -8,7 +8,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,10 +27,14 @@ class SettingsDataStore @Inject constructor(
 ) {
 
     private object PreferencesKeys {
-        val STREAM_QUALITY = intPreferencesKey("stream_quality")
-        val DOWNLOAD_QUALITY = intPreferencesKey("download_quality")
+        val STREAM_QUALITY = intPreferencesKey("stream_quality") // legacy bitrate key
+        val STREAM_QUALITY_TIER = stringPreferencesKey("stream_quality_tier")
+        val DOWNLOAD_QUALITY = intPreferencesKey("download_quality") // legacy bitrate key
+        val DOWNLOAD_QUALITY_TIER = stringPreferencesKey("download_quality_tier")
         val THEME_MODE = stringPreferencesKey("theme_mode")
+        val FULL_PLAYER_STYLE = stringPreferencesKey("full_player_style")
         val DYNAMIC_COLORS = booleanPreferencesKey("dynamic_colors")
+        val DYNAMIC_COLOR_INTENSITY = intPreferencesKey("dynamic_color_intensity")
         val NORMALIZE_VOLUME = booleanPreferencesKey("normalize_volume")
         val GAPLESS_PLAYBACK = booleanPreferencesKey("gapless_playback")
         val CROSSFADE_DURATION = intPreferencesKey("crossfade_duration")
@@ -37,18 +43,32 @@ class SettingsDataStore @Inject constructor(
         val ALBUM_ART_BLUR = booleanPreferencesKey("album_art_blur")
         val SKIP_SILENCE = booleanPreferencesKey("skip_silence")
         val AUTO_QUEUE_SIMILAR = booleanPreferencesKey("auto_queue_similar")
+        val REGION_CODE = stringPreferencesKey("region_code")
+        val COUNTRY_CODE = stringPreferencesKey("country_code")
+        val COUNTRY_NAME = stringPreferencesKey("country_name")
+        val BLACKLISTED_SONG_IDS = stringSetPreferencesKey("blacklisted_song_ids")
     }
 
     val streamQuality: Flow<StreamQuality> = context.dataStore.data
         .map { preferences ->
-            val bitrate = preferences[PreferencesKeys.STREAM_QUALITY] ?: StreamQuality.HIGH.bitrate
-            StreamQuality.fromBitrate(bitrate)
+            val tier = preferences[PreferencesKeys.STREAM_QUALITY_TIER]
+            if (tier != null) {
+                StreamQuality.fromName(tier)
+            } else {
+                val legacyBitrate = preferences[PreferencesKeys.STREAM_QUALITY] ?: StreamQuality.HIGH.bitrate
+                StreamQuality.fromBitrate(legacyBitrate)
+            }
         }
 
     val downloadQuality: Flow<StreamQuality> = context.dataStore.data
         .map { preferences ->
-            val bitrate = preferences[PreferencesKeys.DOWNLOAD_QUALITY] ?: StreamQuality.BEST.bitrate
-            StreamQuality.fromBitrate(bitrate)
+            val tier = preferences[PreferencesKeys.DOWNLOAD_QUALITY_TIER]
+            if (tier != null) {
+                StreamQuality.fromName(tier)
+            } else {
+                val legacyBitrate = preferences[PreferencesKeys.DOWNLOAD_QUALITY] ?: StreamQuality.BEST.bitrate
+                StreamQuality.fromBitrate(legacyBitrate)
+            }
         }
 
     val themeMode: Flow<ThemeMode> = context.dataStore.data
@@ -60,6 +80,17 @@ class SettingsDataStore @Inject constructor(
     val dynamicColors: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.DYNAMIC_COLORS] ?: true
+        }
+
+    val dynamicColorIntensity: Flow<Int> = context.dataStore.data
+        .map { preferences ->
+            (preferences[PreferencesKeys.DYNAMIC_COLOR_INTENSITY] ?: 85).coerceIn(0, 100)
+        }
+
+    val fullPlayerStyle: Flow<FullPlayerStyle> = context.dataStore.data
+        .map { preferences ->
+            val style = preferences[PreferencesKeys.FULL_PLAYER_STYLE] ?: FullPlayerStyle.NORMAL.name
+            FullPlayerStyle.fromString(style)
         }
 
     val normalizeVolume: Flow<Boolean> = context.dataStore.data
@@ -74,7 +105,7 @@ class SettingsDataStore @Inject constructor(
 
     val crossfadeDuration: Flow<Int> = context.dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.CROSSFADE_DURATION] ?: 3
+            preferences[PreferencesKeys.CROSSFADE_DURATION] ?: 0
         }
 
     val cacheSizeLimit: Flow<Long> = context.dataStore.data
@@ -99,18 +130,38 @@ class SettingsDataStore @Inject constructor(
 
     val autoQueueSimilar: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.AUTO_QUEUE_SIMILAR] ?: false
+            preferences[PreferencesKeys.AUTO_QUEUE_SIMILAR] ?: true
+        }
+
+    val regionCode: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.REGION_CODE]
+        }
+
+    val countryCode: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.COUNTRY_CODE]
+        }
+    
+    val countryName: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.COUNTRY_NAME]
+        }
+
+    val blacklistedSongIds: Flow<Set<String>> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] ?: emptySet()
         }
 
     suspend fun setStreamQuality(quality: StreamQuality) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.STREAM_QUALITY] = quality.bitrate
+            preferences[PreferencesKeys.STREAM_QUALITY_TIER] = quality.name
         }
     }
 
     suspend fun setDownloadQuality(quality: StreamQuality) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.DOWNLOAD_QUALITY] = quality.bitrate
+            preferences[PreferencesKeys.DOWNLOAD_QUALITY_TIER] = quality.name
         }
     }
 
@@ -123,6 +174,18 @@ class SettingsDataStore @Inject constructor(
     suspend fun setDynamicColors(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.DYNAMIC_COLORS] = enabled
+        }
+    }
+
+    suspend fun setDynamicColorIntensity(value: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.DYNAMIC_COLOR_INTENSITY] = value.coerceIn(0, 100)
+        }
+    }
+
+    suspend fun setFullPlayerStyle(style: FullPlayerStyle) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.FULL_PLAYER_STYLE] = style.name
         }
     }
 
@@ -171,6 +234,46 @@ class SettingsDataStore @Inject constructor(
     suspend fun setAutoQueueSimilar(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.AUTO_QUEUE_SIMILAR] = enabled
+        }
+    }
+
+    suspend fun setRegionCode(region: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.REGION_CODE] = region
+        }
+    }
+
+    suspend fun setCountryCode(country: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.COUNTRY_CODE] = country
+        }
+    }
+
+    suspend fun setCountryName(name: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.COUNTRY_NAME] = name
+        }
+    }
+
+    suspend fun addBlacklistedSongId(songId: String) {
+        if (songId.isBlank()) return
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] ?: emptySet()
+            preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] = current + songId
+        }
+    }
+
+    suspend fun removeBlacklistedSongId(songId: String) {
+        if (songId.isBlank()) return
+        context.dataStore.edit { preferences ->
+            val current = preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] ?: emptySet()
+            preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] = current - songId
+        }
+    }
+
+    suspend fun resetAll() {
+        context.dataStore.edit { preferences ->
+            preferences.clear()
         }
     }
 }

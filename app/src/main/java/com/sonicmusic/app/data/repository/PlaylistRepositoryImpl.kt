@@ -1,6 +1,7 @@
 package com.sonicmusic.app.data.repository
 
 import com.sonicmusic.app.data.local.dao.PlaylistDao
+import com.sonicmusic.app.data.local.dao.PlaylistWithCount
 import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.data.local.entity.PlaylistEntity
 import com.sonicmusic.app.domain.model.Playlist
@@ -18,8 +19,8 @@ class PlaylistRepositoryImpl @Inject constructor(
 ) : PlaylistRepository {
 
     override fun getAllPlaylists(): Flow<List<Playlist>> {
-        return playlistDao.getAllPlaylists().map { entities ->
-            entities.map { it.toPlaylist() }
+        return playlistDao.getPlaylistsWithSongCount().map { withCounts ->
+            withCounts.map { it.toPlaylist() }
         }
     }
 
@@ -70,6 +71,9 @@ class PlaylistRepositoryImpl @Inject constructor(
 
     override suspend fun addSongToPlaylist(playlistId: Long, songId: String): Result<Unit> {
         return try {
+            val playlist = playlistDao.getPlaylistById(playlistId)
+                ?: return Result.failure(Exception("Playlist not found"))
+
             val count = playlistDao.getSongCount(playlistId)
             playlistDao.addSongToPlaylist(
                 com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef(
@@ -79,6 +83,15 @@ class PlaylistRepositoryImpl @Inject constructor(
                     addedAt = System.currentTimeMillis()
                 )
             )
+
+            val songThumbnail = songDao.getSongById(songId)?.thumbnailUrl
+            playlistDao.updatePlaylist(
+                playlist.copy(
+                    coverArtUrl = songThumbnail ?: playlist.coverArtUrl,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -88,6 +101,22 @@ class PlaylistRepositoryImpl @Inject constructor(
     override suspend fun removeSongFromPlaylist(playlistId: Long, songId: String): Result<Unit> {
         return try {
             playlistDao.removeSongFromPlaylist(playlistId, songId)
+
+            val playlist = playlistDao.getPlaylistById(playlistId)
+            if (playlist != null) {
+                val nextCoverArt = playlistDao.getPlaylistSongs(playlistId)
+                    .firstOrNull()
+                    ?.songId
+                    ?.let { firstSongId -> songDao.getSongById(firstSongId)?.thumbnailUrl }
+
+                playlistDao.updatePlaylist(
+                    playlist.copy(
+                        coverArtUrl = nextCoverArt,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -140,6 +169,19 @@ class PlaylistRepositoryImpl @Inject constructor(
             updatedAt = updatedAt,
             songCount = songs.size,
             songs = songs
+        )
+    }
+
+    private fun PlaylistWithCount.toPlaylist(): Playlist {
+        return Playlist(
+            id = id,
+            name = name,
+            description = description,
+            coverArtUrl = coverArtUrl,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            songCount = songCount,
+            songs = emptyList()
         )
     }
 }

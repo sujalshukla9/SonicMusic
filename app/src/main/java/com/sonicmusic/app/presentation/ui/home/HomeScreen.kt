@@ -36,8 +36,6 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -91,7 +89,9 @@ import java.util.Calendar
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.material.ExperimentalMaterialApi::class)
 @Composable
 fun HomeScreen(
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     onNavigateToSearch: () -> Unit = {},
+    onNavigateToHomeSection: (String) -> Unit = {},
     onNavigateToLikedSongs: () -> Unit = {},
     onNavigateToDownloads: () -> Unit = {},
     onNavigateToPlaylists: () -> Unit = {},
@@ -104,6 +104,7 @@ fun HomeScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val error by viewModel.error.collectAsState()
+    val countryName by viewModel.countryName.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
 
@@ -140,15 +141,14 @@ fun HomeScreen(
             ) {
             val pullRefreshState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
             
-
-
             androidx.compose.material3.pulltorefresh.PullToRefreshBox(
                 isRefreshing = isRefreshing,
                 onRefresh = { viewModel.refreshHomeContent() },
                 state = pullRefreshState
             ) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = bottomPadding)
                 ) {
                     // ═══════════════════════════════════════════
                     // 1️⃣ HEADER - Greeting + Search + Settings
@@ -157,6 +157,14 @@ fun HomeScreen(
                         HomeHeader(
                             onSearchClick = onNavigateToSearch,
                             onSettingsClick = onNavigateToSettings
+                        )
+                    }
+                    item {
+                        HomeQuickActions(
+                            onLikedSongsClick = onNavigateToLikedSongs,
+                            onDownloadsClick = onNavigateToDownloads,
+                            onPlaylistsClick = onNavigateToPlaylists,
+                            onRecentlyPlayedClick = onNavigateToRecentlyPlayed
                         )
                     }
 
@@ -187,7 +195,10 @@ fun HomeScreen(
                                     onShowFullPlayer()
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.quickPicks) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) }
+                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_QUICK_PICKS)
+                                }
                             )
                         }
                     }
@@ -214,7 +225,15 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(listenAgainGridSongs) },
                                 onShuffle = { viewModel.playAllSongs(listenAgainGridSongs, shuffle = true) },
-                                title = if (hasHistory) "Listen Again" else "Trending"
+                                title = if (hasHistory) "Listen Again" else "Trending",
+                                onSeeAllClick = {
+                                    val sectionKey = if (hasHistory) {
+                                        HomeViewModel.SECTION_LISTEN_AGAIN
+                                    } else {
+                                        HomeViewModel.SECTION_TRENDING
+                                    }
+                                    onNavigateToHomeSection(sectionKey)
+                                }
                             )
                         }
                     }
@@ -231,7 +250,10 @@ fun HomeScreen(
                                     onShowFullPlayer()
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.quickPicks) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) }
+                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_QUICK_PICKS)
+                                }
                             )
                         }
                     }
@@ -251,7 +273,9 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.personalizedForYou) },
                                 onShuffle = { viewModel.playAllSongs(homeContent.personalizedForYou, shuffle = true) },
-                                onSeeAllClick = { viewModel.onSectionSeeAll("personalized") },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_PERSONALIZED)
+                                },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
                         }
@@ -264,7 +288,11 @@ fun HomeScreen(
                         item {
                             SongSection(
                                 title = "Trending Now",
-                                subtitle = "What's hot in India",
+                                subtitle = if (!countryName.isNullOrBlank()) {
+                                    "What's hot in $countryName"
+                                } else {
+                                    "What's hot near you"
+                                },
                                 songs = homeContent.trending,
                                 onSongClick = { song ->
                                     viewModel.onSongClickWithRadioQueue(song)
@@ -272,7 +300,9 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.trending) },
                                 onShuffle = { viewModel.playAllSongs(homeContent.trending, shuffle = true) },
-                                onSeeAllClick = { viewModel.onSectionSeeAll("trending") },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_TRENDING)
+                                },
                                 cardStyle = CardStyle.COMPACT_ROW
                             )
                         }
@@ -293,7 +323,9 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.newReleases) },
                                 onShuffle = { viewModel.playAllSongs(homeContent.newReleases, shuffle = true) },
-                                onSeeAllClick = { viewModel.onSectionSeeAll("new_releases") },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_NEW_RELEASES)
+                                },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
                         }
@@ -314,7 +346,9 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.englishHits) },
                                 onShuffle = { viewModel.playAllSongs(homeContent.englishHits, shuffle = true) },
-                                onSeeAllClick = { viewModel.onSectionSeeAll("english_hits") },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_ENGLISH_HITS)
+                                },
                                 cardStyle = CardStyle.LARGE_SQUARE
                             )
                         }
@@ -335,7 +369,9 @@ fun HomeScreen(
                                 },
                                 onPlayAll = { viewModel.playAllSongs(homeContent.forgottenFavorites) },
                                 onShuffle = { viewModel.playAllSongs(homeContent.forgottenFavorites, shuffle = true) },
-                                onSeeAllClick = { viewModel.onSectionSeeAll("forgotten_favorites") },
+                                onSeeAllClick = {
+                                    onNavigateToHomeSection(HomeViewModel.SECTION_FORGOTTEN_FAVORITES)
+                                },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
                         }
@@ -355,7 +391,11 @@ fun HomeScreen(
                             },
                             onPlayAll = { viewModel.playAllSongs(artistSection.songs) },
                             onShuffle = { viewModel.playAllSongs(artistSection.songs, shuffle = true) },
-                            onSeeAllClick = { viewModel.onSectionSeeAll("artist_${artistSection.artist.id}") },
+                            onSeeAllClick = {
+                                onNavigateToHomeSection(
+                                    HomeViewModel.artistSectionKey(artistSection.artist.id)
+                                )
+                            },
                             cardStyle = CardStyle.MEDIUM_CARD
                         )
                     }
@@ -385,18 +425,94 @@ private fun HomeHeader(
             .padding(horizontal = 20.dp)
             .padding(top = 12.dp, bottom = 8.dp)
     ) {
-        // Greeting only - cleaner look like YT Music
-        Text(
-            text = greeting,
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Text(
-            text = "What do you want to listen to?",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = greeting,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Text(
+                    text = "What do you want to listen to?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                IconButton(onClick = onSearchClick) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                IconButton(onClick = onSettingsClick) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeQuickActions(
+    onLikedSongsClick: () -> Unit,
+    onDownloadsClick: () -> Unit,
+    onPlaylistsClick: () -> Unit,
+    onRecentlyPlayedClick: () -> Unit
+) {
+    data class QuickAction(
+        val title: String,
+        val icon: ImageVector,
+        val onClick: () -> Unit
+    )
+
+    val actions = listOf(
+        QuickAction("Liked", Icons.Default.Favorite, onLikedSongsClick),
+        QuickAction("Downloads", Icons.Default.Download, onDownloadsClick),
+        QuickAction("Playlists", Icons.AutoMirrored.Filled.PlaylistPlay, onPlaylistsClick),
+        QuickAction("Recent", Icons.Default.History, onRecentlyPlayedClick)
+    )
+
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(actions, key = { it.title }) { action ->
+            Surface(
+                modifier = Modifier.clickable(onClick = action.onClick),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = action.icon,
+                        contentDescription = action.title,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = action.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -446,7 +562,8 @@ private fun ForYouSection(
     songs: List<Song>,
     onSongClick: (Song) -> Unit,
     onPlayAll: () -> Unit,
-    onShuffle: () -> Unit
+    onShuffle: () -> Unit,
+    onSeeAllClick: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth()
@@ -467,8 +584,16 @@ private fun ForYouSection(
 
             // Play All and Shuffle buttons
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                TextButton(onClick = onSeeAllClick) {
+                    Text(
+                        text = "See all",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(
                     onClick = onShuffle,
                     modifier = Modifier.size(40.dp)
@@ -597,11 +722,12 @@ private fun ListenAgainGrid(
     onSongClick: (Song) -> Unit,
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
-    title: String = "Listen Again"
+    title: String = "Listen Again",
+    onSeeAllClick: () -> Unit
 ) {
     // 3x3 grid = 9 songs per page, 3 pages = 27 songs total
     val songsPerPage = 9
-    val pageCount = 3
+    val pageCount = (songs.size + songsPerPage - 1) / songsPerPage
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
     Column(
@@ -623,9 +749,16 @@ private fun ListenAgainGrid(
             )
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                TextButton(onClick = onSeeAllClick) {
+                    Text(
+                        text = "See all",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 // Play All and Shuffle buttons
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -792,7 +925,8 @@ private fun QuickPicksSection(
     songs: List<Song>,
     onSongClick: (Song) -> Unit,
     onPlayAll: () -> Unit,
-    onShuffle: () -> Unit
+    onShuffle: () -> Unit,
+    onSeeAllClick: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth()
@@ -820,8 +954,16 @@ private fun QuickPicksSection(
 
             // Play All and Shuffle buttons
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                TextButton(onClick = onSeeAllClick) {
+                    Text(
+                        text = "See all",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(
                     onClick = onShuffle,
                     modifier = Modifier.size(36.dp)

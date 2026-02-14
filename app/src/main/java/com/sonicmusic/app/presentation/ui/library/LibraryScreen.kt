@@ -1,5 +1,9 @@
 package com.sonicmusic.app.presentation.ui.library
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -7,27 +11,38 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,15 +51,21 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,32 +74,57 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
+import com.sonicmusic.app.data.local.dao.ArtistPlayCount
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
+    bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     onNavigateToLikedSongs: () -> Unit = {},
+    onNavigateToDownloads: () -> Unit = {},
     onNavigateToPlaylists: () -> Unit = {},
     onNavigateToRecentlyPlayed: () -> Unit = {},
     onNavigateToLocalSongs: () -> Unit = {},
+    onNavigateToPlaylistDetail: (Long) -> Unit = {},
+    onNavigateToArtistDetail: (String) -> Unit = {},
+    onNavigateToArtists: () -> Unit = {},
+    onShowFullPlayer: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
     val likedSongs by viewModel.likedSongs.collectAsState()
-    val playlists by viewModel.playlists.collectAsState()
+    val playlists by viewModel.filteredPlaylists.collectAsState()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
     val localSongs by viewModel.localSongs.collectAsState()
+    val artists by viewModel.artists.collectAsState()
+    val downloadedSongs by viewModel.downloadedSongs.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val error by viewModel.error.collectAsState()
+    val isSearchActive by viewModel.isSearchActive.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
     
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Show error as Snackbar
+    LaunchedEffect(error) {
+        error?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearError()
+        }
+    }
 
     // Create playlist dialog
     if (showCreatePlaylistDialog) {
@@ -92,24 +138,57 @@ fun LibraryScreen(
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { 
-                    Text(
-                        "Your Library",
-                        style = MaterialTheme.typography.headlineMedium
-                    ) 
-                },
-                windowInsets = TopAppBarDefaults.windowInsets,
-                actions = {
-                    IconButton(onClick = { /* TODO: Search library */ }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search Library")
+            Column {
+                TopAppBar(
+                    title = { 
+                        Text(
+                            "Library",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                        ) 
+                    },
+                    scrollBehavior = scrollBehavior,
+                    windowInsets = WindowInsets.statusBars,
+                    actions = {
+                        IconButton(onClick = { viewModel.toggleSearch() }) {
+                            Icon(
+                                imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                                contentDescription = if (isSearchActive) "Close Search" else "Search Library"
+                            )
+                        }
+                        IconButton(onClick = { showCreatePlaylistDialog = true }) {
+                            Icon(Icons.Default.Add, contentDescription = "Create Playlist")
+                        }
                     }
-                    IconButton(onClick = { showCreatePlaylistDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "Create Playlist")
-                    }
+                )
+                // Animated search bar
+                AnimatedVisibility(
+                    visible = isSearchActive,
+                    enter = expandVertically(),
+                    exit = shrinkVertically()
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.updateSearchQuery(it) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        placeholder = { Text("Search playlists, songs...") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(16.dp),
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear")
+                                }
+                            }
+                        }
+                    )
                 }
-            )
+            }
         }
     ) { paddingValues ->
         if (isLoading) {
@@ -123,127 +202,180 @@ fun LibraryScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentPadding = PaddingValues(vertical = 8.dp)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding() + 16.dp, 
+                    bottom = bottomPadding + 16.dp
+                )
             ) {
-                // Quick Access Cards
-                item {
-                    Text(
-                        text = "Quick Access",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
+                            // Quick Access / Hero Cards
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                        HeroCard(
+                            modifier = Modifier.weight(1f),
+                            title = "Liked Songs",
+                            subtitle = "${likedSongs.size} songs",
+                            icon = Icons.Default.Favorite,
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            onClick = onNavigateToLikedSongs
+                        )
+                        HeroCard(
+                            modifier = Modifier.weight(1f),
+                            title = "Recent",
+                            subtitle = "${recentlyPlayed.size} played",
+                            icon = Icons.Default.History,
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            onClick = onNavigateToRecentlyPlayed
+                        )
+                    }
                 }
                 
-                item {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(horizontal = 16.dp)
-                    ) {
-                        item {
-                            QuickAccessCard(
-                                icon = Icons.Default.Favorite,
-                                title = "Liked Songs",
-                                count = likedSongs.size,
-                                onClick = onNavigateToLikedSongs
-                            )
-                        }
-                        item {
-                            QuickAccessCard(
-                                icon = Icons.Default.History,
-                                title = "Recently Played",
-                                count = recentlyPlayed.size,
-                                onClick = onNavigateToRecentlyPlayed
-                            )
-                        }
-                        item {
-                            QuickAccessCard(
-                                icon = Icons.Default.Download,
-                                title = "Downloads",
-                                count = 0, // TODO: Get from download manager
-                                onClick = { /* TODO: Navigate to downloads */ }
-                            )
+                // Play All / Shuffle buttons for Liked Songs
+                if (likedSongs.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.playAllLikedSongs()
+                                    onShowFullPlayer()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Play All")
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.shuffleLikedSongs()
+                                    onShowFullPlayer()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Shuffle")
+                            }
                         }
                     }
                 }
                 
                 item { Spacer(modifier = Modifier.height(16.dp)) }
-                
-                // Library Sections
+
+                // Standard List Items
                 item {
-                    Text(
-                        text = "Library",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    ) {
+                        LibraryListItem(
+                            icon = Icons.Default.PhoneAndroid,
+                            title = "Local Songs",
+                            subtitle = "${localSongs.size} songs on device",
+                            onClick = onNavigateToLocalSongs
+                        )
+                        LibraryListItem(
+                            icon = Icons.Default.Person,
+                            title = "Artists",
+                            subtitle = "${artists.size} artists",
+                            onClick = onNavigateToArtists
+                        )
+                        LibraryListItem(
+                            icon = Icons.Default.Download,
+                            title = "Downloads",
+                            subtitle = "${downloadedSongs.size} songs downloaded",
+                            onClick = onNavigateToDownloads
+                        )
+                    }
                 }
 
-                // Liked Songs Section
-                item {
-                    LibrarySectionCard(
-                        icon = Icons.Default.Favorite,
-                        title = "Liked Songs",
-                        subtitle = "${likedSongs.size} song${if (likedSongs.size != 1) "s" else ""}",
-                        onClick = onNavigateToLikedSongs
-                    )
-                }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Playlists Section
                 item {
-                    LibrarySectionCard(
-                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                        title = "Playlists",
-                        subtitle = "${playlists.size} playlist${if (playlists.size != 1) "s" else ""}",
-                        onClick = onNavigateToPlaylists
-                    )
+                    Row(
+                         modifier = Modifier
+                             .fillMaxWidth()
+                             .padding(horizontal = 16.dp, vertical = 8.dp),
+                         horizontalArrangement = Arrangement.SpaceBetween,
+                         verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Playlists",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                        TextButton(onClick = onNavigateToPlaylists) {
+                            Text("See All")
+                        }
+                    }
                 }
 
-                // Recently Played Section
-                item {
-                    LibrarySectionCard(
-                        icon = Icons.Default.History,
-                        title = "Recently Played",
-                        subtitle = "${recentlyPlayed.size} song${if (recentlyPlayed.size != 1) "s" else ""}",
-                        onClick = onNavigateToRecentlyPlayed
-                    )
+                if (playlists.isNotEmpty()) {
+                    item {
+                        LazyRow(
+                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Create New Playlist Card
+                            item {
+                                AddPlaylistCard(onClick = { showCreatePlaylistDialog = true })
+                            }
+                            
+                            items(playlists.take(10)) { playlist ->
+                                PlaylistGridItem(
+                                    playlist = playlist,
+                                    onClick = { onNavigateToPlaylistDetail(playlist.id) }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        Box(
+                             modifier = Modifier
+                                 .fillMaxWidth()
+                                 .padding(32.dp),
+                             contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "No playlists yet",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
 
-                // Local Songs Section
-                item {
-                    LibrarySectionCard(
-                        icon = Icons.Default.PhoneAndroid,
-                        title = "Local Songs",
-                        subtitle = "${localSongs.size} song${if (localSongs.size != 1) "s" else ""} on device",
-                        onClick = onNavigateToLocalSongs
-                    )
-                }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
 
-                // Artists Section
-                item {
-                    LibrarySectionCard(
-                        icon = Icons.Default.Person,
-                        title = "Artists",
-                        subtitle = "Based on your listening",
-                        onClick = { /* TODO: Navigate to artists */ }
-                    )
-                }
-                
-                // Recently Played Preview (if available)
+                // Recently Played List
                 if (recentlyPlayed.isNotEmpty()) {
                     item {
-                        Spacer(modifier = Modifier.height(16.dp))
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
                                 text = "Recently Played",
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                             )
                             TextButton(onClick = onNavigateToRecentlyPlayed) {
                                 Text("See All")
@@ -251,66 +383,107 @@ fun LibraryScreen(
                         }
                     }
                     
-                    items(
-                        items = recentlyPlayed.take(5),
-                        key = { it.id }
-                    ) { history ->
+                    items(recentlyPlayed.take(5)) { history ->
                         RecentlyPlayedItem(
                             history = history,
-                            onClick = { viewModel.onHistoryItemClick(history) }
+                            onClick = {
+                                viewModel.onHistoryItemClick(history)
+                                onShowFullPlayer()
+                            }
                         )
                     }
-                }
-                
-                // Your Playlists Preview (if available)
-                if (playlists.isNotEmpty()) {
+                } else {
+                    // Empty state for Recently Played
                     item {
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "No songs played yet",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = "Songs you listen to will appear here",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+
+                // Artists Section
+                if (artists.isNotEmpty()) {
+                    item {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Your Playlists",
-                                style = MaterialTheme.typography.titleMedium
+                                text = "Your Artists",
+                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                             )
-                            TextButton(onClick = onNavigateToPlaylists) {
+                            TextButton(onClick = onNavigateToArtists) {
                                 Text("See All")
                             }
                         }
                     }
-                    
-                    item {
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp)
+
+                    items(artists) { artist ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onNavigateToArtistDetail(artist.artist) }
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            items(
-                                items = playlists.take(6),
-                                key = { it.id }
-                            ) { playlist ->
-                                PlaylistCard(
-                                    playlist = playlist,
-                                    onClick = { /* TODO: Navigate to playlist */ }
-                                )
+                            Surface(
+                                modifier = Modifier.size(48.dp),
+                                shape = androidx.compose.foundation.shape.CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
                             }
-                            
-                            // Create new playlist card
-                            item {
-                                CreatePlaylistCard(
-                                    onClick = { showCreatePlaylistDialog = true }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = artist.artist,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${artist.playCount} plays",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
                     }
-                }
-                
-                // Bottom spacing for mini player
-                item {
-                    Spacer(modifier = Modifier.height(16.dp))
                 }
             }
         }
@@ -318,42 +491,44 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun QuickAccessCard(
-    icon: ImageVector,
+private fun HeroCard(
+    modifier: Modifier = Modifier,
     title: String,
-    count: Int,
+    subtitle: String,
+    icon: ImageVector,
+    containerColor: Color,
+    contentColor: Color,
     onClick: () -> Unit
 ) {
-    ElevatedCard(
+    Card(
         onClick = onClick,
-        modifier = Modifier.size(width = 140.dp, height = 100.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-        )
+        modifier = modifier.height(110.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor,
+            contentColor = contentColor
+        ),
+        shape = RoundedCornerShape(24.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(12.dp),
+                .padding(16.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(28.dp)
             )
             Column {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                 )
                 Text(
-                    text = "$count",
+                    text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = contentColor.copy(alpha = 0.8f)
                 )
             }
         }
@@ -361,68 +536,134 @@ private fun QuickAccessCard(
 }
 
 @Composable
-private fun LibrarySectionCard(
+private fun LibraryListItem(
     icon: ImageVector,
     title: String,
     subtitle: String,
     onClick: () -> Unit
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+    ListItem(
+        modifier = Modifier.clickable(onClick = onClick),
+        colors = ListItemDefaults.colors(
+            containerColor = Color.Transparent
+        ),
+        leadingContent = {
             Surface(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(12.dp)),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                tonalElevation = 2.dp
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = CircleShape,
+                modifier = Modifier.size(40.dp)
             ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        },
+        headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
+        supportingContent = { Text(subtitle) },
+        trailingContent = {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    )
+}
+
+@Composable
+private fun AddPlaylistCard(onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(
+            modifier = Modifier
+                .size(140.dp)
+                .aspectRatio(1f),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            tonalElevation = 2.dp
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Create Playlist",
+                    modifier = Modifier.size(48.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "New Playlist",
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+@Composable
+private fun PlaylistGridItem(
+    playlist: Playlist,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(140.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Surface(
+            modifier = Modifier
+                .size(140.dp)
+                .aspectRatio(1f),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer
+        ) {
+            if (!playlist.coverArtUrl.isNullOrBlank()) {
+                SongThumbnail(
+                    artworkUrl = playlist.coverArtUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    contentDescription = null
+                )
+            } else {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = icon,
+                        imageVector = Icons.Default.LibraryMusic,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            Column(
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = playlist.name,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = "${playlist.songCount} songs",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -431,123 +672,33 @@ private fun RecentlyPlayedItem(
     history: PlaybackHistory,
     onClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AsyncImage(
-            model = history.thumbnailUrl,
-            contentDescription = null,
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp))
-        )
-        
-        Spacer(modifier = Modifier.width(12.dp))
-        
-        Column(modifier = Modifier.weight(1f)) {
+    ListItem(
+        modifier = Modifier.clickable(onClick = onClick),
+        leadingContent = {
+            AsyncImage(
+                model = history.thumbnailUrl,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+        },
+        headlineContent = { 
             Text(
                 text = history.title,
-                style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.Medium
+            ) 
+        },
+        supportingContent = { 
             Text(
                 text = history.artist,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
-            )
+            ) 
         }
-    }
-}
-
-@Composable
-private fun PlaylistCard(
-    playlist: Playlist,
-    onClick: () -> Unit
-) {
-    ElevatedCard(
-        onClick = onClick,
-        modifier = Modifier.size(width = 140.dp, height = 160.dp)
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize()
-        ) {
-            // Playlist cover or icon
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(100.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.LibraryMusic,
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp),
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                }
-            }
-            
-            Column(
-                modifier = Modifier.padding(8.dp)
-            ) {
-                Text(
-                    text = playlist.name,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${playlist.songCount} songs",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CreatePlaylistCard(onClick: () -> Unit) {
-    ElevatedCard(
-        onClick = onClick,
-        modifier = Modifier.size(width = 140.dp, height = 160.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        )
-    ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(40.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Create New",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-    }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -571,7 +722,8 @@ private fun CreatePlaylistDialog(
                     onValueChange = { playlistName = it },
                     label = { Text("Playlist Name") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 )
                 OutlinedTextField(
                     value = playlistDescription,
@@ -579,7 +731,8 @@ private fun CreatePlaylistDialog(
                     label = { Text("Description (optional)") },
                     minLines = 2,
                     maxLines = 3,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 )
             }
         },

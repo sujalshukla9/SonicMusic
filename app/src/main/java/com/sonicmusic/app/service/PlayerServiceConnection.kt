@@ -15,6 +15,7 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -322,8 +324,7 @@ class PlayerServiceConnection @Inject constructor(
         // Reset queue index if we're starting fresh
         _currentQueueIndex.value = 0
     }
-    
-    /**
+       /**
      * Play a single song - ViTune Style (triggers instant recommendations)
      * 
      * @param song The song to play
@@ -401,6 +402,142 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     /**
+     * Play a list of songs lazily (fetches URLs in background) - ViTune Style
+     * 
+     * @param songs List of songs to play
+     * @param startIndex Index to start playing from
+     * @param songRepository Repository to fetch URLs from
+     */
+    fun playSongsLazy(
+        songs: List<Song>, 
+        startIndex: Int = 0, 
+        songRepository: com.sonicmusic.app.domain.repository.SongRepository
+    ) {
+        if (songs.isEmpty()) return
+
+        if (mediaController == null) {
+            Log.e(TAG, "❌ Cannot play: Service not connected")
+            _playbackError.value = "Service not connected" 
+            connect() // Try to reconnect
+            return
+        }
+        
+        scope.launch {
+            val safeStartIndex = startIndex.coerceIn(0, songs.lastIndex)
+            val targetSong = songs[safeStartIndex]
+            val orderedQueue = buildList {
+                add(targetSong)
+                addAll(songs.drop(safeStartIndex + 1))
+                addAll(songs.take(safeStartIndex))
+            }
+            Log.d(
+                TAG,
+                "▶️ Lazy playing queue: ${orderedQueue.size} songs, starting with ${targetSong.title}"
+            )
+
+            // 1. Fetch only the first song immediately for instant playback
+            try {
+                // Clear queue immediately for UI checking
+                songQueue.clear()
+                songQueue.addAll(orderedQueue)
+                _queue.value = songQueue.toList()
+                _currentSong.value = targetSong
+                _currentQueueIndex.value = 0
+                _isBuffering.value = true // Show loading
+                
+                // Fetch first song
+                val streamUrlResult = songRepository.getStreamUrl(targetSong.id, com.sonicmusic.app.domain.model.StreamQuality.BEST)
+                
+                streamUrlResult.onSuccess { streamUrl ->
+                    // Play immediately
+                     playWithQueue(orderedQueue, mapOf(targetSong.id to streamUrl), 0)
+                     
+                     // 2. Fetch remaining in background
+                     val remainingSongs = orderedQueue.drop(1)
+                     if (remainingSongs.isNotEmpty()) {
+                         addSongsToQueueLazy(remainingSongs, songRepository, true)
+                     }
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to fetch first song URL", e)
+                    _playbackError.value = "Failed to play: ${e.message}"
+                    _isBuffering.value = false
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error in lazy Playback", e)
+                _playbackError.value = "Error: ${e.message}"
+                _isBuffering.value = false
+            }
+        }
+    }
+
+    /**
+     * Add songs to queue with background URL fetching
+     * 
+     * @param songs Songs to add
+     * @param songRepository Repository to fetch URLs
+     * @param isQueueAlreadyPopulated Whether the local queue list is already populated (true for playSongsLazy)
+     */
+    fun addSongsToQueueLazy(
+        songs: List<Song>, 
+        songRepository: com.sonicmusic.app.domain.repository.SongRepository,
+        isQueueAlreadyPopulated: Boolean = false
+    ) {
+        if (songs.isEmpty()) return
+        
+        scope.launch(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "⏳ Background fetching URLs for ${songs.size} songs...")
+                
+                songs.chunked(5).forEach { batch ->
+                    if (!isActive) return@forEach
+                    
+                    val urlMap = mutableMapOf<String, String>()
+                    val validSongs = mutableListOf<Song>()
+                    
+                    batch.forEach { song ->
+                         try {
+                            songRepository.getStreamUrl(song.id, com.sonicmusic.app.domain.model.StreamQuality.BEST)
+                                .getOrNull()
+                                ?.let { url -> 
+                                    urlMap[song.id] = url
+                                    validSongs.add(song)
+                                }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "⚠️ Failed to get URL for ${song.id}")
+                        }
+                    }
+                    
+                    if (validSongs.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            if (isQueueAlreadyPopulated) {
+                                // Just update URLs for existing items (handled by streamUrlCache update mostly)
+                                updateStreamUrls(urlMap)
+                                
+                                validSongs.forEach { song ->
+                                    if (song.id != _currentSong.value?.id) { // Don't duplicate current
+                                        urlMap[song.id]?.let { url ->
+                                            mediaController?.addMediaItem(createMediaItem(song, url))
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Normal add to queue (append)
+                                addToQueue(validSongs, urlMap)
+                            }
+                        }
+                    }
+                    
+                    delay(100)
+                }
+                 Log.d(TAG, "✅ Finished background URL fetching")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error in background fetch", e)
+            }
+        }
+    }
+
+    /**
      * Add songs to the end of the queue
      * 
      * @param songs Songs to add
@@ -410,19 +547,19 @@ class PlayerServiceConnection @Inject constructor(
         if (songs.isEmpty()) return
         
         Log.d(TAG, "➕ Adding ${songs.size} songs to queue")
-        
-        val addedCount = songs.count { song ->
-            streamUrls[song.id]?.let { url ->
-                // Cache URL
-                streamUrlCache[song.id] = url
-                
-                // Add to our queue
-                songQueue.add(song)
-                
-                // Add to player
-                mediaController?.addMediaItem(createMediaItem(song, url))
-                true
-            } ?: false
+
+        val existingIds = songQueue.asSequence().map { it.id }.toMutableSet()
+        var addedCount = 0
+
+        songs.forEach { song ->
+            if (existingIds.contains(song.id)) return@forEach
+
+            val streamUrl = streamUrls[song.id] ?: return@forEach
+            streamUrlCache[song.id] = streamUrl
+            songQueue.add(song)
+            mediaController?.addMediaItem(createMediaItem(song, streamUrl))
+            existingIds.add(song.id)
+            addedCount += 1
         }
         
         _queue.value = songQueue.toList()
@@ -710,8 +847,9 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     private fun createMediaItem(song: Song, streamUrl: String): MediaItem {
+        val sourceUri = normalizeSourceUri(streamUrl)
         return MediaItem.Builder()
-            .setUri(streamUrl)
+            .setUri(sourceUri)
             .setMediaId(song.id)
             .setMediaMetadata(
                 MediaMetadata.Builder()
@@ -722,6 +860,15 @@ class PlayerServiceConnection @Inject constructor(
                     .build()
             )
             .build()
+    }
+
+    private fun normalizeSourceUri(source: String): Uri {
+        val parsed = Uri.parse(source)
+        return if (parsed.scheme.isNullOrBlank() && source.startsWith("/")) {
+            Uri.fromFile(File(source))
+        } else {
+            parsed
+        }
     }
 
     private fun syncState() {

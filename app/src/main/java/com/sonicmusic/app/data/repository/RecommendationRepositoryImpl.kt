@@ -2,9 +2,11 @@ package com.sonicmusic.app.data.repository
 
 import android.util.Log
 import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
+import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.Artist
 import com.sonicmusic.app.domain.model.ArtistSection
+import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.HomeContent
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.RecommendationRepository
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import java.util.Calendar
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,52 +32,13 @@ import javax.inject.Singleton
 class RecommendationRepositoryImpl @Inject constructor(
     private val youTubeiService: YouTubeiService,
     private val playbackHistoryDao: PlaybackHistoryDao,
-    private val userTasteRepository: UserTasteRepository
+    private val userTasteRepository: UserTasteRepository,
+    private val settingsDataStore: SettingsDataStore
 ) : RecommendationRepository {
 
     companion object {
         private const val TAG = "RecommendationRepo"
-        
-        // Time-based mood queries
-        private val MORNING_QUERIES = listOf(
-            "morning motivation songs Hindi",
-            "good morning Hindi songs",
-            "energetic Hindi songs",
-            "workout Hindi music"
-        )
-        
-        private val AFTERNOON_QUERIES = listOf(
-            "popular Hindi songs 2024",
-            "trending Bollywood songs",
-            "top Hindi music",
-            "chill Hindi songs"
-        )
-        
-        private val EVENING_QUERIES = listOf(
-            "romantic Hindi songs",
-            "evening mood Hindi songs",
-            "relaxing Hindi music",
-            "soft Hindi songs"
-        )
-        
-        private val NIGHT_QUERIES = listOf(
-            "late night Hindi songs",
-            "sad Hindi songs",
-            "slow Hindi music",
-            "emotional Bollywood songs"
-        )
-        
-        // Default popular artists (fallback when no user history)
-        private val DEFAULT_POPULAR_ARTISTS = listOf(
-            "Arijit Singh",
-            "Shreya Ghoshal",
-            "Atif Aslam",
-            "Pritam",
-            "A.R. Rahman",
-            "Neha Kakkar",
-            "Jubin Nautiyal",
-            "Badshah"
-        )
+        private const val FALLBACK_COUNTRY_CODE = "US"
     }
 
     /**
@@ -93,6 +57,7 @@ class RecommendationRepositoryImpl @Inject constructor(
             // Get user's taste profile
             val tasteProfile = userTasteRepository.getUserTasteProfile()
             val currentHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            val region = getRegionContext()
             
             val allSongs = mutableListOf<Song>()
             
@@ -106,27 +71,45 @@ class RecommendationRepositoryImpl @Inject constructor(
                 Log.d(TAG, "🎤 Searching: $artistQuery")
                 
                 youTubeiService.searchSongs(artistQuery, limit / 2).onSuccess { songs ->
-                    allSongs.addAll(songs)
+                    allSongs.addAll(songs.filter { it.isStrictSong() })
                 }
                 
                 // Strategy 2: Similar music to user's taste + time context (50% of results)
-                val moodQuery = getTimeBasedQuery(currentHour)
+                val moodQuery = RegionalRecommendationHelper.timeBasedQuery(
+                    hour = currentHour,
+                    countryCode = region.countryCode,
+                    countryName = region.countryName
+                )
                 Log.d(TAG, "🕐 Time-based query: $moodQuery")
                 
                 youTubeiService.searchSongs(moodQuery, limit / 2).onSuccess { songs ->
-                    allSongs.addAll(songs)
+                    allSongs.addAll(songs.filter { it.isStrictSong() })
                 }
                 
             } else {
-                // New user - use trending + time-based mood
-                Log.d(TAG, "🆕 New user - using trending recommendations")
+                // New user - use region-aware charts + time-based discovery
+                Log.d(TAG, "🆕 New user - using region-aware recommendations (${region.countryCode})")
                 
-                // Popular songs based on time of day
-                val query = getTimeBasedQuery(currentHour)
-                Log.d(TAG, "🕐 Query: $query")
+                youTubeiService.getTrendingSongs(limit / 2).onSuccess { songs ->
+                    allSongs.addAll(songs.filter { it.isStrictSong() })
+                }
+
+                val query = RegionalRecommendationHelper.timeBasedQuery(
+                    hour = currentHour,
+                    countryCode = region.countryCode,
+                    countryName = region.countryName
+                )
+                Log.d(TAG, "🕐 Regional query: $query")
                 
                 youTubeiService.searchSongs(query, limit).onSuccess { songs ->
-                    allSongs.addAll(songs)
+                    allSongs.addAll(songs.filter { it.isStrictSong() })
+                }
+            }
+
+            // Safety fallback
+            if (allSongs.isEmpty()) {
+                youTubeiService.getTrendingSongs(limit).onSuccess { songs ->
+                    allSongs.addAll(songs.filter { it.isStrictSong() })
                 }
             }
             
@@ -142,18 +125,6 @@ class RecommendationRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ Quick picks error", e)
             Result.failure(e)
-        }
-    }
-
-    /**
-     * Get time-based mood query based on hour of day
-     */
-    private fun getTimeBasedQuery(hour: Int): String {
-        return when (hour) {
-            in 5..11 -> MORNING_QUERIES.random()    // 5 AM - 11 AM
-            in 12..16 -> AFTERNOON_QUERIES.random() // 12 PM - 4 PM
-            in 17..20 -> EVENING_QUERIES.random()   // 5 PM - 8 PM
-            else -> NIGHT_QUERIES.random()          // 9 PM - 4 AM
         }
     }
 
@@ -216,17 +187,19 @@ class RecommendationRepositoryImpl @Inject constructor(
             // Get user's top artists from taste profile
             val tasteProfile = userTasteRepository.getUserTasteProfile()
             val userTopArtists = tasteProfile.topArtists.take(3)
+            val region = getRegionContext()
+            val regionalPopularArtists = RegionalRecommendationHelper.defaultPopularArtists(region.countryCode)
             
             // Mix user's artists with popular artists
             val artistsToQuery = if (userTopArtists.isNotEmpty()) {
                 // Combine user's top artists with popular ones
-                val combined = userTopArtists + DEFAULT_POPULAR_ARTISTS
+                val combined = userTopArtists + regionalPopularArtists
                     .filter { !userTopArtists.contains(it) }
                     .take(2)
                 combined.take(limit)
             } else {
                 // New user - use popular artists
-                DEFAULT_POPULAR_ARTISTS.shuffled().take(limit)
+                regionalPopularArtists.shuffled().take(limit)
             }
             
             Log.d(TAG, "📋 Artists to query: $artistsToQuery")
@@ -240,14 +213,16 @@ class RecommendationRepositoryImpl @Inject constructor(
                 val songs = youTubeiService.searchSongs(query, 8).getOrNull()
                 
                 if (!songs.isNullOrEmpty()) {
+                    val strictSongs = songs.filter { it.isStrictSong() }
+                    if (strictSongs.isEmpty()) continue
                     artistSections.add(
                         ArtistSection(
                             artist = Artist(
                                 id = artistName.lowercase().replace(" ", "_"),
                                 name = artistName,
-                                songCount = songs.size
+                                songCount = strictSongs.size
                             ),
-                            songs = songs
+                            songs = strictSongs
                         )
                     )
                 }
@@ -267,5 +242,31 @@ class RecommendationRepositoryImpl @Inject constructor(
 
     override fun getHomeContent(): Flow<Result<HomeContent>> = flow {
         emit(Result.success(HomeContent()))
+    }
+
+    private suspend fun getRegionContext(): RegionContext {
+        val countryCode = RegionalRecommendationHelper.normalizeCountryCode(settingsDataStore.countryCode.first())
+            ?: RegionalRecommendationHelper.normalizeCountryCode(Locale.getDefault().country)
+            ?: FALLBACK_COUNTRY_CODE
+
+        val countryName = RegionalRecommendationHelper.canonicalCountryName(
+            countryCode = countryCode,
+            cachedName = settingsDataStore.countryName.first()
+        )
+
+        return RegionContext(countryCode = countryCode, countryName = countryName)
+    }
+
+    private data class RegionContext(
+        val countryCode: String,
+        val countryName: String
+    )
+
+    private fun Song.isStrictSong(): Boolean {
+        return when (contentType) {
+            ContentType.SONG -> true
+            ContentType.UNKNOWN -> duration == 0 || duration in 60..600
+            else -> false
+        }
     }
 }

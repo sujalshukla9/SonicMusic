@@ -2,39 +2,49 @@ package com.sonicmusic.app.data.repository
 
 import android.util.Log
 import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
+import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.ListeningPattern
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.UserTasteProfile
 import com.sonicmusic.app.domain.repository.UserTasteRepository
 import kotlinx.coroutines.Dispatchers
-
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.util.Calendar
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class UserTasteRepositoryImpl @Inject constructor(
     private val playbackHistoryDao: PlaybackHistoryDao,
-    private val youTubeiService: YouTubeiService
+    private val youTubeiService: YouTubeiService,
+    private val settingsDataStore: SettingsDataStore
 ) : UserTasteRepository {
 
     companion object {
         private const val TAG = "UserTasteRepo"
+        private const val FALLBACK_COUNTRY_CODE = "US"
     }
 
     override suspend fun getUserTasteProfile(): UserTasteProfile = withContext(Dispatchers.IO) {
         try {
+            val region = getRegionContext()
             val topArtists = getTopArtists()
             val listeningPattern = analyzeListeningPattern()
             val completionRate = calculateCompletionRate()
             val avgDuration = playbackHistoryDao.getAveragePlayDuration() ?: 0L
-            val searchQueries = buildSearchQueries(topArtists)
+            val searchQueries = buildSearchQueries(
+                topArtists = topArtists,
+                countryCode = region.countryCode,
+                countryName = region.countryName
+            )
             
             UserTasteProfile(
                 topArtists = topArtists,
-                preferredLanguages = inferLanguagePreferences(topArtists),
+                preferredLanguages = inferLanguagePreferences(topArtists, region.countryCode),
                 listeningPattern = listeningPattern,
                 completionRate = completionRate,
                 avgSessionDuration = avgDuration,
@@ -57,8 +67,9 @@ class UserTasteRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getPersonalizedSearchQueries(): List<String> = withContext(Dispatchers.IO) {
+        val region = getRegionContext()
         val topArtists = getTopArtists()
-        buildSearchQueries(topArtists)
+        buildSearchQueries(topArtists, region.countryCode, region.countryName)
     }
 
     override suspend fun getPersonalizedMix(limit: Int): Result<List<Song>> = withContext(Dispatchers.IO) {
@@ -66,8 +77,22 @@ class UserTasteRepositoryImpl @Inject constructor(
             val queries = getPersonalizedSearchQueries()
             
             if (queries.isEmpty()) {
-                // Fallback for new users
-                return@withContext youTubeiService.searchSongs("trending music 2024", limit)
+                // Fallback for new users: region-aware trending first, then region-aware query.
+                youTubeiService.getTrendingSongs(limit).getOrNull()?.let { songs ->
+                    val strictSongs = songs.filter { it.isStrictSong() }
+                    if (strictSongs.isNotEmpty()) {
+                        return@withContext Result.success(strictSongs.take(limit))
+                    }
+                }
+
+                val region = getRegionContext()
+                val fallbackQuery = RegionalRecommendationHelper.timeBasedQuery(
+                    hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY),
+                    countryCode = region.countryCode,
+                    countryName = region.countryName
+                )
+                return@withContext youTubeiService.searchSongs(fallbackQuery, limit)
+                    .map { songs -> songs.filter { it.isStrictSong() } }
             }
             
             val allSongs = mutableListOf<Song>()
@@ -76,7 +101,7 @@ class UserTasteRepositoryImpl @Inject constructor(
             for (query in queries.take(4)) {
                 Log.d(TAG, "Fetching personalized: $query")
                 youTubeiService.searchSongs(query, songsPerQuery)
-                    .onSuccess { songs -> allSongs.addAll(songs) }
+                    .onSuccess { songs -> allSongs.addAll(songs.filter { it.isStrictSong() }) }
             }
             
             // Shuffle and deduplicate
@@ -122,7 +147,10 @@ class UserTasteRepositoryImpl @Inject constructor(
             val result = youTubeiService.searchSongs(query, queueSize + 5)
                 .map { songs ->
                     // Filter out current song if present
-                    songs.filter { it.id != currentSong.id }.take(queueSize)
+                    songs
+                        .filter { it.isStrictSong() }
+                        .filter { it.id != currentSong.id }
+                        .take(queueSize)
                 }
             
             Log.d(TAG, "Queue recommendations: ${result.getOrNull()?.size ?: 0} songs")
@@ -175,7 +203,11 @@ class UserTasteRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun inferLanguagePreferences(topArtists: List<String>): List<String> {
+    private fun inferLanguagePreferences(topArtists: List<String>, countryCode: String): List<String> {
+        if (topArtists.isEmpty()) {
+            return RegionalRecommendationHelper.preferredLanguages(countryCode)
+        }
+
         // Simple heuristic based on artist names
         val hindiArtists = setOf(
             "Arijit Singh", "Shreya Ghoshal", "Atif Aslam", "Pritam", 
@@ -187,14 +219,20 @@ class UserTasteRepositoryImpl @Inject constructor(
             hindiArtists.any { it.lowercase() in artist.lowercase() }
         }
         
-        return if (hindiCount > topArtists.size / 2) {
-            listOf("Hindi", "English", "Punjabi")
+        return if (hindiCount > topArtists.size / 2 || countryCode == "IN") {
+            listOf("Hindi", "English", "Punjabi").distinct()
         } else {
-            listOf("English", "Hindi")
+            (listOf("English") + RegionalRecommendationHelper.preferredLanguages(countryCode))
+                .distinct()
+                .take(3)
         }
     }
 
-    private fun buildSearchQueries(topArtists: List<String>): List<String> {
+    private fun buildSearchQueries(
+        topArtists: List<String>,
+        countryCode: String,
+        countryName: String
+    ): List<String> {
         val queries = mutableListOf<String>()
         
         // Artist-based queries
@@ -205,17 +243,43 @@ class UserTasteRepositoryImpl @Inject constructor(
         // Time-based queries
         val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         queries.add(
-            when (hour) {
-                in 5..11 -> "morning motivational songs"
-                in 12..16 -> "afternoon chill music"
-                in 17..20 -> "evening relaxing songs"
-                else -> "night peaceful music"
-            }
+            RegionalRecommendationHelper.timeBasedQuery(
+                hour = hour,
+                countryCode = countryCode,
+                countryName = countryName
+            )
         )
         
         // Trending/discovery
-        queries.add("trending songs 2024")
+        queries.add("trending songs in $countryName ${RegionalRecommendationHelper.currentYear()}")
+        queries.add("${RegionalRecommendationHelper.regionalKeywords(countryCode).first()} songs")
         
         return queries
+    }
+
+    private suspend fun getRegionContext(): RegionContext {
+        val countryCode = RegionalRecommendationHelper.normalizeCountryCode(settingsDataStore.countryCode.first())
+            ?: RegionalRecommendationHelper.normalizeCountryCode(Locale.getDefault().country)
+            ?: FALLBACK_COUNTRY_CODE
+
+        val countryName = RegionalRecommendationHelper.canonicalCountryName(
+            countryCode = countryCode,
+            cachedName = settingsDataStore.countryName.first()
+        )
+
+        return RegionContext(countryCode = countryCode, countryName = countryName)
+    }
+
+    private data class RegionContext(
+        val countryCode: String,
+        val countryName: String
+    )
+
+    private fun Song.isStrictSong(): Boolean {
+        return when (contentType) {
+            ContentType.SONG -> true
+            ContentType.UNKNOWN -> duration == 0 || duration in 60..600
+            else -> false
+        }
     }
 }

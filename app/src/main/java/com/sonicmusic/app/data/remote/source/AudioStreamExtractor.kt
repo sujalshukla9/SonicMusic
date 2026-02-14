@@ -267,17 +267,14 @@ class AudioStreamExtractor @Inject constructor(
 
         return when (quality) {
             StreamQuality.LOSSLESS, StreamQuality.BEST -> {
-                // Priority:
-                // 1. Opus 160kbps+ (itag 251 - usually 160k, sometimes higher)
-                // 2. AAC 256kbps (itag 141)
-                // 3. AAC 128kbps (itag 140)
-                // 4. Highest bitrate remaining
-                
-                validFormats.filter { it.itag == 251 }.maxByOrNull { it.bitrateKbps }
-                    ?: validFormats.filter { it.itag == 272 }.maxByOrNull { it.bitrateKbps } // High bitrate release
+                // Priority: WebM (Opus) at highest bitrate
+                validFormats.filter { it.isOpus() && it.container.contains("webm", true) }
+                    .maxByOrNull { it.bitrateKbps }
+                    ?: validFormats.filter { it.isOpus() }.maxByOrNull { it.bitrateKbps }
+                    ?: validFormats.filter { it.itag == 251 }.maxByOrNull { it.bitrateKbps }
+                    ?: validFormats.filter { it.itag == 272 }.maxByOrNull { it.bitrateKbps }
                     ?: validFormats.firstOrNull { it.itag == 141 }
                     ?: validFormats.firstOrNull { it.itag == 140 }
-                    ?: validFormats.filter { it.isOpus() }.maxByOrNull { it.bitrateKbps }
                     ?: validFormats.maxByOrNull { it.bitrateKbps }
             }
             
