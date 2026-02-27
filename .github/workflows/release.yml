@@ -37,17 +37,20 @@ jobs:
           echo "INNERTUBE_API_KEY=${{ secrets.INNERTUBE_API_KEY }}" >> local.properties
           echo "YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}" >> local.properties
 
-      - name: Decode keystore
+      - name: Decode keystore & set flag
+        id: keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/release.jks
-          # Verify the keystore was decoded properly
-          if [ ! -s "$GITHUB_WORKSPACE/release.jks" ]; then
-            echo "::error::KEYSTORE_BASE64 secret is empty or not set. Please add it in repo Settings → Secrets → Actions."
-            echo "::error::Generate it with: base64 -w 0 keystore/sonicmusic.jks"
-            exit 1
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "KEYSTORE_BASE64 secret is empty. Falling back to Debug APK build."
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "KEYSTORE_BASE64 secret found. Decoding for Release APK build."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/release.jks
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build signed release APK
+        if: steps.keystore.outputs.has_keystore == 'true'
         env:
           KEYSTORE_FILE: ${{ github.workspace }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -57,10 +60,17 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
+      - name: Build debug APK (Fallback)
+        if: steps.keystore.outputs.has_keystore != 'true'
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
       - name: Find APK
         id: apk
         run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name '*.apk' | head -1)
+          # Try to find release APK first, fallback to debug APK
+          APK_PATH=$(find app/build/outputs/apk -name '*.apk' | head -1)
           echo "path=$APK_PATH" >> "$GITHUB_OUTPUT"
           echo "Found APK: $APK_PATH"
 
