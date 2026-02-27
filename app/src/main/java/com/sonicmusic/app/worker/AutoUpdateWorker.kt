@@ -1,50 +1,63 @@
 package com.sonicmusic.app.worker
 
-import android.app.DownloadManager
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
-import android.net.Uri
-import android.os.Environment
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.sonicmusic.app.BuildConfig
-import com.sonicmusic.app.data.remote.source.AppUpdateService
+import com.sonicmusic.app.R
+import com.sonicmusic.app.core.updater.GitHubUpdater
+import com.sonicmusic.app.data.repository.SettingsRepository
+import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.io.File
 
 @HiltWorker
 class AutoUpdateWorker @AssistedInject constructor(
     @Assisted private val context: Context,
     @Assisted workerParams: WorkerParameters,
-    private val appUpdateService: AppUpdateService
+    private val settingsRepository: SettingsRepository
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
         private const val TAG = "AutoUpdateWorker"
+        private const val CHANNEL_ID = "update_channel"
+        private const val NOTIFICATION_ID = 1001
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Checking for updates...")
-            val result = appUpdateService.checkForUpdates(BuildConfig.APP_VERSION)
-            
-            result.onSuccess { updateCheck ->
-                if (updateCheck.isUpdateAvailable && updateCheck.releaseUrl.endsWith(".apk")) {
-                    Log.d(TAG, "Update available: ${updateCheck.latestVersion}. Downloading...")
-                    downloadUpdate(updateCheck.releaseUrl, updateCheck.latestVersion)
-                } else {
-                    Log.d(TAG, "App is up to date.")
-                }
+            // Check if user disabled auto-updates
+            val isAutoUpdateEnabled = settingsRepository.autoUpdateEnabled.first()
+            if (!isAutoUpdateEnabled) {
+                Log.d(TAG, "Auto updates are disabled by user. Skipping check.")
                 return@withContext Result.success()
-            }.onFailure { e ->
-                Log.e(TAG, "Failed to check for updates", e)
-                return@withContext Result.retry()
             }
+
+            Log.d(TAG, "Checking for updates via WorkManager...")
+            val updater = GitHubUpdater(context)
+            val updateInfo = updater.checkForUpdates(BuildConfig.APP_VERSION)
             
+            if (updateInfo?.hasUpdate == true) {
+                Log.d(TAG, "Update available: ${updateInfo.latestVersion}. Showing notification.")
+                showUpdateNotification(updateInfo.latestVersion)
+            } else {
+                Log.d(TAG, "App is up to date.")
+            }
             Result.success()
         } catch (e: Exception) {
             Log.e(TAG, "Error in AutoUpdateWorker", e)
@@ -52,37 +65,46 @@ class AutoUpdateWorker @AssistedInject constructor(
         }
     }
 
-    private fun downloadUpdate(downloadUrl: String, version: String) {
-        try {
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val uri = Uri.parse(downloadUrl)
-            
-            // Destination file
-            val fileName = "SonicMusic_Update_$version.apk"
-            
-            // Delete old update files if they exist to prevent accumulation
-            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            dir?.listFiles()?.forEach { file ->
-                if (file.name.startsWith("SonicMusic_Update_") && file.name.endsWith(".apk")) {
-                    file.delete()
-                }
-            }
-
-            val request = DownloadManager.Request(uri)
-                .setTitle("Downloading Sonic Music Update")
-                .setDescription("Preparing to install version $version")
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
-                .setAllowedOverMetered(true)
-                .setAllowedOverRoaming(true)
-
-            downloadManager.enqueue(request)
-            Log.d(TAG, "Download enqueued for version $version")
-            
-            // AppUpdateReceiver will handle the ACTION_DOWNLOAD_COMPLETE intent to prompt installation
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to enqueue download", e)
+    private fun showUpdateNotification(version: String) {
+        val notificationManager = NotificationManagerCompat.from(context)
+        
+        // Ensure POST_NOTIFICATIONS permission on Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Missing POST_NOTIFICATIONS permission. Cannot show update notification.")
+            return
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "App Updates",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Notifications for new app updates"
+            }
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            0, // Unique request code
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Update Available")
+            .setContentText("Version $version is ready to download. Tap to update.")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        notificationManager.notify(NOTIFICATION_ID, notification)
     }
 }
