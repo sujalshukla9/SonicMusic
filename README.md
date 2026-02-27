@@ -73,20 +73,4 @@ _Note: For maximum performance and smooth 60fps animations, compile using the `r
 
 ---
 
-## 🤝 Contributing
-
-Contributions are always welcome! Feel free to open an Issue if you encounter a bug, or submit a Pull Request if you'd like to propose a new feature or improvement.
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
-## 📜 License
-
-This project is open-sourced under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for more information.
-
 > **Disclaimer:** This app uses data and streams provided by third parties (YouTube). It is intended for educational purposes and personal use.
