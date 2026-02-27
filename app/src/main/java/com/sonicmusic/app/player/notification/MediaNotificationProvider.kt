@@ -170,9 +170,9 @@ class MediaNotificationProvider(
         )
         
         // Create delete intent for swipe dismiss
-        // Bug 6 fix: Use getForegroundService() instead of getService() —
-        // on Android 12+, getService() silently fails for background apps.
-        val deleteIntent = PendingIntent.getForegroundService(
+        // Bug 6 fix: Use getService() instead of getForegroundService() —
+        // on Android 12+, getService() can be used on Android 9/Oreo since there's no timeout
+        val deleteIntent = PendingIntent.getService(
             context,
             100,
             Intent(context, PlaybackService::class.java).apply {

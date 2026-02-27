@@ -17,15 +17,15 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.0-beta01"
+        versionCode = 3
+        versionName = "1.1.0-beta01"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.0.0-beta01\"")
+        buildConfigField("String", "APP_VERSION", "\"1.1.0-beta01\"")
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
@@ -35,18 +35,30 @@ android {
         
         buildConfigField("String", "INNERTUBE_API_KEY", "\"${localProperties.getProperty("INNERTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
         buildConfigField("String", "YOUTUBE_API_KEY", "\"${localProperties.getProperty("YOUTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-            signingConfig = signingConfigs.getByName("debug")
         }
+        
+        signingConfigs {
+            create("release") {
+                val keystoreFile = rootProject.file("keystore/sonicmusic.jks")
+                if (keystoreFile.exists()) {
+                    storeFile = keystoreFile
+                    storePassword = "sonicmusic"
+                    keyAlias = "sonicmusic"
+                    keyPassword = "sonicmusic"
+                }
+            }
+        }
+
+        buildTypes {
+            release {
+                isMinifyEnabled = true
+                isShrinkResources = true
+                proguardFiles(
+                    getDefaultProguardFile("proguard-android-optimize.txt"),
+                    "proguard-rules.pro"
+                )
+                signingConfig = signingConfigs.getByName("release")
+            }
         debug {
             isMinifyEnabled = false
             isDebuggable = true

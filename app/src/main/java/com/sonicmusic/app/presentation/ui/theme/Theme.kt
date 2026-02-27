@@ -1,6 +1,7 @@
 package com.sonicmusic.app.presentation.ui.theme
-
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -194,13 +195,15 @@ fun SonicMusicTheme(
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = android.graphics.Color.TRANSPARENT
-            window.navigationBarColor = android.graphics.Color.TRANSPARENT
-            
-            val insetsController = WindowCompat.getInsetsController(window, view)
-            insetsController.isAppearanceLightStatusBars = useLightSystemBars
-            insetsController.isAppearanceLightNavigationBars = useLightSystemBars
+            val window = context.findActivity()?.window
+            if (window != null) {
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = useLightSystemBars
+                insetsController.isAppearanceLightNavigationBars = useLightSystemBars
+            }
         }
     }
 
@@ -218,6 +221,12 @@ fun SonicMusicTheme(
             content = content
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 private fun blendColorScheme(
