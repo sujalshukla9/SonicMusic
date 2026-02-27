@@ -60,6 +60,7 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -134,12 +135,39 @@ fun HomeScreen(
         }
     }
 
+    }
+
+    val settingsViewModel: com.sonicmusic.app.presentation.viewmodel.SettingsViewModel = hiltViewModel()
+    val appUpdateState by settingsViewModel.appUpdateState.collectAsStateWithLifecycle()
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
         val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
+        var showUpdateDialog by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
+
+        if (appUpdateState.isUpdateAvailable && !appUpdateState.isDownloading && showUpdateDialog) {
+            AlertDialog(
+                onDismissRequest = { showUpdateDialog = false },
+                title = { Text(text = "Update Available") },
+                text = { Text(text = "A new version of SonicMusic (v${appUpdateState.latestVersion}) is available. Would you like to update now?") },
+                confirmButton = {
+                    TextButton(onClick = { 
+                        settingsViewModel.downloadUpdate() 
+                        showUpdateDialog = false
+                    }) {
+                        Text("Update")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showUpdateDialog = false }) {
+                        Text("Later")
+                    }
+                }
+            )
+        }
 
         if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty()) {
             // No internet and no cached content
