@@ -6,9 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.sonicmusic.app.core.updater.UpdateDownloader
 import java.io.File
 
 class AppUpdateReceiver : BroadcastReceiver() {
@@ -22,6 +22,11 @@ class AppUpdateReceiver : BroadcastReceiver() {
 
         val downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
         if (downloadId == -1L) return
+        val trackedId = UpdateDownloader.getTrackedDownloadId(context)
+        if (trackedId != downloadId) {
+            Log.d(TAG, "Ignoring unrelated download completion (id=$downloadId, tracked=$trackedId)")
+            return
+        }
 
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val query = DownloadManager.Query().setFilterById(downloadId)
@@ -32,6 +37,7 @@ class AppUpdateReceiver : BroadcastReceiver() {
             val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
             if (statusIndex < 0 || cursor.getInt(statusIndex) != DownloadManager.STATUS_SUCCESSFUL) {
                 Log.e(TAG, "Download failed or still in progress")
+                UpdateDownloader.clearTrackedDownloadId(context)
                 return
             }
 
@@ -50,10 +56,12 @@ class AppUpdateReceiver : BroadcastReceiver() {
             val file = uriToFile(localUri)
             if (file == null || !file.exists()) {
                 Log.e(TAG, "APK file not found for URI: $localUri")
+                UpdateDownloader.clearTrackedDownloadId(context)
                 return
             }
 
             installApk(context, file)
+            UpdateDownloader.clearTrackedDownloadId(context)
         }
     }
 

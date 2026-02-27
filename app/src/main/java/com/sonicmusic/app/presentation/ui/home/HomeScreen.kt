@@ -60,7 +60,6 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -103,7 +102,6 @@ fun HomeScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
-    val updateInfo by viewModel.updateInfo.collectAsStateWithLifecycle()
     val countryName by viewModel.countryName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val onHomeSectionSongClick: (String, Song) -> Unit = { sectionKey, song ->
@@ -142,33 +140,6 @@ fun HomeScreen(
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
         val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
-
-        updateInfo?.let { info ->
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissUpdate() },
-                title = { Text("Update Available") },
-                text = {
-                    Column {
-                        Text("Version ${info.latestVersion} is available.")
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = info.releaseNotes,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.downloadUpdate() }) {
-                        Text("Download")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.dismissUpdate() }) {
-                        Text("Later")
-                    }
-                }
-            )
-        }
 
         if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty()) {
             // No internet and no cached content

@@ -102,7 +102,9 @@ class RegionRepository @Inject constructor(
     }
 
     private suspend fun saveRegionFromResponse(response: com.sonicmusic.app.data.remote.model.RegionResponse): Boolean {
-        val country = normalizeCountryCode(response.countryCode) ?: return false
+        val country = normalizeCountryCode(response.countryCode)
+            ?: normalizeCountryCode(response.country)
+            ?: return false
         if (!response.isSuccessful()) return false
 
         val region = normalizeRegion(response.region, country)

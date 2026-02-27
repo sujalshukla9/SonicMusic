@@ -17,8 +17,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.sonicmusic.app.BuildConfig
 import com.sonicmusic.app.R
-import com.sonicmusic.app.core.updater.GitHubUpdater
 import com.sonicmusic.app.core.updater.UpdateDownloader
+import com.sonicmusic.app.data.remote.source.AppUpdateService
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.assisted.Assisted
@@ -31,7 +31,8 @@ import kotlinx.coroutines.withContext
 class AutoUpdateWorker @AssistedInject constructor(
     @Assisted private val context: Context,
     @Assisted workerParams: WorkerParameters,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val appUpdateService: AppUpdateService
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
@@ -50,10 +51,9 @@ class AutoUpdateWorker @AssistedInject constructor(
             }
 
             Log.d(TAG, "Checking for updates via WorkManager...")
-            val updater = GitHubUpdater(context)
-            val updateInfo = updater.checkForUpdates(BuildConfig.APP_VERSION)
+            val updateInfo = appUpdateService.checkForUpdates(BuildConfig.APP_VERSION).getOrElse { throw it }
             
-            if (updateInfo?.hasUpdate == true && updateInfo.downloadUrl.isNotBlank()) {
+            if (updateInfo.isUpdateAvailable && !updateInfo.downloadUrl.isNullOrBlank()) {
                 Log.d(TAG, "Update available: ${updateInfo.latestVersion}. Downloading APK...")
                 
                 // Download the APK directly — AppUpdateReceiver will handle installation
@@ -65,6 +65,8 @@ class AutoUpdateWorker @AssistedInject constructor(
                 
                 // Also show a notification so the user knows
                 showUpdateNotification(updateInfo.latestVersion)
+            } else if (updateInfo.isUpdateAvailable) {
+                Log.w(TAG, "Update available (${updateInfo.latestVersion}) but no APK asset was found.")
             } else {
                 Log.d(TAG, "App is up to date.")
             }

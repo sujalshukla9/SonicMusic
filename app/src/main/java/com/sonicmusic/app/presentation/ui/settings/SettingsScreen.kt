@@ -12,8 +12,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Place
@@ -469,25 +469,33 @@ fun SettingsScreen(
                         subtitle = appUpdateState.statusText,
                         value = when {
                             appUpdateState.isChecking -> "..."
+                            appUpdateState.isDownloading -> "Downloading"
                             appUpdateState.isUpdateAvailable && appUpdateState.latestVersion != null ->
                                 "v${appUpdateState.latestVersion}"
                             else -> null
                         },
                         icon = Icons.Rounded.RestartAlt,
                         onClick = {
-                            if (!appUpdateState.isChecking) {
+                            if (!appUpdateState.isChecking && !appUpdateState.isDownloading) {
                                 viewModel.checkForUpdates()
                             }
                         }
                     )
-                    if (appUpdateState.isUpdateAvailable && !appUpdateState.releaseUrl.isNullOrBlank()) {
+                    if (appUpdateState.isUpdateAvailable && !appUpdateState.downloadUrl.isNullOrBlank()) {
                         SettingsDivider()
                         SettingsActionItem(
-                            title = "Open Release Page",
-                            subtitle = "Download and install the latest version",
-                            icon = Icons.Rounded.Code,
+                            title = "Download Update",
+                            subtitle = if (appUpdateState.isDownloading) {
+                                "Preparing installer..."
+                            } else {
+                                "Download and install the latest version in-app"
+                            },
+                            icon = Icons.Rounded.Download,
+                            value = if (appUpdateState.isDownloading) "..." else null,
                             onClick = {
-                                openUrl(context, appUpdateState.releaseUrl!!)
+                                if (!appUpdateState.isDownloading) {
+                                    viewModel.downloadUpdate()
+                                }
                             }
                         )
                     }

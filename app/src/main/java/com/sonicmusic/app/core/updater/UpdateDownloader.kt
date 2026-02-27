@@ -10,6 +10,20 @@ class UpdateDownloader(private val context: Context) {
 
     companion object {
         private const val TAG = "UpdateDownloader"
+        private const val PREFS_NAME = "app_update_prefs"
+        private const val KEY_PENDING_DOWNLOAD_ID = "pending_update_download_id"
+
+        fun getTrackedDownloadId(context: Context): Long {
+            return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_PENDING_DOWNLOAD_ID, -1L)
+        }
+
+        fun clearTrackedDownloadId(context: Context) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(KEY_PENDING_DOWNLOAD_ID)
+                .apply()
+        }
     }
 
     /**
@@ -39,6 +53,10 @@ class UpdateDownloader(private val context: Context) {
             .setAllowedOverRoaming(true)
 
         val downloadId = downloadManager.enqueue(request)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_PENDING_DOWNLOAD_ID, downloadId)
+            .apply()
         Log.d(TAG, "Download enqueued (id=$downloadId) for $fileName")
         return downloadId
     }

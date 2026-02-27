@@ -18,13 +18,12 @@ class AppUpdateService @Inject constructor(
         val isUpdateAvailable: Boolean,
         val currentVersion: String,
         val latestVersion: String,
-        val releaseUrl: String
+        val downloadUrl: String?
     )
 
     companion object {
         private const val TAG = "AppUpdateService"
         private const val RELEASES_API_URL = "https://api.github.com/repos/sujalshukla9/SonicMusic/releases/latest"
-        private const val RELEASES_WEB_URL = "https://github.com/sujalshukla9/SonicMusic/releases"
     }
 
     suspend fun checkForUpdates(currentVersion: String): Result<UpdateCheck> = withContext(Dispatchers.IO) {
@@ -73,7 +72,6 @@ class AppUpdateService @Inject constructor(
                     }
                 }
 
-                val releaseUrl = downloadUrl ?: json.optString("html_url").takeIf { it.isNotBlank() } ?: RELEASES_WEB_URL
                 val updateAvailable = isRemoteVersionNewer(
                     remoteVersion = normalizedLatest,
                     currentVersion = normalizedCurrent
@@ -84,7 +82,7 @@ class AppUpdateService @Inject constructor(
                         isUpdateAvailable = updateAvailable,
                         currentVersion = normalizedCurrent,
                         latestVersion = normalizedLatest,
-                        releaseUrl = releaseUrl
+                        downloadUrl = downloadUrl?.takeIf { it.isNotBlank() }
                     )
                 )
             }

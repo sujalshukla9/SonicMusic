@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.core.updater.UpdateDownloader
 import com.sonicmusic.app.data.remote.source.AppUpdateService
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.FullPlayerStyle
@@ -40,10 +41,11 @@ class SettingsViewModel @Inject constructor(
 
     data class AppUpdateState(
         val isChecking: Boolean = false,
+        val isDownloading: Boolean = false,
         val statusText: String = "Check for the latest app release",
         val isUpdateAvailable: Boolean = false,
         val latestVersion: String? = null,
-        val releaseUrl: String? = null
+        val downloadUrl: String? = null
     )
 
     // Audio Engine Settings
@@ -303,7 +305,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun checkForUpdates() {
-        if (_appUpdateState.value.isChecking) return
+        if (_appUpdateState.value.isChecking || _appUpdateState.value.isDownloading) return
 
         viewModelScope.launch {
             _appUpdateState.value = AppUpdateState(
@@ -314,13 +316,22 @@ class SettingsViewModel @Inject constructor(
             appUpdateService.checkForUpdates(appVersionName).fold(
                 onSuccess = { result ->
                     _appUpdateState.value = if (result.isUpdateAvailable) {
-                        AppUpdateState(
-                            isChecking = false,
-                            statusText = "New version ${result.latestVersion} is available",
-                            isUpdateAvailable = true,
-                            latestVersion = result.latestVersion,
-                            releaseUrl = result.releaseUrl
-                        )
+                        if (!result.downloadUrl.isNullOrBlank()) {
+                            AppUpdateState(
+                                isChecking = false,
+                                statusText = "New version ${result.latestVersion} is available",
+                                isUpdateAvailable = true,
+                                latestVersion = result.latestVersion,
+                                downloadUrl = result.downloadUrl
+                            )
+                        } else {
+                            AppUpdateState(
+                                isChecking = false,
+                                statusText = "New version ${result.latestVersion} found, but in-app package is unavailable",
+                                isUpdateAvailable = true,
+                                latestVersion = result.latestVersion
+                            )
+                        }
                     } else {
                         AppUpdateState(
                             isChecking = false,
@@ -337,6 +348,52 @@ class SettingsViewModel @Inject constructor(
                     )
                 }
             )
+        }
+    }
+
+    fun downloadUpdate() {
+        val currentState = _appUpdateState.value
+        if (currentState.isChecking || currentState.isDownloading) return
+
+        val downloadUrl = currentState.downloadUrl
+        val latestVersion = currentState.latestVersion
+        if (downloadUrl.isNullOrBlank() || latestVersion.isNullOrBlank()) {
+            _appUpdateState.value = currentState.copy(
+                statusText = "No in-app update package is available for this release"
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _appUpdateState.value = currentState.copy(
+                isChecking = false,
+                isDownloading = true,
+                statusText = "Downloading v$latestVersion..."
+            )
+
+            runCatching {
+                val downloader = UpdateDownloader(context)
+                downloader.downloadApk(downloadUrl, "SonicMusic-$latestVersion.apk")
+            }.onSuccess {
+                _appUpdateState.value = AppUpdateState(
+                    isChecking = false,
+                    isDownloading = false,
+                    statusText = "Downloading v$latestVersion in background",
+                    isUpdateAvailable = true,
+                    latestVersion = latestVersion,
+                    downloadUrl = downloadUrl
+                )
+            }.onFailure { error ->
+                Log.e("SettingsVM", "Failed to start in-app update download", error)
+                _appUpdateState.value = AppUpdateState(
+                    isChecking = false,
+                    isDownloading = false,
+                    statusText = "Failed to start update download. Try again.",
+                    isUpdateAvailable = true,
+                    latestVersion = latestVersion,
+                    downloadUrl = downloadUrl
+                )
+            }
         }
     }
 

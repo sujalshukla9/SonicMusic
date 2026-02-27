@@ -1,13 +1,8 @@
 package com.sonicmusic.app.presentation.viewmodel
 
 import android.util.Log
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.sonicmusic.app.BuildConfig
-import com.sonicmusic.app.core.updater.GitHubUpdater
-import com.sonicmusic.app.core.updater.UpdateDownloader
-import com.sonicmusic.app.core.updater.UpdateInfo
 import com.sonicmusic.app.data.repository.QueueRepositoryImpl
 import com.sonicmusic.app.data.repository.RegionRepository
 import com.sonicmusic.app.data.repository.SettingsRepository
@@ -40,14 +35,13 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val application: Application,
     private val getHomeContentUseCase: GetHomeContentUseCase,
     private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
     private val queueRepository: QueueRepositoryImpl,
     private val regionRepository: RegionRepository,
     private val settingsRepository: SettingsRepository
-) : AndroidViewModel(application) {
+) : ViewModel() {
 
     companion object {
         private const val TAG = "SonicHome"
@@ -86,12 +80,8 @@ class HomeViewModel @Inject constructor(
     val countryName: StateFlow<String?> = regionRepository.countryName
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
-    val updateInfo: StateFlow<UpdateInfo?> = _updateInfo.asStateFlow()
-
     init {
         loadHomeContent()
-        checkForAppUpdates()
     }
 
     fun loadHomeContent() {
@@ -104,9 +94,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Pull-to-refresh handler — force reloads all sections and checks for app updates.
-     */
+    /** Pull-to-refresh handler — force reloads all sections. */
     fun refreshHomeContent() {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
@@ -115,38 +103,12 @@ class HomeViewModel @Inject constructor(
             _error.value = null
             try {
                 fetchHomeContent()
-                checkForAppUpdates()
                 _refreshResult.value = if (_error.value == null) RefreshResult.SUCCESS else RefreshResult.ERROR
             } catch (_: Exception) {
                 _refreshResult.value = RefreshResult.ERROR
             }
             _isRefreshing.value = false
         }
-    }
-
-    private fun checkForAppUpdates() {
-        viewModelScope.launch {
-            val updater = GitHubUpdater(application)
-            val info = updater.checkForUpdates(BuildConfig.APP_VERSION)
-            if (info != null && info.hasUpdate) {
-                Log.d(TAG, "Update available: ${info.latestVersion}")
-                _updateInfo.value = info
-            }
-        }
-    }
-
-    fun downloadUpdate() {
-        val info = _updateInfo.value ?: return
-        if (info.downloadUrl.isNotBlank()) {
-            Log.d(TAG, "Starting download from: ${info.downloadUrl}")
-            val downloader = UpdateDownloader(application)
-            downloader.downloadApk(info.downloadUrl, "SonicMusic-${info.latestVersion}.apk")
-            _updateInfo.value = null // Dismiss prompt
-        }
-    }
-
-    fun dismissUpdate() {
-        _updateInfo.value = null
     }
 
     /** Shared loader used by both initial load and refresh. */
