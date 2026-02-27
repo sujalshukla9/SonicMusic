@@ -2,6 +2,7 @@ package com.sonicmusic.app.data.repository
 
 import android.util.Log
 import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
+import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
@@ -16,8 +17,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.util.Calendar
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,12 +40,14 @@ class QuickPicksRepositoryImpl @Inject constructor(
     private val listenAgainRepository: ListenAgainRepository,
     private val userTasteRepository: UserTasteRepository,
     private val playbackHistoryDao: PlaybackHistoryDao,
-    private val youTubeiService: YouTubeiService
+    private val youTubeiService: YouTubeiService,
+    private val settingsDataStore: SettingsDataStore
 ) : QuickPicksRepository {
 
     companion object {
         private const val TAG = "QuickPicks"
         private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L // 6 hours
+        private const val FALLBACK_COUNTRY_CODE = "US"
     }
 
     /** In-memory cache keyed by a session bucket. */
@@ -51,12 +55,19 @@ class QuickPicksRepositoryImpl @Inject constructor(
     private var cachedPicks: List<Song>? = null
     @Volatile
     private var cachedAtMs: Long = 0L
+    @Volatile
+    private var cachedRegionCode: String? = null
 
     override suspend fun getQuickPicks(limit: Int): List<Song> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
+        val regionCode = resolveCacheRegionCode()
 
-        // Return cache if fresh
-        cachedPicks?.takeIf { now - cachedAtMs < CACHE_TTL_MS && it.size >= limit / 2 }?.let {
+        // Return cache only if it's fresh for the active region.
+        cachedPicks?.takeIf {
+            now - cachedAtMs < CACHE_TTL_MS &&
+                it.size >= limit / 2 &&
+                cachedRegionCode == regionCode
+        }?.let {
             Log.d(TAG, "♻️ Returning cached Quick Picks (${it.size} songs)")
             return@withContext it.take(limit)
         }
@@ -67,7 +78,8 @@ class QuickPicksRepositoryImpl @Inject constructor(
 
             // Cache
             cachedPicks = result
-            cachedAtMs = System.currentTimeMillis()
+            cachedAtMs = now
+            cachedRegionCode = regionCode
 
             Log.d(TAG, "⏱️ Quick Picks built: ${result.size} songs in ${System.currentTimeMillis() - startMs}ms")
             result
@@ -76,7 +88,11 @@ class QuickPicksRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ Quick Picks failed", e)
             // Fallback: return Listen Again + trending
-            fallbackQuickPicks(limit)
+            val fallback = fallbackQuickPicks(limit)
+            cachedPicks = fallback
+            cachedAtMs = now
+            cachedRegionCode = regionCode
+            fallback
         }
     }
 
@@ -365,6 +381,12 @@ class QuickPicksRepositoryImpl @Inject constructor(
             }
         }
         return userTopGenres.firstOrNull() ?: "Pop"
+    }
+
+    private suspend fun resolveCacheRegionCode(): String {
+        return RegionalRecommendationHelper.normalizeCountryCode(settingsDataStore.countryCode.first())
+            ?: RegionalRecommendationHelper.normalizeCountryCode(Locale.getDefault().country)
+            ?: FALLBACK_COUNTRY_CODE
     }
 
     private fun Song.isStrictSong(): Boolean {

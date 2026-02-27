@@ -416,10 +416,6 @@ class UserTasteRepositoryImpl @Inject constructor(
 
     private suspend fun getRegionContext(): RegionContext {
         val now = System.currentTimeMillis()
-        cachedRegionContext?.takeIf { now - cachedRegionLoadedAtMs < REGION_CACHE_TTL_MS }?.let { cached ->
-            return cached
-        }
-
         val countryCode = RegionalRecommendationHelper.normalizeCountryCode(settingsDataStore.countryCode.first())
             ?: RegionalRecommendationHelper.normalizeCountryCode(Locale.getDefault().country)
             ?: FALLBACK_COUNTRY_CODE
@@ -428,6 +424,14 @@ class UserTasteRepositoryImpl @Inject constructor(
             countryCode = countryCode,
             cachedName = settingsDataStore.countryName.first()
         )
+
+        cachedRegionContext?.takeIf { cached ->
+            now - cachedRegionLoadedAtMs < REGION_CACHE_TTL_MS &&
+                cached.countryCode == countryCode &&
+                cached.countryName == countryName
+        }?.let { cached ->
+            return cached
+        }
 
         return RegionContext(countryCode = countryCode, countryName = countryName).also {
             cachedRegionContext = it

@@ -36,7 +36,7 @@ import javax.inject.Singleton
  * 3. Channel filtering (Topic, VEVO, Official Artist)
  * 4. Keyword filtering (exclude vlogs, podcasts, etc.)
  * 
- * Default region: India (IN)
+ * Default region: United States (US)
  */
 @Singleton
 class YouTubeiService @Inject constructor(
@@ -108,7 +108,7 @@ class YouTubeiService @Inject constructor(
         private const val RECOMMENDATION_STAGE_TIMEOUT_MS = 2_500L
         
         // Default region if detection is unavailable
-        const val DEFAULT_REGION = "IN" // India
+        const val DEFAULT_REGION = "US"
         
         // Duration limits for songs (in seconds)
         private const val MIN_DURATION = 30      // 30 seconds minimum
@@ -200,13 +200,22 @@ class YouTubeiService @Inject constructor(
 
     private suspend fun getRequestRegion(): String {
         val now = System.currentTimeMillis()
+        val stored = normalizeCountryCode(settingsDataStore.countryCode.first())
+
+        // Always prefer the latest persisted country code (IP-detected region).
+        // This avoids serving stale fallback regions when home loads before region init finishes.
+        if (stored != null) {
+            cachedRequestRegion = stored
+            cachedRegionLoadedAtMs = now
+            return stored
+        }
+
         val cached = cachedRequestRegion
         if (cached != null && now - cachedRegionLoadedAtMs < REGION_CACHE_TTL_MS) {
             return cached
         }
 
-        val stored = normalizeCountryCode(settingsDataStore.countryCode.first())
-        val resolved = stored ?: normalizeCountryCode(detectedRegion) ?: DEFAULT_REGION
+        val resolved = normalizeCountryCode(detectedRegion) ?: DEFAULT_REGION
         cachedRequestRegion = resolved
         cachedRegionLoadedAtMs = now
         return resolved

@@ -15,7 +15,6 @@
         android:maxSdkVersion="32" />
     <!-- App update permissions -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-        android:maxSdkVersion="32" />
 
     <application
         android:name=".SonicMusicApplication"
@@ -28,6 +27,18 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.SonicMusic"
         tools:targetApi="34">
+        
+        <!-- Remove default WorkManager initializer -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
         
         <!-- Single Main Activity -->
         <activity
