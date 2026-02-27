@@ -19,3 +19,8 @@
 .cxx
 local.properties
 local.properties
+
+# Sensitive files
+*.jks
+*.apk
+keystore/
