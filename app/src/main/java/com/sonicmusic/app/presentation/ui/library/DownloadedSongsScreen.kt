@@ -18,30 +18,40 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sonicmusic.app.data.downloadmanager.DownloadProgress
+import com.sonicmusic.app.data.downloadmanager.DownloadStatus
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
@@ -54,8 +64,43 @@ fun DownloadedSongsScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    val downloadedSongs by viewModel.downloadedSongs.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
+    val downloadedSongs by viewModel.downloadedSongs.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
+
+    // Confirmation dialog state
+    var songToDelete by remember { mutableStateOf<Song?>(null) }
+
+    // Delete confirmation dialog
+    songToDelete?.let { song ->
+        AlertDialog(
+            onDismissRequest = { songToDelete = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.DownloadDone,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = { Text("Remove download?") },
+            text = {
+                Text("\"${song.title}\" will be removed from your downloads. You can download it again anytime.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.removeDownloadedSong(song.id)
+                    songToDelete = null
+                }) {
+                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { songToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -65,7 +110,7 @@ fun DownloadedSongsScreen(
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                             contentDescription = "Back"
                         )
                     }
@@ -74,15 +119,13 @@ fun DownloadedSongsScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
-        } else if (downloadedSongs.isEmpty()) {
+            SongListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
+        } else if (downloadedSongs.isEmpty() && activeDownloads.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -91,7 +134,7 @@ fun DownloadedSongsScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.Default.Download,
+                        imageVector = Icons.Rounded.Download,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
@@ -104,7 +147,7 @@ fun DownloadedSongsScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Use Download offline from full player menu",
+                        text = "Use Download from full player menu",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
@@ -117,66 +160,151 @@ fun DownloadedSongsScreen(
                     .padding(top = paddingValues.calculateTopPadding()),
                 contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
-                item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                viewModel.playAllDownloadedSongs(shuffle = false)
-                                onShowFullPlayer()
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Play All")
-                        }
-
-                        FilledTonalButton(
-                            onClick = {
-                                viewModel.playAllDownloadedSongs(shuffle = true)
-                                onShowFullPlayer()
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shuffle,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Shuffle")
-                        }
+                // Show active downloads at the top
+                if (activeDownloads.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "Downloading",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                    items(activeDownloads.entries.toList(), key = { "downloading_${it.key}" }) { (_, progress) ->
+                        ActiveDownloadItem(progress = progress)
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
 
-                item {
-                    Text(
-                        text = "${downloadedSongs.size} songs",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-                }
+                if (downloadedSongs.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.playAllDownloadedSongs(shuffle = false)
+                                    onShowFullPlayer()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Play All")
+                            }
 
-                items(downloadedSongs, key = { it.id }) { song ->
-                    DownloadedSongItem(
-                        song = song,
-                        onClick = {
-                            viewModel.onDownloadedSongClick(song)
-                            onShowFullPlayer()
-                        },
-                        onRemoveClick = { viewModel.removeDownloadedSong(song.id) }
-                    )
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.playAllDownloadedSongs(shuffle = true)
+                                    onShowFullPlayer()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Shuffle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Shuffle")
+                            }
+                        }
+                    }
+
+                    item {
+                        Text(
+                            text = "${downloadedSongs.size} songs",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    items(downloadedSongs, key = { it.id }) { song ->
+                        DownloadedSongItem(
+                            song = song,
+                            onClick = {
+                                viewModel.onDownloadedSongClick(song)
+                                onShowFullPlayer()
+                            },
+                            onRemoveClick = { songToDelete = song }
+                        )
+                    }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActiveDownloadItem(progress: DownloadProgress) {
+    val colorScheme = MaterialTheme.colorScheme
+    val isFailed = progress.status == DownloadStatus.FAILED
+    val isCompleted = progress.status == DownloadStatus.COMPLETED
+
+    val statusText = when (progress.status) {
+        DownloadStatus.PENDING -> "Preparing…"
+        DownloadStatus.DOWNLOADING -> "Downloading… ${progress.progress}%"
+        DownloadStatus.COMPLETED -> "Download complete ✓"
+        DownloadStatus.FAILED -> "Download failed"
+        DownloadStatus.PAUSED -> "Paused"
+        DownloadStatus.UNKNOWN -> "Waiting…"
+    }
+
+    val accentColor = when {
+        isFailed -> colorScheme.error
+        isCompleted -> colorScheme.primary
+        else -> colorScheme.primary
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = if (isCompleted) Icons.Rounded.DownloadDone else Icons.Rounded.Download,
+            contentDescription = null,
+            tint = accentColor,
+            modifier = Modifier.size(40.dp)
+        )
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = progress.title,
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.bodySmall,
+                color = accentColor
+            )
+            if (!isFailed) {
+                Spacer(modifier = Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { if (isCompleted) 1f else progress.progress / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp),
+                    color = accentColor,
+                    trackColor = colorScheme.surfaceContainerHighest,
+                    strokeCap = StrokeCap.Round
+                )
             }
         }
     }
@@ -223,7 +351,7 @@ private fun DownloadedSongItem(
 
         IconButton(onClick = onRemoveClick) {
             Icon(
-                imageVector = Icons.Default.Delete,
+                imageVector = Icons.Rounded.Delete,
                 contentDescription = "Remove download",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )

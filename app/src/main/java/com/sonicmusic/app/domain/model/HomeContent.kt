@@ -1,5 +1,8 @@
 package com.sonicmusic.app.domain.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class HomeContent(
     val listenAgain: List<Song> = emptyList(),
     val quickPicks: List<Song> = emptyList(),
@@ -11,6 +14,7 @@ data class HomeContent(
     val personalizedForYou: List<Song> = emptyList()
 )
 
+@Immutable
 data class ArtistSection(
     val artist: Artist,
     val songs: List<Song>

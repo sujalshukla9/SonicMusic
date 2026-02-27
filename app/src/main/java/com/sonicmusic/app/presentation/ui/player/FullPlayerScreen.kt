@@ -6,6 +6,7 @@ import android.media.audiofx.AudioEffect
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,8 +14,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,11 +61,14 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,7 +94,10 @@ import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
 import java.net.URLEncoder
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.sign
 import kotlin.math.sin
+import kotlinx.coroutines.launch
 
 /**
  * Redesigned Material 3 Expressive Full Player Screen
@@ -103,31 +113,20 @@ import kotlin.math.sin
 @Composable
 fun FullPlayerScreen(
     onDismiss: () -> Unit,
-    onOpenArtist: (String) -> Unit = {},
+    onOpenArtist: (String, String?) -> Unit = { _, _ -> },
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val currentSong by viewModel.currentSong.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
-    val isBuffering by viewModel.isBuffering.collectAsState()
-    val isLiked by viewModel.isLiked.collectAsState()
-    val repeatMode by viewModel.repeatMode.collectAsState()
-    val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
-    val playbackSpeed by viewModel.playbackSpeed.collectAsState()
-    val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsState()
-    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsState()
-    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsState()
-    val albumArtBlurEnabled by viewModel.albumArtBlurEnabled.collectAsState()
+    val currentSong by viewModel.currentSong.collectAsStateWithLifecycle()
+    val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsStateWithLifecycle()
+    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
+    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
+    val albumArtBlurEnabled by viewModel.albumArtBlurEnabled.collectAsStateWithLifecycle()
 
-    // Sheet states
-    val sleepTimerRemaining by viewModel.sleepTimerRemaining.collectAsState()
-    val sleepTimerActive by viewModel.sleepTimerActive.collectAsState()
+    // Sheet states — only collected when sheets are open
+    val sleepTimerRemaining by viewModel.sleepTimerRemaining.collectAsStateWithLifecycle()
+    val sleepTimerActive by viewModel.sleepTimerActive.collectAsStateWithLifecycle()
     var showSleepTimerSheet by remember { mutableStateOf(false) }
-
-    val queue by viewModel.queue.collectAsState()
-    val currentQueueIndex by viewModel.currentQueueIndex.collectAsState()
-    val infiniteModeEnabled by viewModel.infiniteModeEnabled.collectAsState()
-    val playlists by viewModel.playlists.collectAsState()
     var showQueueSheet by remember { mutableStateOf(false) }
 
     var showSpeedSheet by remember { mutableStateOf(false) }
@@ -159,22 +158,22 @@ fun FullPlayerScreen(
         val colorScheme = MaterialTheme.colorScheme
         val accentColor by animateColorAsState(
             targetValue = artworkPalette.accent,
-            animationSpec = tween(durationMillis = 300),
+            animationSpec = tween(durationMillis = 1000),
             label = "full_player_accent"
         )
         val onAccentColor by animateColorAsState(
             targetValue = artworkPalette.onAccent,
-            animationSpec = tween(durationMillis = 300),
+            animationSpec = tween(durationMillis = 1000),
             label = "full_player_on_accent"
         )
         val backgroundTopTint by animateColorAsState(
             targetValue = artworkPalette.containerSoft,
-            animationSpec = tween(durationMillis = 300),
+            animationSpec = tween(durationMillis = 1000),
             label = "full_player_bg_top_tint"
         )
         val backgroundMidTint by animateColorAsState(
             targetValue = artworkPalette.container,
-            animationSpec = tween(durationMillis = 300),
+            animationSpec = tween(durationMillis = 1000),
             label = "full_player_bg_mid_tint"
         )
 
@@ -214,9 +213,64 @@ fun FullPlayerScreen(
                         .windowInsetsPadding(WindowInsets.statusBars)
                         .windowInsetsPadding(WindowInsets.navigationBars)
                 ) {
+                    // No internet banner
+                    val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
+                    com.sonicmusic.app.presentation.ui.components.NoInternetBanner(isVisible = !isOnline)
+
                     // ═══════════════════════════════════════════
-                    // TOP SECTION - Album Art
+                    // TOP SECTION - Album Art with ViTune-style swipe
                     // ═══════════════════════════════════════════
+                    val swipeScope = rememberCoroutineScope()
+                    val artOffsetX = remember { Animatable(0f) }
+
+                    // Animate new artwork sliding in when song changes
+                    val currentQueueIndex by viewModel.currentQueueIndex.collectAsStateWithLifecycle()
+                    var lastQueueIndexForSwipe by remember { mutableIntStateOf(currentQueueIndex) }
+                    var lastSongIdForSwipe by remember { mutableStateOf(currentSong?.id) }
+                    var displayedSong by remember { mutableStateOf(currentSong) }
+
+                    LaunchedEffect(currentSong?.id) {
+                        val newSong = currentSong
+                        val newId = newSong?.id
+                        val newIndex = currentQueueIndex
+                        
+                        if (newId != null && newId != lastSongIdForSwipe) {
+                            // Determine entry direction: Left swipe/next song = 1f (arrives from right)
+                            val isNext = if (abs(artOffsetX.value) > 100f) {
+                                artOffsetX.value < 0f
+                            } else {
+                                newIndex > lastQueueIndexForSwipe
+                            }
+                            
+                            // If artwork is still near center (e.g. user clicked Next button), slide it out first
+                            if (abs(artOffsetX.value) < 100f) {
+                                val exitTo = if (isNext) -1000f else 1000f
+                                artOffsetX.animateTo(
+                                    targetValue = exitTo,
+                                    animationSpec = tween(durationMillis = 150, easing = LinearEasing)
+                                )
+                            }
+                            
+                            val entryFrom = if (isNext) 1f else -1f
+                            
+                            artOffsetX.snapTo(entryFrom * 800f)
+                            displayedSong = newSong
+                            
+                            artOffsetX.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = 0.7f,
+                                    stiffness = 300f
+                                )
+                            )
+                            lastSongIdForSwipe = newId
+                            lastQueueIndexForSwipe = newIndex
+                        } else {
+                            displayedSong = newSong
+                            lastQueueIndexForSwipe = newIndex
+                        }
+                    }
+
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -225,22 +279,94 @@ fun FullPlayerScreen(
                     ) {
                         Spacer(modifier = Modifier.height(80.dp))
 
-                        // Album Art - Full width with subtle corners
+                        // Album art card with ViTune swipe physics
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .aspectRatio(1f),
+                                .aspectRatio(1f)
+                                .graphicsLayer {
+                                    translationX = artOffsetX.value
+                                    // Subtle rotation tilt (±6° max) for premium feel
+                                    rotationZ = (artOffsetX.value / size.width) * 6f
+                                    // Slight scale-down as card moves away from center
+                                    val progress = abs(artOffsetX.value) / size.width
+                                    val scale = 1f - (progress * 0.08f).coerceAtMost(0.08f)
+                                    scaleX = scale
+                                    scaleY = scale
+                                }
+                                .pointerInput(Unit) {
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { },
+                                        onDragEnd = {
+                                            val threshold = size.width * 0.30f
+                                            if (abs(artOffsetX.value) > threshold) {
+                                                // Swipe exceeded threshold — animate out and skip
+                                                val exitTarget = sign(artOffsetX.value) * size.width * 1.5f
+                                                swipeScope.launch {
+                                                    artOffsetX.animateTo(
+                                                        targetValue = exitTarget,
+                                                        animationSpec = spring(
+                                                            dampingRatio = 1f,
+                                                            stiffness = 400f
+                                                        )
+                                                    )
+                                                    // Trigger skip after exit animation
+                                                    if (artOffsetX.value < 0) {
+                                                        viewModel.skipToNext()
+                                                    } else {
+                                                        viewModel.skipToPrevious()
+                                                    }
+                                                    // Entry animation handled by LaunchedEffect above
+                                                }
+                                            } else {
+                                                // Snap back to center with spring
+                                                swipeScope.launch {
+                                                    artOffsetX.animateTo(
+                                                        targetValue = 0f,
+                                                        animationSpec = spring(
+                                                            dampingRatio = 0.6f,
+                                                            stiffness = 500f
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            swipeScope.launch {
+                                                artOffsetX.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = 0.6f,
+                                                        stiffness = 500f
+                                                    )
+                                                )
+                                            }
+                                        },
+                                        onHorizontalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            // 1:1 finger tracking
+                                            swipeScope.launch {
+                                                artOffsetX.snapTo(artOffsetX.value + dragAmount)
+                                            }
+                                        }
+                                    )
+                                },
                             shape = RoundedCornerShape(12.dp),
                             shadowElevation = 12.dp,
                             tonalElevation = 0.dp,
                             color = colorScheme.surfaceContainerHigh
                         ) {
-                            SongThumbnail(
-                                artworkUrl = currentSong?.thumbnailUrl,
-                                modifier = Modifier.fillMaxSize(),
-                                contentDescription = "Album Art",
-                                contentScale = ContentScale.Crop
-                            )
+                            androidx.compose.runtime.key(displayedSong?.id) {
+                                SongThumbnail(
+                                    artworkUrl = displayedSong?.thumbnailUrl,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentDescription = "Album Art",
+                                    contentScale = ContentScale.Crop,
+                                    crossfade = true,
+                                    highQuality = true,
+                                    targetSizePx = 1080
+                                )
+                            }
                         }
                     }
 
@@ -263,12 +389,53 @@ fun FullPlayerScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = currentSong?.artist ?: "",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = colorScheme.onSurfaceVariant,
+                        // Build annotated string with clickable artist segments
+                        val artistText = currentSong?.artist ?: ""
+                        val artistAnnotated = remember(artistText) {
+                            val regex = Regex("(,\\s*|\\s+&\\s+|\\s+feat\\.?\\s+|\\s+ft\\.?\\s+|\\s+x\\s+)", RegexOption.IGNORE_CASE)
+                            val builder = androidx.compose.ui.text.AnnotatedString.Builder()
+                            var lastEnd = 0
+                            var artistIndex = 0
+                            regex.findAll(artistText).forEach { match ->
+                                if (match.range.first > lastEnd) {
+                                    val name = artistText.substring(lastEnd, match.range.first)
+                                    builder.pushStringAnnotation("artist", "${artistIndex}:${name.trim()}")
+                                    builder.append(name)
+                                    builder.pop()
+                                    artistIndex++
+                                }
+                                builder.append(match.value) // delimiter (not clickable)
+                                lastEnd = match.range.last + 1
+                            }
+                            if (lastEnd < artistText.length) {
+                                val name = artistText.substring(lastEnd)
+                                builder.pushStringAnnotation("artist", "${artistIndex}:${name.trim()}")
+                                builder.append(name)
+                                builder.pop()
+                            }
+                            builder.toAnnotatedString()
+                        }
+
+                        @Suppress("DEPRECATION")
+                        androidx.compose.foundation.text.ClickableText(
+                            text = artistAnnotated,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                color = colorScheme.onSurfaceVariant
+                            ),
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            onClick = { offset ->
+                                artistAnnotated.getStringAnnotations("artist", offset, offset)
+                                    .firstOrNull()?.let { annotation ->
+                                        val parts = annotation.item.split(":", limit = 2)
+                                        val idx = parts[0].toIntOrNull() ?: 0
+                                        val name = parts.getOrElse(1) { "" }
+                                        if (name.isNotBlank()) {
+                                            val artistId = if (idx == 0) currentSong?.artistId else null
+                                            onOpenArtist(name, artistId)
+                                        }
+                                    }
+                            }
                         )
                     }
 
@@ -280,119 +447,23 @@ fun FullPlayerScreen(
                     // ═══════════════════════════════════════════
                     // PROGRESS SLIDER - Isolated
                     // ═══════════════════════════════════════════
+                    val isPlayingForProgress by viewModel.isPlaying.collectAsStateWithLifecycle()
                     PlayerProgressSection(
                         viewModel = viewModel,
                         fullPlayerStyle = fullPlayerStyle,
-                        isPlaying = isPlaying
+                        isPlaying = isPlayingForProgress
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // ═══════════════════════════════════════════
-                    // MAIN CONTROLS
+                    // MAIN CONTROLS — Isolated recomposition scope
                     // ═══════════════════════════════════════════
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        // Like
-                        IconButton(
-                            onClick = { viewModel.toggleLike() },
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                contentDescription = "Like",
-                                modifier = Modifier.size(24.dp),
-                                tint = if (isLiked) colorScheme.error else colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        // Previous
-                        FilledIconButton(
-                            onClick = { viewModel.skipToPrevious() },
-                            modifier = Modifier.size(56.dp),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = colorScheme.surfaceContainerHighest,
-                                contentColor = colorScheme.onSurface
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SkipPrevious,
-                                contentDescription = "Previous",
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-
-                        // Play/Pause - Large expressive button
-                        Box(modifier = Modifier.size(80.dp), contentAlignment = Alignment.Center) {
-                            if (isBuffering) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(48.dp),
-                                    color = accentColor,
-                                    strokeWidth = 4.dp
-                                )
-                            } else {
-                                FilledIconButton(
-                                    onClick = { viewModel.togglePlayPause() },
-                                    modifier = Modifier.size(80.dp),
-                                    shape = CircleShape,
-                                    colors = IconButtonDefaults.filledIconButtonColors(
-                                        containerColor = accentColor,
-                                        contentColor = onAccentColor
-                                    )
-                                ) {
-                                    Icon(
-                                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        contentDescription = if (isPlaying) "Pause" else "Play",
-                                        modifier = Modifier.size(40.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        // Next
-                        FilledIconButton(
-                            onClick = { viewModel.skipToNext() },
-                            modifier = Modifier.size(56.dp),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = colorScheme.surfaceContainerHighest,
-                                contentColor = colorScheme.onSurface
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.SkipNext,
-                                contentDescription = "Next",
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-
-                        // Repeat
-                        IconButton(
-                            onClick = { viewModel.toggleRepeatMode() },
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(
-                                imageVector = when (repeatMode) {
-                                    Player.REPEAT_MODE_ONE -> Icons.Filled.RepeatOne
-                                    Player.REPEAT_MODE_ALL -> Icons.Filled.Repeat
-                                    else -> Icons.Outlined.Repeat
-                                },
-                                contentDescription = "Repeat",
-                                modifier = Modifier.size(24.dp),
-                                tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
-                                    accentColor
-                                } else {
-                                    colorScheme.onSurfaceVariant
-                                }
-                            )
-                        }
-                    }
+                    PlayerControlRow(
+                        viewModel = viewModel,
+                        accentColor = accentColor,
+                        onAccentColor = onAccentColor
+                    )
 
                     // ═══════════════════════════════════════════
                     // BOTTOM ACTIONS (pushed to bottom)
@@ -449,133 +520,163 @@ fun FullPlayerScreen(
             }
         }
 
-        // Bottom Sheets
-        FullPlayerMoreSheet(
-            isVisible = showMoreSheet,
-            song = currentSong,
-            isLiked = isLiked,
-            onDismiss = { showMoreSheet = false },
-            onToggleLike = viewModel::toggleLike,
-            onShare = {
-                val song = currentSong ?: return@FullPlayerMoreSheet
-                val shareText = "${song.title} • ${song.artist}\n${buildYouTubeMusicWatchUrl(song.id)}"
-                val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_TEXT, shareText)
-                }
-                val chooser = Intent.createChooser(shareIntent, "Share song")
-                runCatching { context.startActivity(chooser) }
-                    .onFailure {
-                        Toast.makeText(context, "Unable to share song", Toast.LENGTH_SHORT).show()
+        // ═══════════════════════════════════════════════════════════════
+        // SHEETS — State is only collected when the sheet is visible.
+        // This prevents 6+ active flow collectors from triggering
+        // recompositions during normal playback.
+        // ═══════════════════════════════════════════════════════════════
+
+        if (showMoreSheet) {
+            val isCurrentSongDownloaded by viewModel.isCurrentSongDownloaded.collectAsStateWithLifecycle()
+            val isLiked by viewModel.isLiked.collectAsStateWithLifecycle()
+            val currentDownloadProgress by viewModel.currentSongDownloadProgress.collectAsStateWithLifecycle()
+            FullPlayerMoreSheet(
+                isVisible = true,
+                song = currentSong,
+                isLiked = isLiked,
+                isDownloaded = isCurrentSongDownloaded,
+                downloadProgress = currentDownloadProgress,
+                onDismiss = { showMoreSheet = false },
+                onToggleLike = viewModel::toggleLike,
+                onShare = {
+                    val song = currentSong ?: return@FullPlayerMoreSheet
+                    val shareText = "${song.title} • ${song.artist}\n${buildYouTubeMusicWatchUrl(song.id)}"
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, shareText)
                     }
-            },
-            onStartRadio = {
-                showMoreSheet = false
-                viewModel.refreshRecommendations()
-                showQueueSheet = true
-            },
-            onAddToPlaylist = {
-                showMoreSheet = false
-                showAddToPlaylistSheet = true
-            },
-            onEqualizer = {
-                showMoreSheet = false
-                if (!openDeviceEqualizerPanel(context)) {
-                    Toast.makeText(context, "No device equalizer found", Toast.LENGTH_SHORT).show()
+                    val chooser = Intent.createChooser(shareIntent, "Share song")
+                    runCatching { context.startActivity(chooser) }
+                        .onFailure {
+                            Toast.makeText(context, "Unable to share song", Toast.LENGTH_SHORT).show()
+                        }
+                },
+                onStartRadio = {
+                    showMoreSheet = false
+                    viewModel.refreshRecommendations()
+                    showQueueSheet = true
+                },
+                onAddToPlaylist = {
+                    showMoreSheet = false
+                    showAddToPlaylistSheet = true
+                },
+                onEqualizer = {
+                    showMoreSheet = false
+                    if (!openDeviceEqualizerPanel(context)) {
+                        Toast.makeText(context, "No device equalizer found", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onSpeedAndPitch = {
+                    showMoreSheet = false
+                    showSpeedSheet = true
+                },
+                onSleepTimer = {
+                    showMoreSheet = false
+                    showSleepTimerSheet = true
+                },
+                onGoToAlbum = {
+                    showMoreSheet = false
+                    val song = currentSong ?: return@FullPlayerMoreSheet
+                    val albumUrl = buildYouTubeMusicAlbumUrl(song)
+                    if (!openExternalUrl(context, albumUrl)) {
+                        Toast.makeText(context, "Unable to open album", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onMoreFromArtist = {
+                    showMoreSheet = false
+                    val artistName = currentSong?.artist.orEmpty()
+                    if (artistName.isBlank()) {
+                        Toast.makeText(context, "Artist not available", Toast.LENGTH_SHORT).show()
+                    } else {
+                        onOpenArtist(artistName, currentSong?.artistId)
+                    }
+                },
+                onWatchOnYouTube = {
+                    showMoreSheet = false
+                    val songId = currentSong?.id ?: return@FullPlayerMoreSheet
+                    if (!openExternalUrl(context, buildYouTubeWatchUrl(songId))) {
+                        Toast.makeText(context, "Unable to open YouTube", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onOpenInYouTubeMusic = {
+                    showMoreSheet = false
+                    val songId = currentSong?.id ?: return@FullPlayerMoreSheet
+                    if (!openExternalUrl(context, buildYouTubeMusicWatchUrl(songId))) {
+                        Toast.makeText(context, "Unable to open YouTube Music", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onDownloadOffline = {
+                    showMoreSheet = false
+                    viewModel.downloadCurrentSongOffline()
+                    Toast.makeText(context, "Downloading for offline...", Toast.LENGTH_SHORT).show()
+                },
+                onRemoveDownload = {
+                    showMoreSheet = false
+                    viewModel.deleteCurrentSongDownload()
                 }
-            },
-            onSpeedAndPitch = {
-                showMoreSheet = false
-                showSpeedSheet = true
-            },
-            onSleepTimer = {
-                showMoreSheet = false
-                showSleepTimerSheet = true
-            },
-            onGoToAlbum = {
-                showMoreSheet = false
-                val song = currentSong ?: return@FullPlayerMoreSheet
-                val albumUrl = buildYouTubeMusicAlbumUrl(song)
-                if (!openExternalUrl(context, albumUrl)) {
-                    Toast.makeText(context, "Unable to open album", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onMoreFromArtist = {
-                showMoreSheet = false
-                val artistName = currentSong?.artist.orEmpty()
-                if (artistName.isBlank()) {
-                    Toast.makeText(context, "Artist not available", Toast.LENGTH_SHORT).show()
-                } else {
-                    onOpenArtist(artistName)
-                }
-            },
-            onWatchOnYouTube = {
-                showMoreSheet = false
-                val songId = currentSong?.id ?: return@FullPlayerMoreSheet
-                if (!openExternalUrl(context, buildYouTubeWatchUrl(songId))) {
-                    Toast.makeText(context, "Unable to open YouTube", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onOpenInYouTubeMusic = {
-                showMoreSheet = false
-                val songId = currentSong?.id ?: return@FullPlayerMoreSheet
-                if (!openExternalUrl(context, buildYouTubeMusicWatchUrl(songId))) {
-                    Toast.makeText(context, "Unable to open YouTube Music", Toast.LENGTH_SHORT).show()
-                }
-            },
-            onDownloadOffline = {
-                showMoreSheet = false
-                viewModel.downloadCurrentSongOffline()
-                Toast.makeText(context, "Downloading for offline...", Toast.LENGTH_SHORT).show()
-            }
-        )
+            )
+        }
 
-        AddToPlaylistSheet(
-            isVisible = showAddToPlaylistSheet,
-            playlists = playlists,
-            fallbackArtworkUrl = currentSong?.thumbnailUrl,
-            onDismiss = { showAddToPlaylistSheet = false },
-            onSelectPlaylist = viewModel::addCurrentSongToPlaylist,
-            onCreatePlaylistAndAdd = viewModel::createPlaylistAndAddCurrentSong
-        )
+        if (showAddToPlaylistSheet) {
+            val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+            AddToPlaylistSheet(
+                isVisible = true,
+                playlists = playlists,
+                fallbackArtworkUrl = currentSong?.thumbnailUrl,
+                onDismiss = { showAddToPlaylistSheet = false },
+                onSelectPlaylist = viewModel::addCurrentSongToPlaylist,
+                onCreatePlaylistAndAdd = viewModel::createPlaylistAndAddCurrentSong
+            )
+        }
 
-        SleepTimerSheet(
-            isVisible = showSleepTimerSheet,
-            onDismiss = { showSleepTimerSheet = false },
-            onSelectDuration = { dur ->
-                viewModel.startSleepTimer(dur)
-                showSleepTimerSheet = false
-            },
-            onCancel = { viewModel.cancelSleepTimer() },
-            onAddFiveMinutes = { viewModel.extendSleepTimer() },
-            isTimerActive = sleepTimerActive,
-            remainingTime = sleepTimerRemaining
-        )
+        if (showSleepTimerSheet) {
+            SleepTimerSheet(
+                isVisible = true,
+                onDismiss = { showSleepTimerSheet = false },
+                onSelectDuration = { dur ->
+                    viewModel.startSleepTimer(dur)
+                    showSleepTimerSheet = false
+                },
+                onCancel = { viewModel.cancelSleepTimer() },
+                onAddFiveMinutes = { viewModel.extendSleepTimer() },
+                isTimerActive = sleepTimerActive,
+                remainingTime = sleepTimerRemaining
+            )
+        }
 
-        QueueSheet(
-            isVisible = showQueueSheet,
-            onDismiss = { showQueueSheet = false },
-            queue = queue,
-            currentIndex = currentQueueIndex,
-            onRemove = viewModel::removeFromQueue,
-            onReorder = viewModel::reorderQueue,
-            onClearQueue = viewModel::clearQueue,
-            onPlay = { index ->
-                viewModel.skipToQueueItem(index)
-                showQueueSheet = false
-            },
-            infiniteModeEnabled = infiniteModeEnabled,
-            onToggleInfiniteMode = viewModel::setInfiniteMode,
-            shuffleEnabled = shuffleEnabled,
-            onToggleShuffle = viewModel::toggleShuffle
-        )
+        if (showQueueSheet) {
+            val queue by viewModel.queue.collectAsStateWithLifecycle()
+            val currentQueueIndex by viewModel.currentQueueIndex.collectAsStateWithLifecycle()
+            val infiniteModeEnabled by viewModel.infiniteModeEnabled.collectAsStateWithLifecycle()
+            val shuffleEnabled by viewModel.shuffleEnabled.collectAsStateWithLifecycle()
+            QueueSheet(
+                isVisible = true,
+                onDismiss = { showQueueSheet = false },
+                queue = queue,
+                currentIndex = currentQueueIndex,
+                onRemove = viewModel::removeFromQueue,
+                onReorder = viewModel::reorderQueue,
+                onClearQueue = viewModel::clearQueue,
+                onPlay = { index ->
+                    viewModel.skipToQueueItem(index)
+                    showQueueSheet = false
+                },
+                infiniteModeEnabled = infiniteModeEnabled,
+                onToggleInfiniteMode = viewModel::setInfiniteMode,
+                shuffleEnabled = shuffleEnabled,
+                onToggleShuffle = viewModel::toggleShuffle
+            )
+        }
 
-        PlaybackSpeedSheet(
-            isVisible = showSpeedSheet,
-            onDismiss = { showSpeedSheet = false },
-            currentSpeed = playbackSpeed,
-            onSpeedChange = viewModel::setPlaybackSpeed
-        )
+        if (showSpeedSheet) {
+            val playbackSpeed by viewModel.playbackSpeed.collectAsStateWithLifecycle()
+            PlaybackSpeedSheet(
+                isVisible = true,
+                onDismiss = { showSpeedSheet = false },
+                currentSpeed = playbackSpeed,
+                onSpeedChange = viewModel::setPlaybackSpeed
+            )
+        }
     }
 }
 
@@ -662,9 +763,9 @@ private fun PlayerProgressSection(
     fullPlayerStyle: FullPlayerStyle,
     isPlaying: Boolean
 ) {
-    val progress by viewModel.progress.collectAsState()
-    val currentPosition by viewModel.currentPosition.collectAsState()
-    val duration by viewModel.duration.collectAsState()
+    val progress by viewModel.progress.collectAsStateWithLifecycle()
+    val currentPosition by viewModel.currentPosition.collectAsStateWithLifecycle()
+    val duration by viewModel.duration.collectAsStateWithLifecycle()
     val colorScheme = MaterialTheme.colorScheme
 
     // Track dragging state with remember
@@ -710,7 +811,8 @@ private fun PlayerProgressSection(
                     thumbColor = Color.Transparent,
                     activeTrackColor = Color.Transparent,
                     inactiveTrackColor = Color.Transparent
-                )
+                ),
+                thumb = { /* No visible thumb — custom Canvas thumb is drawn instead */ }
             )
         }
 
@@ -736,6 +838,127 @@ private fun PlayerProgressSection(
                 text = formatDuration((duration / 1000).toInt()),
                 style = MaterialTheme.typography.labelMedium,
                 color = colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Isolated recomposition scope for playback controls.
+ * Only observes: isPlaying, isBuffering, isLiked, repeatMode.
+ * This prevents progress bar updates (~100ms) from recomposing the full control row.
+ */
+@Composable
+private fun PlayerControlRow(
+    viewModel: PlayerViewModel,
+    accentColor: Color,
+    onAccentColor: Color
+) {
+    val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
+    val isBuffering by viewModel.isBuffering.collectAsStateWithLifecycle()
+    val isLiked by viewModel.isLiked.collectAsStateWithLifecycle()
+    val repeatMode by viewModel.repeatMode.collectAsStateWithLifecycle()
+    val colorScheme = MaterialTheme.colorScheme
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Like
+        IconButton(
+            onClick = { viewModel.toggleLike() },
+            modifier = Modifier.size(48.dp)
+        ) {
+            Icon(
+                imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = "Like",
+                modifier = Modifier.size(24.dp),
+                tint = if (isLiked) colorScheme.error else colorScheme.onSurfaceVariant
+            )
+        }
+
+        // Previous
+        FilledIconButton(
+            onClick = { viewModel.skipToPrevious() },
+            modifier = Modifier.size(56.dp),
+            shape = CircleShape,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = accentColor.copy(alpha = 0.2f),
+                contentColor = accentColor
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Default.SkipPrevious,
+                contentDescription = "Previous",
+                modifier = Modifier.size(28.dp)
+            )
+        }
+
+        // Play/Pause — Large expressive button
+        Box(modifier = Modifier.size(80.dp), contentAlignment = Alignment.Center) {
+            if (isBuffering) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    color = accentColor,
+                    strokeWidth = 4.dp
+                )
+            } else {
+                FilledIconButton(
+                    onClick = { viewModel.togglePlayPause() },
+                    modifier = Modifier.size(80.dp),
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = accentColor,
+                        contentColor = onAccentColor
+                    )
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+            }
+        }
+
+        // Next
+        FilledIconButton(
+            onClick = { viewModel.skipToNext() },
+            modifier = Modifier.size(56.dp),
+            shape = CircleShape,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = accentColor.copy(alpha = 0.2f),
+                contentColor = accentColor
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Default.SkipNext,
+                contentDescription = "Next",
+                modifier = Modifier.size(28.dp)
+            )
+        }
+
+        // Repeat
+        IconButton(
+            onClick = { viewModel.toggleRepeatMode() },
+            modifier = Modifier.size(48.dp)
+        ) {
+            Icon(
+                imageVector = when (repeatMode) {
+                    Player.REPEAT_MODE_ONE -> Icons.Filled.RepeatOne
+                    Player.REPEAT_MODE_ALL -> Icons.Filled.Repeat
+                    else -> Icons.Outlined.Repeat
+                },
+                contentDescription = "Repeat",
+                modifier = Modifier.size(24.dp),
+                tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
+                    accentColor
+                } else {
+                    colorScheme.onSurfaceVariant
+                }
             )
         }
     }

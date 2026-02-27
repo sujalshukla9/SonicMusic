@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -14,15 +17,24 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.0-beta01"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.0.0\"")
+        buildConfigField("String", "APP_VERSION", "\"1.0.0-beta01\"")
+
+        val localProperties = Properties()
+        val localPropertiesFile = rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            localProperties.load(FileInputStream(localPropertiesFile))
+        }
+        
+        buildConfigField("String", "INNERTUBE_API_KEY", "\"${localProperties.getProperty("INNERTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
+        buildConfigField("String", "YOUTUBE_API_KEY", "\"${localProperties.getProperty("YOUTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
     }
 
     buildTypes {
@@ -54,9 +66,33 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.10"
     }
+}
+
+// ═══ Compose Compiler: stability config + recomposition reports ═══
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    compilerOptions {
+        freeCompilerArgs.addAll(
+            // Strong skipping: skip recomposition even for unstable params when instance equality holds
+            "-P", "plugin:androidx.compose.compiler.plugins.kotlin:experimentalStrongSkipping=true",
+            "-P", "plugin:androidx.compose.compiler.plugins.kotlin:stabilityConfigurationPath=" +
+                rootProject.file("compose-stability.conf").absolutePath,
+            "-P", "plugin:androidx.compose.compiler.plugins.kotlin:reportsDestination=" +
+                project.layout.buildDirectory.dir("compose_metrics").get().asFile.absolutePath,
+            "-P", "plugin:androidx.compose.compiler.plugins.kotlin:metricsDestination=" +
+                project.layout.buildDirectory.dir("compose_metrics").get().asFile.absolutePath
+        )
+    }
+}
+
+android {
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "DebugProbesKt.bin",
+                "kotlin-tooling-metadata.json",
+                "kotlin/**"
+            )
         }
     }
 }
@@ -64,6 +100,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
@@ -76,6 +113,11 @@ dependencies {
     // Hilt
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
+    implementation(libs.androidx.hilt.work)
+    kapt(libs.androidx.hilt.compiler)
+    
+    // WorkManager
+    implementation(libs.androidx.work.runtime.ktx)
     
     // Room
     implementation(libs.bundles.room)
@@ -103,6 +145,12 @@ dependencies {
     
     // Palette
     implementation(libs.androidx.palette)
+
+    // Baseline Profiles
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    
+    // Material Color Utilities
+    implementation(libs.material.color.utilities)
     
     // NewPipe Extractor (YouTube stream extraction)
     implementation(libs.newpipe.extractor)

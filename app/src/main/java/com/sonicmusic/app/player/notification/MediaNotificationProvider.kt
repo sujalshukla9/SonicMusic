@@ -1,4 +1,4 @@
-package com.sonicmusic.app.service
+package com.sonicmusic.app.player.notification
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -18,11 +19,14 @@ import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaNotification
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import coil.size.Size
+import java.util.Locale
 import com.sonicmusic.app.R
-import com.sonicmusic.app.data.util.ThumbnailUrlUtils
+import com.sonicmusic.app.core.util.ThumbnailUrlUtils
+import com.sonicmusic.app.player.playback.PlaybackService
 import com.sonicmusic.app.presentation.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +53,7 @@ import kotlinx.coroutines.withContext
 @OptIn(UnstableApi::class)
 class MediaNotificationProvider(
     private val context: Context,
-    private val isSongLiked: (String) -> Boolean,
+    private val checkIsLiked: suspend (String) -> Boolean,
 ) : MediaNotification.Provider {
     
     companion object {
@@ -58,20 +62,30 @@ class MediaNotificationProvider(
         const val NOTIFICATION_ID = 1
         
         // Custom action commands
-        const val ACTION_TOGGLE_LIKE = "sonic_music_toggle_like"
-        const val ACTION_TOGGLE_REPEAT = "sonic_music_toggle_repeat"
+        // References from PlaybackService for consistency
+        const val ACTION_TOGGLE_LIKE = PlaybackService.ACTION_TOGGLE_LIKE
+        const val ACTION_TOGGLE_REPEAT = PlaybackService.ACTION_TOGGLE_REPEAT
         const val ACTION_CLOSE = "sonic_music_close"
-        private const val ARTWORK_SIZE_PX = 768
+        private const val ARTWORK_SIZE_PX = 512
+        private const val MIN_VALID_EDGE_PX = 180
+        private const val MIN_METADATA_EDGE_FOR_DIRECT_USE_PX = 320
+        private const val MIN_EXPECTED_HD_WIDTH = 960
+        private const val MIN_EXPECTED_HD_HEIGHT = 540
     }
     
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val imageLoader = ImageLoader.Builder(context).build()
+    private val imageLoader = context.imageLoader
     @Volatile
     private var activeArtworkUri: String? = null
     private var cachedArtwork: Bitmap? = null
     private var cachedArtworkUri: String? = null
     private val likedStateLock = Any()
     private val likedStateOverrides = mutableMapOf<String, Boolean>()
+
+    private data class DecodedArtwork(
+        val bitmap: Bitmap,
+        val sourceMinEdgePx: Int
+    )
     
     init {
         createNotificationChannel()
@@ -107,18 +121,28 @@ class MediaNotificationProvider(
         val mediaItem = player.currentMediaItem
         val metadata = mediaItem?.mediaMetadata
         val artworkUri = metadata?.artworkUri?.toString()
+        val artworkData = metadata?.artworkData
+        val mediaId = mediaItem?.mediaId
+        
         
         // Load artwork asynchronously
-        loadArtworkAsync(artworkUri) {
+        loadArtworkAsync(artworkUri, mediaId, artworkData) {
             // Callback to refresh notification when artwork is loaded
             onNotificationChangedCallback.onNotificationChanged(
                 createNotificationInternal(mediaSession, it)
             )
         }
         
+        // Load liked state asynchronously
+        resolveLikedStateAsync(mediaItem?.mediaId) {
+             onNotificationChangedCallback.onNotificationChanged(
+                createNotificationInternal(mediaSession, cachedArtwork)
+            )
+        }
+
         return createNotificationInternal(mediaSession, cachedArtwork)
     }
-    
+
     private fun createNotificationInternal(
         mediaSession: MediaSession,
         artwork: Bitmap?
@@ -146,7 +170,9 @@ class MediaNotificationProvider(
         )
         
         // Create delete intent for swipe dismiss
-        val deleteIntent = PendingIntent.getService(
+        // Bug 6 fix: Use getForegroundService() instead of getService() —
+        // on Android 12+, getService() silently fails for background apps.
+        val deleteIntent = PendingIntent.getForegroundService(
             context,
             100,
             Intent(context, PlaybackService::class.java).apply {
@@ -161,7 +187,7 @@ class MediaNotificationProvider(
         
         val repeatMode = player.repeatMode
         
-        // 1. Like Action (Index 0) - Expanded view only
+        // 1. Like Action (Index 0) - Expanded view only -> NOW IN COMPACT
         actions.add(
             createAction(
                 if (isLiked) R.drawable.ic_notification_like else R.drawable.ic_notification_like_outline,
@@ -171,11 +197,9 @@ class MediaNotificationProvider(
                 true
             )
         )
+        compactViewIndices.add(actions.lastIndex) // Add Like to compact view
         
-        // 2. Previous Action (Index 1) - In Compact View
-        // We always add Previous, but if no previous item, we could disable it. 
-        // For consistent UI, we keep it enabled or check capability.
-        // Android guidelines say "Previous" should be present.
+        // 2. Previous Action (Index 1) - In Compact View -> REMOVED FROM COMPACT
         actions.add(
             createAction(
                 R.drawable.ic_notification_prev,
@@ -185,7 +209,7 @@ class MediaNotificationProvider(
                 true 
             )
         )
-        compactViewIndices.add(actions.lastIndex)
+        // compactViewIndices.add(actions.lastIndex) // Previous hidden in compact
         
         // 3. Play/Pause Action (Index 2) - In Compact View
         actions.add(
@@ -200,7 +224,6 @@ class MediaNotificationProvider(
         compactViewIndices.add(actions.lastIndex)
         
         // 4. Next Action (Index 3) - ALWAYS in Compact View
-        // We always show Next to allow triggering "load more" or just solely for UI consistency
         actions.add(
             createAction(
                 R.drawable.ic_notification_next,
@@ -238,7 +261,7 @@ class MediaNotificationProvider(
             .setContentTitle(title)
             .setContentText(artist)
             .setSubText(album)
-            .setSmallIcon(R.drawable.ic_launcher_monochrome)
+            .setSmallIcon(R.drawable.ic_notification)
             .setLargeIcon(artwork)
             .setContentIntent(contentIntent)
             .setDeleteIntent(deleteIntent)
@@ -291,62 +314,121 @@ class MediaNotificationProvider(
         ).build()
     }
     
-    private fun loadArtworkAsync(uri: String?, onLoaded: (Bitmap?) -> Unit) {
+    private fun loadArtworkAsync(
+        uri: String?,
+        mediaId: String?,
+        artworkData: ByteArray?,
+        onLoaded: (Bitmap?) -> Unit
+    ) {
         val artworkKey = uri?.trim()?.takeIf { it.isNotEmpty() }
-        val candidates = ThumbnailUrlUtils.buildCandidates(artworkKey)
-        activeArtworkUri = artworkKey
+        val normalizedMediaId = mediaId?.trim()?.takeIf { it.isNotEmpty() }
+        val requestKey = artworkKey ?: normalizedMediaId?.let { "media:$it" } ?: "unknown"
+        val candidates = ThumbnailUrlUtils.buildCandidates(artworkKey, normalizedMediaId)
+        activeArtworkUri = requestKey
 
-        if (artworkKey.isNullOrBlank() || candidates.isEmpty()) {
-            updateCachedArtwork(bitmap = null, uri = null)
-            onLoaded(null)
+        val metadataArtwork = artworkData
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { decodeMetadataArtwork(it) }
+        val metadataFallback = metadataArtwork?.bitmap
+
+        if (metadataArtwork != null && metadataArtwork.sourceMinEdgePx >= MIN_METADATA_EDGE_FOR_DIRECT_USE_PX) {
+            updateCachedArtwork(bitmap = metadataArtwork.bitmap, uri = requestKey)
+            onLoaded(metadataArtwork.bitmap)
             return
         }
 
+        if (metadataArtwork != null) {
+            Log.d(
+                TAG,
+                "Ignoring low-res metadata artwork (${metadataArtwork.sourceMinEdgePx}px edge) for $requestKey; trying URL candidates"
+            )
+        }
+
         // Return cached artwork if URI matches
-        if (artworkKey == cachedArtworkUri && cachedArtwork != null) {
+        if (requestKey == cachedArtworkUri && cachedArtwork != null) {
             onLoaded(cachedArtwork)
             return
         }
 
+        if (candidates.isEmpty()) {
+            if (metadataFallback != null) {
+                updateCachedArtwork(bitmap = metadataFallback, uri = requestKey)
+                onLoaded(metadataFallback)
+            } else {
+                updateCachedArtwork(bitmap = null, uri = null)
+                onLoaded(null)
+            }
+            return
+        }
+
         // Invalidate stale artwork for the new media item immediately.
-        if (artworkKey != cachedArtworkUri) {
+        if (requestKey != cachedArtworkUri) {
             updateCachedArtwork(bitmap = null, uri = null)
         }
 
         scope.launch {
             val bitmap = loadFirstAvailableArtwork(
-                artworkKey = artworkKey,
-                candidates = candidates
+                requestKey = requestKey,
+                candidates = candidates,
+                mediaId = normalizedMediaId
             )
-            if (activeArtworkUri != artworkKey) {
+            if (activeArtworkUri != requestKey) {
                 return@launch
             }
 
-            if (bitmap != null) {
-                updateCachedArtwork(bitmap = bitmap, uri = artworkKey)
+            val finalArtwork = bitmap ?: metadataFallback
+            if (finalArtwork != null) {
+                updateCachedArtwork(bitmap = finalArtwork, uri = requestKey)
             } else {
                 // Keep URI cache empty so transient failures can recover on next update.
                 updateCachedArtwork(bitmap = null, uri = null)
             }
-            withContext(Dispatchers.Main) { onLoaded(bitmap) }
+            withContext(Dispatchers.Main) { onLoaded(finalArtwork) }
         }
     }
 
+    private fun decodeMetadataArtwork(artworkData: ByteArray): DecodedArtwork? {
+        return runCatching {
+            val decoded = BitmapFactory.decodeByteArray(artworkData, 0, artworkData.size)
+                ?: return null
+            if (decoded.width <= 0 || decoded.height <= 0) return null
+            val processed = NotificationArtworkProcessor.centerCropRoundedSquare(
+                source = decoded,
+                targetSize = ARTWORK_SIZE_PX
+            )
+            DecodedArtwork(
+                bitmap = processed,
+                sourceMinEdgePx = minOf(decoded.width, decoded.height)
+            )
+        }.getOrNull()
+    }
+
     private suspend fun loadFirstAvailableArtwork(
-        artworkKey: String,
-        candidates: List<String>
+        requestKey: String,
+        candidates: List<String>,
+        mediaId: String?
     ): Bitmap? {
         candidates.forEach { candidate ->
-            if (activeArtworkUri != artworkKey) return null
+            if (activeArtworkUri != requestKey) return null
             try {
                 val request = ImageRequest.Builder(context)
                     .data(candidate)
                     .allowHardware(false)
-                    .size(ARTWORK_SIZE_PX, ARTWORK_SIZE_PX)
+                    .size(ARTWORK_SIZE_PX)
                     .build()
 
                 val result = imageLoader.execute(request)
                 if (result is SuccessResult) {
+                    val sourceWidth = result.drawable.intrinsicWidth
+                    val sourceHeight = result.drawable.intrinsicHeight
+                    if (shouldRejectCandidate(candidate, sourceWidth, sourceHeight, mediaId)) {
+                        Log.d(
+                            TAG,
+                            "Skipping low-quality artwork candidate: $candidate (${sourceWidth}x${sourceHeight})"
+                        )
+                        return@forEach
+                    }
+
                     return NotificationArtworkProcessor.fromDrawable(
                         drawable = result.drawable,
                         targetSize = ARTWORK_SIZE_PX
@@ -357,6 +439,34 @@ class MediaNotificationProvider(
             }
         }
         return null
+    }
+
+    private fun shouldRejectCandidate(
+        candidate: String,
+        width: Int,
+        height: Int,
+        mediaId: String?
+    ): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val minEdge = minOf(width, height)
+        if (minEdge < MIN_VALID_EDGE_PX) return true
+
+        val lower = candidate.lowercase(Locale.US)
+        val expectsHd = lower.contains("maxresdefault") || lower.contains("hq720")
+        if (expectsHd && (width < MIN_EXPECTED_HD_WIDTH || height < MIN_EXPECTED_HD_HEIGHT)) {
+            // Many maxres/hq720 URLs return tiny placeholders; keep falling back.
+            return true
+        }
+
+        // Some media IDs resolve to non-music placeholders on maxres/hq endpoints.
+        // If an ID is known and the candidate still comes in tiny, keep trying lower-tier variants.
+        if (!mediaId.isNullOrBlank() &&
+            (lower.contains("/maxresdefault") || lower.contains("/hq720")) &&
+            (width <= 400 || height <= 225)
+        ) {
+            return true
+        }
+        return false
     }
 
     private fun updateCachedArtwork(bitmap: Bitmap?, uri: String?) {
@@ -425,10 +535,51 @@ class MediaNotificationProvider(
 
     private fun resolveLikedState(mediaId: String): Boolean {
         if (mediaId.isBlank()) return false
+        // If override exists, use it
         synchronized(likedStateLock) {
             likedStateOverrides[mediaId]
         }?.let { return it }
+        
+        // Return cached value if available, otherwise false (will be updated by async check)
+        return likedStateCache[mediaId] ?: false
+    }
 
-        return runCatching { isSongLiked(mediaId) }.getOrDefault(false)
+    private val likedStateCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    @Volatile
+    private var activeLikedId: String? = null
+
+    private fun resolveLikedStateAsync(mediaId: String?, onStateLoaded: () -> Unit) {
+        val songId = mediaId?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        activeLikedId = songId
+        
+        // If we have an override, no need to fetch
+        synchronized(likedStateLock) {
+            if (likedStateOverrides.containsKey(songId)) return
+        }
+
+        // If explicitly cached, we are good? 
+        // We might want to refresh anyway to be sure.
+        
+        scope.launch {
+            if (activeLikedId != songId) return@launch
+            
+            val isLiked = try {
+                checkIsLiked(songId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to check liked state", e)
+                false
+            }
+            
+            if (activeLikedId != songId) return@launch
+            
+            val oldState = likedStateCache[songId]
+            likedStateCache[songId] = isLiked
+            
+            if (oldState != isLiked) {
+                withContext(Dispatchers.Main) {
+                    onStateLoaded()
+                }
+            }
+        }
     }
 }

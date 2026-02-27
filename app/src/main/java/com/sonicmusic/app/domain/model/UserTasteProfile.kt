@@ -5,11 +5,14 @@ package com.sonicmusic.app.domain.model
  */
 data class UserTasteProfile(
     val topArtists: List<String> = emptyList(),
-    val preferredLanguages: List<String> = listOf("Hindi", "English"),
+    val preferredLanguages: List<String> = listOf("English"),
     val listeningPattern: ListeningPattern = ListeningPattern.MIXED,
     val completionRate: Float = 0.5f,
     val avgSessionDuration: Long = 0L,
-    val topSearchQueries: List<String> = emptyList()
+    val topSearchQueries: List<String> = emptyList(),
+    val topGenres: List<String> = emptyList(),
+    val skipRate: Float = 0f,
+    val mostPlayedSongIds: List<String> = emptyList()
 ) {
     companion object {
         val DEFAULT = UserTasteProfile()

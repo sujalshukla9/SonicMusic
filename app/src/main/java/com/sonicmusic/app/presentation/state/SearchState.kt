@@ -46,7 +46,8 @@ sealed interface SearchState {
         val songs: List<Song>,
         val paginationState: PaginationState = PaginationState.Idle,
         val totalCount: Int = songs.size,
-        val filters: SearchFilters = SearchFilters()
+        val filters: SearchFilters = SearchFilters(),
+        val continuationToken: String? = null
     ) : SearchState
     
     /**

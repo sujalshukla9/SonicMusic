@@ -9,15 +9,19 @@ import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -67,6 +71,8 @@ class SongDownloadManager @Inject constructor(
     private val _activeDownloads = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
     val activeDownloads: StateFlow<Map<String, DownloadProgress>> = _activeDownloads.asStateFlow()
 
+    private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
     private val downloadsDir: File by lazy {
         File(context.filesDir, DOWNLOADS_DIRECTORY).apply { mkdirs() }
     }
@@ -103,7 +109,6 @@ class SongDownloadManager @Inject constructor(
                     return@withContext Result.success(File(existing.filePath))
                 }
 
-                notificationHelper.showIndeterminate(song.id, song.title)
 
                 // Update progress
                 updateProgress(song.id, song.title, DownloadProgress(
@@ -120,7 +125,6 @@ class SongDownloadManager @Inject constructor(
                 
                 if (streamResult.isFailure) {
                     val error = streamResult.exceptionOrNull()
-                    notificationHelper.showError(song.id, song.title, error?.message)
                     updateProgress(song.id, song.title, DownloadProgress(
                         songId = song.id,
                         title = song.title,
@@ -142,8 +146,6 @@ class SongDownloadManager @Inject constructor(
                 val downloadResult = downloadFile(streamUrl, tempFile, song.id, song.title)
                 
                 if (downloadResult.isFailure) {
-                    val error = downloadResult.exceptionOrNull()
-                    notificationHelper.showError(song.id, song.title, error?.message)
                     updateProgress(song.id, song.title, DownloadProgress(
                         songId = song.id,
                         title = song.title,
@@ -156,7 +158,6 @@ class SongDownloadManager @Inject constructor(
                 }
 
                 Log.d(TAG, "🔒 Encrypting file")
-                notificationHelper.showProgress(song.id, song.title, 99)
                 updateProgress(song.id, song.title, DownloadProgress(
                     songId = song.id,
                     title = song.title,
@@ -174,8 +175,6 @@ class SongDownloadManager @Inject constructor(
                 tempFile.delete()
 
                 if (encryptResult.isFailure) {
-                    val error = encryptResult.exceptionOrNull()
-                    notificationHelper.showError(song.id, song.title, "Encryption failed")
                     updateProgress(song.id, song.title, DownloadProgress(
                         songId = song.id,
                         title = song.title,
@@ -185,7 +184,7 @@ class SongDownloadManager @Inject constructor(
                         status = DownloadStatus.FAILED
                     ))
                     return@withContext Result.failure(
-                        error ?: Exception("Encryption failed")
+                        encryptResult.exceptionOrNull() ?: Exception("Encryption failed")
                     )
                 }
 
@@ -203,8 +202,7 @@ class SongDownloadManager @Inject constructor(
                 )
                 downloadedSongDao.insertDownloadedSong(entity)
 
-                // Update progress to complete
-                notificationHelper.showComplete(song.id, song.title)
+                // Update progress to complete, then auto-remove after a brief delay
                 updateProgress(song.id, song.title, DownloadProgress(
                     songId = song.id,
                     title = song.title,
@@ -213,13 +211,13 @@ class SongDownloadManager @Inject constructor(
                     bytesTotal = encryptedFile.length().toInt(),
                     status = DownloadStatus.COMPLETED
                 ))
+                scheduleProgressRemoval(song.id, delayMs = 2000)
 
                 Log.d(TAG, "✅ Download complete: ${song.title}")
                 Result.success(encryptedFile)
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Download failed: ${song.title}", e)
-                notificationHelper.showError(song.id, song.title, e.message)
                 updateProgress(song.id, song.title, DownloadProgress(
                     songId = song.id,
                     title = song.title,
@@ -228,6 +226,7 @@ class SongDownloadManager @Inject constructor(
                     bytesTotal = 0,
                     status = DownloadStatus.FAILED
                 ))
+                scheduleProgressRemoval(song.id, delayMs = 3000)
                 Result.failure(e)
             }
         }
@@ -360,7 +359,6 @@ class SongDownloadManager @Inject constructor(
                                     progress >= 98
                                 )
                             if (shouldNotify) {
-                                notificationHelper.showProgress(songId, title, progress)
                                 lastNotificationProgress = progress
                             }
                         }
@@ -381,7 +379,6 @@ class SongDownloadManager @Inject constructor(
                     ))
                 }
                 if (lastNotificationProgress < 98) {
-                    notificationHelper.showProgress(songId, title, 98)
                 }
             }
 
@@ -476,7 +473,6 @@ class SongDownloadManager @Inject constructor(
                                                     progress >= 98
                                                 )
                                             if (shouldNotify) {
-                                                notificationHelper.showProgress(songId, title, progress)
                                                 lastNotificationProgress = progress
                                             }
                                         }
@@ -506,7 +502,6 @@ class SongDownloadManager @Inject constructor(
                 ))
             }
             if (lastNotificationProgress < 98) {
-                notificationHelper.showProgress(songId, title, 98)
             }
 
             Result.success(outputFile)
@@ -684,6 +679,13 @@ class SongDownloadManager @Inject constructor(
 
     private fun removeProgress(songId: String) {
         _activeDownloads.value = _activeDownloads.value - songId
+    }
+
+    private fun scheduleProgressRemoval(songId: String, delayMs: Long) {
+        managerScope.launch {
+            delay(delayMs)
+            removeProgress(songId)
+        }
     }
 }
 

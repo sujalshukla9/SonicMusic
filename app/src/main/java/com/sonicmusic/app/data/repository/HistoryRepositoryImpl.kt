@@ -44,7 +44,7 @@ class HistoryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun recordPlayback(song: Song, playDuration: Int, completed: Boolean) {
+    override suspend fun recordPlayback(song: Song, playDuration: Int, completed: Boolean, totalDuration: Int) {
         if (settingsDataStore.pauseHistory.first()) {
             return
         }
@@ -56,6 +56,7 @@ class HistoryRepositoryImpl @Inject constructor(
             thumbnailUrl = song.thumbnailUrl,
             playedAt = System.currentTimeMillis(),
             playDuration = playDuration,
+            totalDuration = totalDuration,
             completed = completed
         )
         historyDao.insertPlayback(entity)

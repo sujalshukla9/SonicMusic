@@ -29,23 +29,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import com.sonicmusic.app.presentation.ui.components.LibraryScreenSkeleton
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -66,7 +66,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,7 +84,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
-import com.sonicmusic.app.data.local.dao.ArtistPlayCount
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
 
@@ -103,16 +102,16 @@ fun LibraryScreen(
     onShowFullPlayer: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    val likedSongs by viewModel.likedSongs.collectAsState()
-    val playlists by viewModel.filteredPlaylists.collectAsState()
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
-    val localSongs by viewModel.localSongs.collectAsState()
-    val artists by viewModel.artists.collectAsState()
-    val downloadedSongs by viewModel.downloadedSongs.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val isSearchActive by viewModel.isSearchActive.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
+    val likedSongs by viewModel.likedSongs.collectAsStateWithLifecycle()
+    val playlists by viewModel.filteredPlaylists.collectAsStateWithLifecycle()
+    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val localSongs by viewModel.localSongs.collectAsStateWithLifecycle()
+    val artists by viewModel.artists.collectAsStateWithLifecycle()
+    val downloadedSongs by viewModel.downloadedSongs.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val isSearchActive by viewModel.isSearchActive.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
@@ -155,12 +154,12 @@ fun LibraryScreen(
                     actions = {
                         IconButton(onClick = { viewModel.toggleSearch() }) {
                             Icon(
-                                imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                                imageVector = if (isSearchActive) Icons.Rounded.Close else Icons.Rounded.Search,
                                 contentDescription = if (isSearchActive) "Close Search" else "Search Library"
                             )
                         }
                         IconButton(onClick = { showCreatePlaylistDialog = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "Create Playlist")
+                            Icon(Icons.Rounded.Add, contentDescription = "Create Playlist")
                         }
                     }
                 )
@@ -178,11 +177,11 @@ fun LibraryScreen(
                             .padding(horizontal = 16.dp, vertical = 8.dp),
                         placeholder = { Text("Search playlists, songs...") },
                         singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(28.dp),
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Clear")
+                                    Icon(Icons.Rounded.Close, contentDescription = "Clear")
                                 }
                             }
                         }
@@ -192,14 +191,12 @@ fun LibraryScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            LibraryScreenSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding() + 16.dp,
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -220,7 +217,7 @@ fun LibraryScreen(
                             modifier = Modifier.weight(1f),
                             title = "Liked Songs",
                             subtitle = "${likedSongs.size} songs",
-                            icon = Icons.Default.Favorite,
+                            icon = Icons.Rounded.Favorite,
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                             onClick = onNavigateToLikedSongs
@@ -229,7 +226,7 @@ fun LibraryScreen(
                             modifier = Modifier.weight(1f),
                             title = "Recent",
                             subtitle = "${recentlyPlayed.size} played",
-                            icon = Icons.Default.History,
+                            icon = Icons.Rounded.History,
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                             onClick = onNavigateToRecentlyPlayed
@@ -253,7 +250,7 @@ fun LibraryScreen(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Play All")
                             }
@@ -264,7 +261,7 @@ fun LibraryScreen(
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Icon(Icons.Default.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Shuffle")
                             }
@@ -284,19 +281,19 @@ fun LibraryScreen(
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     ) {
                         LibraryListItem(
-                            icon = Icons.Default.PhoneAndroid,
+                            icon = Icons.Rounded.PhoneAndroid,
                             title = "Local Songs",
                             subtitle = "${localSongs.size} songs on device",
                             onClick = onNavigateToLocalSongs
                         )
                         LibraryListItem(
-                            icon = Icons.Default.Person,
+                            icon = Icons.Rounded.Person,
                             title = "Artists",
                             subtitle = "${artists.size} artists",
                             onClick = onNavigateToArtists
                         )
                         LibraryListItem(
-                            icon = Icons.Default.Download,
+                            icon = Icons.Rounded.Download,
                             title = "Downloads",
                             subtitle = "${downloadedSongs.size} songs downloaded",
                             onClick = onNavigateToDownloads
@@ -402,7 +399,7 @@ fun LibraryScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Icon(
-                                imageVector = Icons.Default.MusicNote,
+                                imageVector = Icons.Rounded.MusicNote,
                                 contentDescription = null,
                                 modifier = Modifier.size(48.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
@@ -448,7 +445,7 @@ fun LibraryScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onNavigateToArtistDetail(artist.artist) }
+                                .clickable { onNavigateToArtistDetail(artist.artistName) }
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -457,27 +454,36 @@ fun LibraryScreen(
                                 shape = androidx.compose.foundation.shape.CircleShape,
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Person,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                if (!artist.thumbnailUrl.isNullOrEmpty()) {
+                                    com.sonicmusic.app.presentation.ui.components.SongThumbnail(
+                                        artworkUrl = artist.thumbnailUrl,
+                                        contentDescription = artist.artistName,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                     )
+                                } else {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Person,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = artist.artist,
+                                    text = artist.artistName,
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${artist.playCount} plays",
+                                    text = "Followed",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -567,7 +573,7 @@ private fun LibraryListItem(
         supportingContent = { Text(subtitle) },
         trailingContent = {
             Icon(
-                Icons.AutoMirrored.Filled.ArrowForward,
+                Icons.AutoMirrored.Rounded.ArrowForward,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -597,7 +603,7 @@ private fun AddPlaylistCard(onClick: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Add,
+                    imageVector = Icons.Rounded.Add,
                     contentDescription = "Create Playlist",
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.primary
@@ -644,7 +650,7 @@ private fun PlaylistGridItem(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Default.LibraryMusic,
+                        imageVector = Icons.Rounded.LibraryMusic,
                         contentDescription = null,
                         modifier = Modifier.size(48.dp),
                         tint = MaterialTheme.colorScheme.onTertiaryContainer
@@ -675,12 +681,12 @@ private fun RecentlyPlayedItem(
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
         leadingContent = {
-            AsyncImage(
-                model = history.thumbnailUrl,
+            com.sonicmusic.app.presentation.ui.components.SongThumbnail(
+                artworkUrl = history.thumbnailUrl,
                 contentDescription = null,
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .clip(RoundedCornerShape(16.dp)),
             )
         },
         headlineContent = { 
@@ -713,6 +719,7 @@ private fun CreatePlaylistDialog(
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create Playlist") },
+        shape = RoundedCornerShape(28.dp),
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -723,7 +730,7 @@ private fun CreatePlaylistDialog(
                     label = { Text("Playlist Name") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(16.dp)
                 )
                 OutlinedTextField(
                     value = playlistDescription,
@@ -732,7 +739,7 @@ private fun CreatePlaylistDialog(
                     minLines = 2,
                     maxLines = 3,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(16.dp)
                 )
             }
         },

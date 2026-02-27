@@ -1,21 +1,18 @@
 package com.sonicmusic.app.domain.model
 
 /**
- * Apple Music-Style Audio Quality Tiers
- * 
- * Modeled after Apple Music's quality hierarchy:
+ * Audio Quality Tiers
+ *
  * - DATA_SAVER: Minimal data usage
  * - HIGH_EFFICIENCY: AAC-HE, good quality at low bitrate
- * - HIGH_QUALITY: AAC 256kbps, Apple Music standard
- * - HIGH_RES: OPUS, near-lossless transparent quality
- * - HIGH_RES_LOSSLESS: Maximum available quality, OPUS at highest bitrate
+ * - HIGH_QUALITY: AAC 256kbps, standard quality
+ * - BEST: OPUS at highest available bitrate (default)
  */
 enum class StreamQuality(
     val bitrate: Int,
     val displayName: String,
     val description: String,
     val isHighRes: Boolean = false,
-    val isLossless: Boolean = false,
     val preferredCodec: String = "any",
 ) {
     LOW(
@@ -38,17 +35,9 @@ enum class StreamQuality(
     ),
     BEST(
         bitrate = 256,
-        displayName = "High-Res",
+        displayName = "Very High (Opus)",
         description = "OPUS 256 kbps · Best available audio quality",
         isHighRes = true,
-        preferredCodec = "opus",
-    ),
-    LOSSLESS(
-        bitrate = 512,
-        displayName = "High-Res Lossless",
-        description = "OPUS max · Best available quality",
-        isHighRes = true,
-        isLossless = true,
         preferredCodec = "opus",
     );
 
@@ -61,7 +50,6 @@ enum class StreamQuality(
             MEDIUM -> 0.5f
             HIGH -> 1.0f
             BEST -> 1.2f
-            LOSSLESS -> 2.5f
         }
 
     /**
@@ -72,14 +60,12 @@ enum class StreamQuality(
             LOW -> "LOW"
             MEDIUM -> "AAC"
             HIGH -> "AAC"
-            BEST -> "Hi-Res"
-            LOSSLESS -> "Lossless"
+            BEST -> "OPUS"
         }
 
     companion object {
         fun fromBitrate(bitrate: Int): StreamQuality {
             return when {
-                bitrate >= 512 -> LOSSLESS
                 bitrate >= 256 -> BEST
                 bitrate >= 192 -> HIGH
                 bitrate >= 128 -> MEDIUM
@@ -88,7 +74,9 @@ enum class StreamQuality(
         }
 
         fun fromName(name: String): StreamQuality {
-            return entries.find { it.name == name } ?: HIGH
+            // Legacy migration: LOSSLESS -> BEST
+            if (name == "LOSSLESS") return BEST
+            return entries.find { it.name == name } ?: BEST
         }
     }
 }

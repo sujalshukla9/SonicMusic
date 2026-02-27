@@ -3,6 +3,7 @@ package com.sonicmusic.app.presentation.ui.theme
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -11,14 +12,17 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.ThemeMode
-import com.sonicmusic.app.presentation.ui.player.rememberPlayerArtworkPalette
+import com.sonicmusic.app.presentation.viewmodel.ThemeViewModel
 
 private val DarkColorScheme = darkColorScheme(
     primary = SonicDarkPrimary,
@@ -48,7 +52,12 @@ private val DarkColorScheme = darkColorScheme(
     scrim = SonicDarkScrim,
     inverseSurface = SonicDarkInverseSurface,
     inverseOnSurface = SonicDarkInverseOnSurface,
-    inversePrimary = SonicDarkInversePrimary
+    inversePrimary = SonicDarkInversePrimary,
+    surfaceContainerLowest = SonicDarkSurfaceContainerLowest,
+    surfaceContainerLow = SonicDarkSurfaceContainerLow,
+    surfaceContainer = SonicDarkSurfaceContainer,
+    surfaceContainerHigh = SonicDarkSurfaceContainerHigh,
+    surfaceContainerHighest = SonicDarkSurfaceContainerHighest
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -79,51 +88,108 @@ private val LightColorScheme = lightColorScheme(
     scrim = SonicLightScrim,
     inverseSurface = SonicLightInverseSurface,
     inverseOnSurface = SonicLightInverseOnSurface,
-    inversePrimary = SonicLightInversePrimary
+    inversePrimary = SonicLightInversePrimary,
+    surfaceContainerLowest = SonicLightSurfaceContainerLowest,
+    surfaceContainerLow = SonicLightSurfaceContainerLow,
+    surfaceContainer = SonicLightSurfaceContainer,
+    surfaceContainerHigh = SonicLightSurfaceContainerHigh,
+    surfaceContainerHighest = SonicLightSurfaceContainerHighest
 )
 
 private val SonicShapes = Shapes(
-    extraSmall = RoundedCornerShape(10.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(18.dp),
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(32.dp)
+    extraLarge = RoundedCornerShape(28.dp)
 )
+
+private const val DEFAULT_DYNAMIC_SEED = 0xFF4A7DFF.toInt()
 
 @Composable
 fun SonicMusicTheme(
-    themeMode: ThemeMode = ThemeMode.SYSTEM,
-    dynamicColor: Boolean = true,
-    dynamicColorIntensity: Int = 85,
+    themeViewModel: ThemeViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
     artworkUrl: String? = null,
     content: @Composable () -> Unit
 ) {
-    val darkTheme = when (themeMode) {
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK -> true
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    val themeMode by themeViewModel.themeMode.collectAsStateWithLifecycle()
+    val darkMode by themeViewModel.darkMode.collectAsStateWithLifecycle()
+    val seedColor by themeViewModel.seedColor.collectAsStateWithLifecycle()
+    val paletteStyle by themeViewModel.paletteStyle.collectAsStateWithLifecycle()
+    val isPureBlack by themeViewModel.pureBlack.collectAsStateWithLifecycle()
+    val dynamicColorsEnabled by themeViewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
+    val dynamicColorIntensity by themeViewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
+    
+    val context = LocalContext.current
+
+    androidx.compose.runtime.LaunchedEffect(artworkUrl) {
+        themeViewModel.onAlbumArtChanged(artworkUrl)
     }
 
-    val baseColorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    val isDark = when (darkMode) {
+        com.sonicmusic.app.domain.model.DarkMode.LIGHT -> false
+        com.sonicmusic.app.domain.model.DarkMode.DARK -> true
+        com.sonicmusic.app.domain.model.DarkMode.SYSTEM -> isSystemInDarkTheme()
+    }
+
+    val dynamicStrength = (dynamicColorIntensity.coerceIn(0, 100) / 100f)
+
+    val targetColorScheme = androidx.compose.runtime.remember(
+        themeMode,
+        seedColor,
+        isDark,
+        paletteStyle,
+        isPureBlack,
+        dynamicColorsEnabled,
+        dynamicStrength
+    ) {
+        val baseScheme = if (isDark) DarkColorScheme else LightColorScheme
+        fun applyDynamicStrength(dynamicScheme: ColorScheme): ColorScheme {
+            if (!dynamicColorsEnabled) return baseScheme
+            if (dynamicStrength <= 0.001f) return baseScheme
+            if (dynamicStrength >= 0.999f) return dynamicScheme
+            return blendColorScheme(baseScheme, dynamicScheme, dynamicStrength)
         }
 
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
+        when (themeMode) {
+            ThemeMode.DEFAULT -> {
+                baseScheme
+            }
+            ThemeMode.DYNAMIC -> {
+                val seed = if (dynamicColorsEnabled) {
+                    seedColor ?: DEFAULT_DYNAMIC_SEED
+                } else {
+                    DEFAULT_DYNAMIC_SEED
+                }
+
+                if (isPureBlack) {
+                    DynamicColorSchemeFactory.generatePureBlackScheme(seed)
+                } else {
+                    val dynamicScheme = DynamicColorSchemeFactory.generateColorScheme(seed, isDark, paletteStyle)
+                    applyDynamicStrength(dynamicScheme)
+                }
+            }
+            ThemeMode.MATERIAL_YOU -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val systemScheme = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                    if (isPureBlack) systemScheme.copy(background = androidx.compose.ui.graphics.Color.Black, surface = androidx.compose.ui.graphics.Color.Black) else systemScheme
+                } else {
+                    baseScheme
+                }
+            }
+            ThemeMode.PURE_BLACK -> {
+                val seed = if (dynamicColorsEnabled) {
+                    seedColor ?: DEFAULT_DYNAMIC_SEED
+                } else {
+                    DEFAULT_DYNAMIC_SEED
+                }
+                DynamicColorSchemeFactory.generatePureBlackScheme(seed)
+            }
+        }
     }
-    val colorScheme = if (dynamicColor && !artworkUrl.isNullOrBlank()) {
-        rememberPlayerArtworkPalette(
-            artworkUrl = artworkUrl,
-            fallbackColorScheme = baseColorScheme,
-            enabled = true,
-            intensity = dynamicColorIntensity / 100f
-        ).colorScheme
-    } else {
-        baseColorScheme
-    }
-    val useLightSystemBars = colorScheme.surface.luminance() > 0.5f
+
+    val animatedColorScheme = targetColorScheme.animated()
+    val useLightSystemBars = animatedColorScheme.surface.luminance() > 0.5f
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -138,10 +204,67 @@ fun SonicMusicTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        shapes = SonicShapes,
-        content = content
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalDynamicThemeState provides DynamicThemeState(
+            seedColor = seedColor?.let { androidx.compose.ui.graphics.Color(it) } ?: androidx.compose.ui.graphics.Color(0xFF4A7DFF),
+            isDark = isDark,
+            themeMode = themeMode
+        )
+    ) {
+        MaterialTheme(
+            colorScheme = animatedColorScheme,
+            typography = Typography,
+            shapes = SonicShapes,
+            content = content
+        )
+    }
+}
+
+private fun blendColorScheme(
+    from: ColorScheme,
+    to: ColorScheme,
+    fraction: Float
+): ColorScheme {
+    val t = fraction.coerceIn(0f, 1f)
+    fun c(start: androidx.compose.ui.graphics.Color, end: androidx.compose.ui.graphics.Color) =
+        lerp(start, end, t)
+
+    return from.copy(
+        primary = c(from.primary, to.primary),
+        onPrimary = c(from.onPrimary, to.onPrimary),
+        primaryContainer = c(from.primaryContainer, to.primaryContainer),
+        onPrimaryContainer = c(from.onPrimaryContainer, to.onPrimaryContainer),
+        inversePrimary = c(from.inversePrimary, to.inversePrimary),
+        secondary = c(from.secondary, to.secondary),
+        onSecondary = c(from.onSecondary, to.onSecondary),
+        secondaryContainer = c(from.secondaryContainer, to.secondaryContainer),
+        onSecondaryContainer = c(from.onSecondaryContainer, to.onSecondaryContainer),
+        tertiary = c(from.tertiary, to.tertiary),
+        onTertiary = c(from.onTertiary, to.onTertiary),
+        tertiaryContainer = c(from.tertiaryContainer, to.tertiaryContainer),
+        onTertiaryContainer = c(from.onTertiaryContainer, to.onTertiaryContainer),
+        background = c(from.background, to.background),
+        onBackground = c(from.onBackground, to.onBackground),
+        surface = c(from.surface, to.surface),
+        onSurface = c(from.onSurface, to.onSurface),
+        surfaceVariant = c(from.surfaceVariant, to.surfaceVariant),
+        onSurfaceVariant = c(from.onSurfaceVariant, to.onSurfaceVariant),
+        surfaceTint = c(from.surfaceTint, to.surfaceTint),
+        inverseSurface = c(from.inverseSurface, to.inverseSurface),
+        inverseOnSurface = c(from.inverseOnSurface, to.inverseOnSurface),
+        error = c(from.error, to.error),
+        onError = c(from.onError, to.onError),
+        errorContainer = c(from.errorContainer, to.errorContainer),
+        onErrorContainer = c(from.onErrorContainer, to.onErrorContainer),
+        outline = c(from.outline, to.outline),
+        outlineVariant = c(from.outlineVariant, to.outlineVariant),
+        scrim = c(from.scrim, to.scrim),
+        surfaceBright = c(from.surfaceBright, to.surfaceBright),
+        surfaceDim = c(from.surfaceDim, to.surfaceDim),
+        surfaceContainer = c(from.surfaceContainer, to.surfaceContainer),
+        surfaceContainerHigh = c(from.surfaceContainerHigh, to.surfaceContainerHigh),
+        surfaceContainerHighest = c(from.surfaceContainerHighest, to.surfaceContainerHighest),
+        surfaceContainerLow = c(from.surfaceContainerLow, to.surfaceContainerLow),
+        surfaceContainerLowest = c(from.surfaceContainerLowest, to.surfaceContainerLowest)
     )
 }

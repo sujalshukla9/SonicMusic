@@ -9,7 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +21,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -30,8 +31,8 @@ fun RecentlyPlayedScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LibraryViewModel = hiltViewModel()
 ) {
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
+    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -50,14 +51,12 @@ fun RecentlyPlayedScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            SongListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else if (recentlyPlayed.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -121,8 +120,8 @@ private fun RecentlyPlayedListItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
-            model = history.thumbnailUrl,
+        com.sonicmusic.app.presentation.ui.components.SongThumbnail(
+            artworkUrl = history.thumbnailUrl,
             contentDescription = null,
             modifier = Modifier
                 .size(56.dp)

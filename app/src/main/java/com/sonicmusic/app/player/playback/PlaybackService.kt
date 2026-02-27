@@ -1,4 +1,4 @@
-package com.sonicmusic.app.service
+package com.sonicmusic.app.player.playback
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -18,8 +20,11 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -32,6 +37,8 @@ import com.sonicmusic.app.R
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.SongRepository
+import com.sonicmusic.app.player.audio.AudioEngine
+import com.sonicmusic.app.player.notification.MediaNotificationProvider
 
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
@@ -77,7 +84,7 @@ class PlaybackService : MediaSessionService() {
     lateinit var songRepository: SongRepository
 
     companion object {
-        private const val TAG = "PlaybackService"
+        private const val TAG = "SonicPlayback"
         private const val CHANNEL_ID = "sonic_music_playback"
         const val NOTIFICATION_ID = 1
 
@@ -99,6 +106,12 @@ class PlaybackService : MediaSessionService() {
         // Retry configuration
         private const val MAX_RETRY_ATTEMPTS = 3
         private const val RETRY_DELAY_MS = 1000L
+
+        // Stream request headers (YouTube/CDN is stricter with generic agents on some devices)
+        private const val YOUTUBE_STREAM_USER_AGENT =
+            "com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip"
+        private const val HTTP_CONNECT_TIMEOUT_MS = 20_000
+        private const val HTTP_READ_TIMEOUT_MS = 20_000
     }
     
     private var mediaSession: MediaSession? = null
@@ -115,32 +128,12 @@ class PlaybackService : MediaSessionService() {
     private var crossfadeDurationMs: Long = 0L
     private var isCrossfadeTransitionRunning: Boolean = false
     
-    // Binder for external access
-    private val binder = Binder()
-    
-    /**
-     * Binder class for external services to access player and session
-     */
-    inner class Binder : android.os.Binder() {
-        val player: ExoPlayer
-            get() = this@PlaybackService.player ?: throw IllegalStateException("Player not initialized")
-        
-        val mediaSession: MediaSession
-            get() = this@PlaybackService.mediaSession ?: throw IllegalStateException("MediaSession not initialized")
-    }
-    
-    override fun onBind(intent: Intent?): android.os.IBinder? {
-        // For media browser clients, use the binder
-        return if (intent?.action == "android.media.browse.MediaBrowserService") {
-            binder
-        } else {
-            super.onBind(intent)
-        }
-    }
+    // Bug 1 fix: Removed custom onBind/Binder that was intercepting Media3's
+    // MediaController IPC channel. Let MediaSessionService.onBind() handle everything.
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "🎵 PlaybackService created")
+        android.util.Log.d(TAG, "🟢 onCreate — PID:${android.os.Process.myPid()} TID:${Thread.currentThread().id}")
         initializePlayer()
         observePlaybackSettings()
         setupNotificationProvider()
@@ -155,10 +148,13 @@ class PlaybackService : MediaSessionService() {
                 .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
                 .build()
 
+            val mediaSourceFactory = buildMediaSourceFactory()
+
             player = ExoPlayer.Builder(this)
                 .setAudioAttributes(audioAttributes, true)
                 .setHandleAudioBecomingNoisy(true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
+                .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(
                     DefaultRenderersFactory(this)
                         .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
@@ -178,27 +174,46 @@ class PlaybackService : MediaSessionService() {
             .apply {
                 // Set up player listener for state changes
                 addListener(createPlayerListener())
-                
 
-                
-                // Initialize premium audio engine
-                audioEngine.initialize(audioSessionId)
+                // Defer audio engine init off main thread to reduce startup jank
+                val sessionId = audioSessionId
+                serviceScope.launch(Dispatchers.Default) {
+                    audioEngine.initialize(sessionId)
+                }
             }
 
         // Create MediaSession for system integration with custom session commands
         mediaSession = player?.let { exoPlayer ->
             MediaSession.Builder(this, exoPlayer)
                 .setCallback(MediaSessionCallback())
-                .setCustomLayout(createCustomLayout())
+                .setCustomLayout(updateCustomLayout(false, exoPlayer.repeatMode)) // Default to not liked initially
                 .build()
         }
 
         Log.d(TAG, "✅ Player initialized with custom buffer config")
     }
+
+    private fun buildMediaSourceFactory(): DefaultMediaSourceFactory {
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(YOUTUBE_STREAM_USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
+            .setDefaultRequestProperties(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Accept-Language" to "en-US,en;q=0.9",
+                    "Referer" to "https://www.youtube.com/",
+                ),
+            )
+
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
+        return DefaultMediaSourceFactory(dataSourceFactory)
+    }
     
     private fun setupNotificationProvider() {
         mediaNotificationProvider = MediaNotificationProvider(this) { songId ->
-            runBlocking { songRepository.isLiked(songId) }
+            songRepository.isLiked(songId)
         }
         setMediaNotificationProvider(mediaNotificationProvider!!)
         Log.d(TAG, "✅ Modern notification provider set up")
@@ -320,26 +335,10 @@ class PlaybackService : MediaSessionService() {
         }
     }
     
-    private fun createCustomLayout(): ImmutableList<CommandButton> {
-        // Create custom command buttons for like and repeat
-        val likeButton = CommandButton.Builder()
-            .setDisplayName("Like")
-            .setIconResId(R.drawable.ic_notification_like)
-            .setSessionCommand(SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY))
-            .build()
-            
-        val repeatButton = CommandButton.Builder()
-            .setDisplayName("Repeat")
-            .setIconResId(R.drawable.ic_notification_repeat)
-            .setSessionCommand(SessionCommand(ACTION_TOGGLE_REPEAT, Bundle.EMPTY))
-            .build()
-            
-        return ImmutableList.of(likeButton, repeatButton)
-    }
+
     
     private fun createPlayerListener() = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            Log.d(TAG, "📊 Playing: $isPlaying")
             if (isPlaying) {
                 startCrossfadeMonitor()
             } else {
@@ -352,10 +351,20 @@ class PlaybackService : MediaSessionService() {
             if (!isCrossfadeTransitionRunning) {
                 player?.volume = 1f
             }
+            
+            // Update custom layout for the new track
+            mediaItem?.mediaId?.let { songId ->
+                serviceScope.launch {
+                    val isLiked = withContext(Dispatchers.IO) {
+                        runCatching { songRepository.isLiked(songId) }.getOrDefault(false)
+                    }
+                    val currentRepeatMode = player?.repeatMode ?: Player.REPEAT_MODE_OFF
+                    mediaSession?.setCustomLayout(updateCustomLayout(isLiked, currentRepeatMode))
+                }
+            }
         }
         
         override fun onPlaybackStateChanged(playbackState: Int) {
-            Log.d(TAG, "📊 State: ${playbackStateToString(playbackState)}")
             when (playbackState) {
                 Player.STATE_READY -> {
                     // Reset retry counter on successful playback
@@ -374,12 +383,26 @@ class PlaybackService : MediaSessionService() {
             }
         }
         
-        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-            Log.d(TAG, "🔀 Shuffle mode: $shuffleModeEnabled")
-        }
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) { }
         
         override fun onRepeatModeChanged(repeatMode: Int) {
-            Log.d(TAG, "🔁 Repeat mode: ${repeatModeToString(repeatMode)}")
+            // Update custom layout to reflect new repeat mode
+            val currentPlayer = player ?: return
+            val currentMediaItem = currentPlayer.currentMediaItem
+            val songId = currentMediaItem?.mediaId.orEmpty()
+            
+            serviceScope.launch {
+                val isLiked = if (songId.isNotBlank()) {
+                     withContext(Dispatchers.IO) {
+                        runCatching { songRepository.isLiked(songId) }.getOrDefault(false)
+                    }
+                } else false
+                
+                mediaSession?.setCustomLayout(updateCustomLayout(isLiked, repeatMode))
+                mediaSession?.let { session ->
+                    mediaNotificationProvider?.refreshNotification(session)
+                }
+            }
         }
         
         override fun onPlayerError(error: PlaybackException) {
@@ -401,15 +424,26 @@ class PlaybackService : MediaSessionService() {
 
         lastErrorCode = error.errorCode
 
+        if (isNetworkError && !isNetworkAvailable()) {
+            Log.d(TAG, "📴 Network unavailable, skipping auto-retry")
+            retryAttempts = 0
+            return
+        }
+
         when {
             // HTTP errors (403/410) - URL likely expired, don't retry
             error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
-                Log.d(TAG, "❌ HTTP error (URL expired), skipping to next or stopping")
+                Log.d(TAG, "❌ HTTP error (likely expired URL), waiting for URL refresh callback")
                 retryAttempts = 0
-                if (p.hasNextMediaItem()) {
-                    p.seekToNext()
-                    p.prepare()
-                }
+                p.pause()
+            }
+
+            // Corrupt/missing stream URL cases should also refresh the current track URL.
+            error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
+                error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> {
+                Log.d(TAG, "❌ Stream URL invalid/missing, waiting for URL refresh callback")
+                retryAttempts = 0
+                p.pause()
             }
 
             // Network errors with automatic retry
@@ -437,6 +471,18 @@ class PlaybackService : MediaSessionService() {
             }
         }
     }
+
+    private fun isNetworkAvailable(): Boolean {
+        return try {
+            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = connectivityManager.activeNetwork ?: return false
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } catch (_: Exception) {
+            false
+        }
+    }
     
     private fun playbackStateToString(state: Int): String = when (state) {
         Player.STATE_IDLE -> "IDLE"
@@ -456,6 +502,11 @@ class PlaybackService : MediaSessionService() {
 
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.d(TAG, "🔵 onStartCommand — action=${intent?.action}, startId=$startId, flags=$flags")
+        
+        // Let MediaSessionService handle media button intents first
+        super.onStartCommand(intent, flags, startId)
+        
         when (intent?.action) {
             ACTION_PLAY -> player?.play()
             ACTION_PAUSE -> player?.pause()
@@ -495,7 +546,8 @@ class PlaybackService : MediaSessionService() {
                 stopSelf()
             }
         }
-        return super.onStartCommand(intent, flags, startId)
+        // Bug 4 fix: START_STICKY keeps the service alive when the app is swiped from recents
+        return android.app.Service.START_STICKY
     }
     
 
@@ -504,8 +556,17 @@ class PlaybackService : MediaSessionService() {
         return mediaSession
     }
     
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        android.util.Log.d(TAG, "🟡 onTaskRemoved — isPlaying=${player?.isPlaying}")
+        // Keep playback alive if currently playing
+        if (player?.isPlaying != true) {
+            stopSelf()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
-        Log.d(TAG, "🔚 PlaybackService destroyed")
+        android.util.Log.d(TAG, "🔴 onDestroy")
         skipSilenceJob?.cancel()
         gaplessPlaybackJob?.cancel()
         crossfadeSettingsJob?.cancel()
@@ -597,7 +658,10 @@ class PlaybackService : MediaSessionService() {
             }
             val shouldLike = !wasLiked
 
-            // Optimistic update for immediate button feedback in notification.
+            // Update MediaSession custom layout for System Media Player integration
+            mediaSession?.setCustomLayout(updateCustomLayout(shouldLike, player?.repeatMode ?: Player.REPEAT_MODE_OFF))
+
+            // Optimistic update for notification shade
             mediaSession?.let { session ->
                 mediaNotificationProvider?.setLikedStateOverride(songId, shouldLike)
                 mediaNotificationProvider?.refreshNotification(session)
@@ -620,11 +684,40 @@ class PlaybackService : MediaSessionService() {
                 }
             }.onFailure { error ->
                 Log.e(TAG, "Failed to toggle like from notification", error)
+                // Revert UI on failure
+                mediaSession?.setCustomLayout(updateCustomLayout(wasLiked, player?.repeatMode ?: Player.REPEAT_MODE_OFF))
                 mediaNotificationProvider?.setLikedStateOverride(songId, wasLiked)
                 mediaSession?.let { session ->
                     mediaNotificationProvider?.refreshNotification(session)
                 }
             }
         }
+    }
+
+    private fun updateCustomLayout(isLiked: Boolean, repeatMode: Int): ImmutableList<CommandButton> {
+        val likeButton = CommandButton.Builder()
+            .setDisplayName(if (isLiked) "Unlike" else "Like")
+            .setIconResId(if (isLiked) R.drawable.ic_notification_like else R.drawable.ic_notification_like_outline)
+            .setSessionCommand(SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY))
+            .build()
+            
+        val repeatIcon = when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> R.drawable.ic_notification_repeat_one
+            Player.REPEAT_MODE_ALL -> R.drawable.ic_notification_repeat
+            else -> R.drawable.ic_notification_repeat
+        }
+        val repeatLabel = when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> "Repeat One"
+            Player.REPEAT_MODE_ALL -> "Repeat All"
+            else -> "Repeat Off"
+        }
+        
+        val repeatButton = CommandButton.Builder()
+            .setDisplayName(repeatLabel)
+            .setIconResId(repeatIcon)
+            .setSessionCommand(SessionCommand(ACTION_TOGGLE_REPEAT, Bundle.EMPTY))
+            .build()
+            
+        return ImmutableList.of(likeButton, repeatButton)
     }
 }

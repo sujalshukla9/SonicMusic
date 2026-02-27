@@ -19,13 +19,19 @@ object DatabaseModule {
     fun provideDatabase(
         @ApplicationContext context: Context
     ): SonicMusicDatabase {
-        return Room.databaseBuilder(
+        val builder = Room.databaseBuilder(
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
-        )
-            .fallbackToDestructiveMigration()
-            .build()
+        ).fallbackToDestructiveMigration()
+
+        if (com.sonicmusic.app.BuildConfig.DEBUG) {
+            builder.setQueryCallback({ sqlQuery, bindArgs ->
+                android.util.Log.d("RoomQuery", "SQL: $sqlQuery | Args: $bindArgs")
+            }, java.util.concurrent.Executors.newSingleThreadExecutor())
+        }
+
+        return builder.build()
     }
 
     @Provides
@@ -45,4 +51,10 @@ object DatabaseModule {
 
     @Provides
     fun provideDownloadedSongDao(database: SonicMusicDatabase) = database.downloadedSongDao()
+
+    @Provides
+    fun provideFollowedArtistDao(database: SonicMusicDatabase) = database.followedArtistDao()
+
+    @Provides
+    fun provideArtistPageDao(database: SonicMusicDatabase) = database.artistPageDao()
 }

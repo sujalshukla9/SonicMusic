@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -32,17 +33,18 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Shuffle
+import com.sonicmusic.app.presentation.ui.components.pullrefresh.M3ExpressivePullToRefresh
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import com.sonicmusic.app.presentation.ui.components.HomeScreenSkeleton
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -60,7 +62,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -76,17 +77,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.presentation.ui.components.M3LoadingIndicator
-import com.sonicmusic.app.presentation.ui.components.ContainedM3LoadingIndicator
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.HomeViewModel
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.pulltorefresh.PullToRefreshState
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import java.util.Calendar
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.material.ExperimentalMaterialApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
@@ -100,12 +97,26 @@ fun HomeScreen(
     onShowFullPlayer: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
-    val homeContent by viewModel.homeContent.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val isRefreshing by viewModel.isRefreshing.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val countryName by viewModel.countryName.collectAsState()
+    val homeContent by viewModel.homeContent.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    val countryName by viewModel.countryName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val onHomeSectionSongClick: (String, Song) -> Unit = { sectionKey, song ->
+        if (viewModel.onSectionSongClick(sectionKey, song)) {
+            onShowFullPlayer()
+        }
+    }
+    val onHomeSectionPlay: (String, Boolean) -> Unit = { sectionKey, shuffle ->
+        if (viewModel.playSection(sectionKey, shuffle = shuffle)) {
+            onShowFullPlayer()
+        }
+    }
+    val onHomeSectionSeeAll: (String) -> Unit = { sectionKey ->
+        viewModel.onSectionSeeAll(sectionKey)?.let(onNavigateToHomeSection)
+    }
 
 
     // Show error snackbar with retry action
@@ -128,23 +139,31 @@ fun HomeScreen(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
-        
-        if (isLoading && homeContent.listenAgain.isEmpty()) {
-            // Loading state
-            // Loading state
-            M3LoadingIndicator()
+        val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
+
+        if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty()) {
+            // No internet and no cached content
+            com.sonicmusic.app.presentation.ui.components.NoInternetView(
+                onRetry = { viewModel.loadHomeContent() },
+                modifier = Modifier.padding(paddingValues)
+            )
+        } else if (isLoading && homeContent.listenAgain.isEmpty()) {
+            HomeScreenSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding
+                )
+            )
         } else {
-            Box(
+            M3ExpressivePullToRefresh(
+                isRefreshing = isRefreshing,
+                onRefresh = { viewModel.refreshHomeContent() },
+                refreshResult = refreshResult,
+                onRefreshResultConsumed = { viewModel.clearRefreshResult() },
+                indicatorPadding = WindowInsets.statusBars.asPaddingValues(),
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-            ) {
-            val pullRefreshState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
-            
-            androidx.compose.material3.pulltorefresh.PullToRefreshBox(
-                isRefreshing = isRefreshing,
-                onRefresh = { viewModel.refreshHomeContent() },
-                state = pullRefreshState
             ) {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -153,13 +172,13 @@ fun HomeScreen(
                     // ═══════════════════════════════════════════
                     // 1️⃣ HEADER - Greeting + Search + Settings
                     // ═══════════════════════════════════════════
-                    item {
+                    item(key = "home_header") {
                         HomeHeader(
                             onSearchClick = onNavigateToSearch,
                             onSettingsClick = onNavigateToSettings
                         )
                     }
-                    item {
+                    item(key = "quick_actions") {
                         HomeQuickActions(
                             onLikedSongsClick = onNavigateToLikedSongs,
                             onDownloadsClick = onNavigateToDownloads,
@@ -175,29 +194,31 @@ fun HomeScreen(
                     // Shows single last-played song only (ViTune style)
                     // ═══════════════════════════════════════════
                     if (homeContent.listenAgain.isNotEmpty()) {
-                        // User has history — show only the most recent song
-                        item {
+                        // User has history — show the most recent song with full section queue
+                        item(key = "continue_listening") {
                             ContinueListeningSection(
                                 lastSong = homeContent.listenAgain.first(),
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_LISTEN_AGAIN, song)
                                 }
                             )
                         }
                     } else if (homeContent.quickPicks.isNotEmpty()) {
                         // New user — show "For You" horizontal row
-                        item {
+                        item(key = "for_you") {
                             ForYouSection(
                                 songs = homeContent.quickPicks.take(10),
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_QUICK_PICKS, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.quickPicks) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_QUICK_PICKS)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_QUICK_PICKS)
                                 }
                             )
                         }
@@ -214,25 +235,24 @@ fun HomeScreen(
                     } else {
                         homeContent.trending.take(27)
                     }
+                    val listenAgainSectionKey = if (hasHistory) {
+                        HomeViewModel.SECTION_LISTEN_AGAIN
+                    } else {
+                        HomeViewModel.SECTION_TRENDING
+                    }
                     
                     if (listenAgainGridSongs.isNotEmpty()) {
-                        item {
+                        item(key = "listen_again_grid") {
                             ListenAgainGrid(
                                 songs = listenAgainGridSongs,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(listenAgainSectionKey, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(listenAgainGridSongs) },
-                                onShuffle = { viewModel.playAllSongs(listenAgainGridSongs, shuffle = true) },
+                                onPlayAll = { onHomeSectionPlay(listenAgainSectionKey, false) },
+                                onShuffle = { onHomeSectionPlay(listenAgainSectionKey, true) },
                                 title = if (hasHistory) "Listen Again" else "Trending",
                                 onSeeAllClick = {
-                                    val sectionKey = if (hasHistory) {
-                                        HomeViewModel.SECTION_LISTEN_AGAIN
-                                    } else {
-                                        HomeViewModel.SECTION_TRENDING
-                                    }
-                                    onNavigateToHomeSection(sectionKey)
+                                    onHomeSectionSeeAll(listenAgainSectionKey)
                                 }
                             )
                         }
@@ -242,17 +262,20 @@ fun HomeScreen(
                     // 4️⃣ QUICK PICKS - Horizontal Cards
                     // ═══════════════════════════════════════════
                     if (homeContent.quickPicks.isNotEmpty()) {
-                        item {
+                        item(key = "quick_picks") {
                             QuickPicksSection(
                                 songs = homeContent.quickPicks,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_QUICK_PICKS, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.quickPicks) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.quickPicks, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_QUICK_PICKS)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_QUICK_PICKS)
                                 }
                             )
                         }
@@ -262,19 +285,22 @@ fun HomeScreen(
                     // 4.5️⃣ FOR YOU - Personalized Based on User Taste
                     // ═══════════════════════════════════════════
                     if (homeContent.personalizedForYou.isNotEmpty()) {
-                        item {
+                        item(key = "personalized_for_you") {
                             SongSection(
                                 title = "Made for You",
                                 subtitle = "Based on your listening habits",
                                 songs = homeContent.personalizedForYou,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_PERSONALIZED, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.personalizedForYou) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.personalizedForYou, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_PERSONALIZED, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_PERSONALIZED, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_PERSONALIZED)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_PERSONALIZED)
                                 },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
@@ -285,7 +311,7 @@ fun HomeScreen(
                     // 5️⃣ TRENDING NOW
                     // ═══════════════════════════════════════════
                     if (homeContent.trending.isNotEmpty()) {
-                        item {
+                        item(key = "trending") {
                             SongSection(
                                 title = "Trending Now",
                                 subtitle = if (!countryName.isNullOrBlank()) {
@@ -295,13 +321,12 @@ fun HomeScreen(
                                 },
                                 songs = homeContent.trending,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_TRENDING, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.trending) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.trending, shuffle = true) },
+                                onPlayAll = { onHomeSectionPlay(HomeViewModel.SECTION_TRENDING, false) },
+                                onShuffle = { onHomeSectionPlay(HomeViewModel.SECTION_TRENDING, true) },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_TRENDING)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_TRENDING)
                                 },
                                 cardStyle = CardStyle.COMPACT_ROW
                             )
@@ -312,19 +337,22 @@ fun HomeScreen(
                     // 6️⃣ NEW RELEASES
                     // ═══════════════════════════════════════════
                     if (homeContent.newReleases.isNotEmpty()) {
-                        item {
+                        item(key = "new_releases") {
                             SongSection(
                                 title = "New Releases",
                                 subtitle = "Fresh tracks just dropped",
                                 songs = homeContent.newReleases,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_NEW_RELEASES, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.newReleases) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.newReleases, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_NEW_RELEASES, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_NEW_RELEASES, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_NEW_RELEASES)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_NEW_RELEASES)
                                 },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
@@ -335,19 +363,22 @@ fun HomeScreen(
                     // 7️⃣ ENGLISH HITS
                     // ═══════════════════════════════════════════
                     if (homeContent.englishHits.isNotEmpty()) {
-                        item {
+                        item(key = "english_hits") {
                             SongSection(
                                 title = "English Hits",
                                 subtitle = "Top international tracks",
                                 songs = homeContent.englishHits,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_ENGLISH_HITS, song)
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.englishHits) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.englishHits, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_ENGLISH_HITS, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_ENGLISH_HITS, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_ENGLISH_HITS)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_ENGLISH_HITS)
                                 },
                                 cardStyle = CardStyle.LARGE_SQUARE
                             )
@@ -358,19 +389,25 @@ fun HomeScreen(
                     // 7.5️⃣ FORGOTTEN FAVORITES
                     // ═══════════════════════════════════════════
                     if (homeContent.forgottenFavorites.isNotEmpty()) {
-                        item {
+                        item(key = "forgotten_favorites") {
                             SongSection(
                                 title = "Forgotten Favorites",
                                 subtitle = "Rediscover songs you loved",
                                 songs = homeContent.forgottenFavorites,
                                 onSongClick = { song ->
-                                    viewModel.onSongClickWithRadioQueue(song)
-                                    onShowFullPlayer()
+                                    onHomeSectionSongClick(
+                                        HomeViewModel.SECTION_FORGOTTEN_FAVORITES,
+                                        song
+                                    )
                                 },
-                                onPlayAll = { viewModel.playAllSongs(homeContent.forgottenFavorites) },
-                                onShuffle = { viewModel.playAllSongs(homeContent.forgottenFavorites, shuffle = true) },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, true)
+                                },
                                 onSeeAllClick = {
-                                    onNavigateToHomeSection(HomeViewModel.SECTION_FORGOTTEN_FAVORITES)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_FORGOTTEN_FAVORITES)
                                 },
                                 cardStyle = CardStyle.MEDIUM_CARD
                             )
@@ -380,28 +417,27 @@ fun HomeScreen(
                     // ═══════════════════════════════════════════
                     // ARTIST SECTIONS (Based on history)
                     // ═══════════════════════════════════════════
-                    items(homeContent.artists) { artistSection ->
+                    items(
+                        items = homeContent.artists,
+                        key = { artistSection -> artistSection.artist.id }
+                    ) { artistSection ->
+                        val artistSectionKey = HomeViewModel.artistSectionKey(artistSection.artist.id)
                         SongSection(
                             title = "More from ${artistSection.artist.name}",
                             subtitle = "Because you listened",
                             songs = artistSection.songs,
                             onSongClick = { song ->
-                                viewModel.onSongClickWithRadioQueue(song)
-                                onShowFullPlayer()
+                                onHomeSectionSongClick(artistSectionKey, song)
                             },
-                            onPlayAll = { viewModel.playAllSongs(artistSection.songs) },
-                            onShuffle = { viewModel.playAllSongs(artistSection.songs, shuffle = true) },
+                            onPlayAll = { onHomeSectionPlay(artistSectionKey, false) },
+                            onShuffle = { onHomeSectionPlay(artistSectionKey, true) },
                             onSeeAllClick = {
-                                onNavigateToHomeSection(
-                                    HomeViewModel.artistSectionKey(artistSection.artist.id)
-                                )
+                                onHomeSectionSeeAll(artistSectionKey)
                             },
                             cardStyle = CardStyle.MEDIUM_CARD
                         )
                     }
                 }
-
-            }
             }
         }
     }
@@ -416,7 +452,7 @@ private fun HomeHeader(
     onSearchClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
-    val greeting = getGreeting()
+    val greeting = remember { getGreeting() }
     
     Column(
         modifier = Modifier
@@ -447,14 +483,14 @@ private fun HomeHeader(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 IconButton(onClick = onSearchClick) {
                     Icon(
-                        imageVector = Icons.Default.Search,
+                        imageVector = Icons.Rounded.Search,
                         contentDescription = "Search",
                         tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 IconButton(onClick = onSettingsClick) {
                     Icon(
-                        imageVector = Icons.Default.Settings,
+                        imageVector = Icons.Rounded.Settings,
                         contentDescription = "Settings",
                         tint = MaterialTheme.colorScheme.onSurface
                     )
@@ -464,6 +500,12 @@ private fun HomeHeader(
     }
 }
 
+private data class QuickAction(
+    val title: String,
+    val icon: ImageVector,
+    val onClick: () -> Unit
+)
+
 @Composable
 private fun HomeQuickActions(
     onLikedSongsClick: () -> Unit,
@@ -471,18 +513,20 @@ private fun HomeQuickActions(
     onPlaylistsClick: () -> Unit,
     onRecentlyPlayedClick: () -> Unit
 ) {
-    data class QuickAction(
-        val title: String,
-        val icon: ImageVector,
-        val onClick: () -> Unit
-    )
 
-    val actions = listOf(
-        QuickAction("Liked", Icons.Default.Favorite, onLikedSongsClick),
-        QuickAction("Downloads", Icons.Default.Download, onDownloadsClick),
-        QuickAction("Playlists", Icons.AutoMirrored.Filled.PlaylistPlay, onPlaylistsClick),
-        QuickAction("Recent", Icons.Default.History, onRecentlyPlayedClick)
-    )
+    val actions = remember(
+        onLikedSongsClick,
+        onDownloadsClick,
+        onPlaylistsClick,
+        onRecentlyPlayedClick
+    ) {
+        listOf(
+            QuickAction("Liked", Icons.Rounded.Favorite, onLikedSongsClick),
+            QuickAction("Downloads", Icons.Rounded.Download, onDownloadsClick),
+            QuickAction("Playlists", Icons.AutoMirrored.Rounded.PlaylistPlay, onPlaylistsClick),
+            QuickAction("Recent", Icons.Rounded.History, onRecentlyPlayedClick)
+        )
+    }
 
     LazyRow(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
@@ -491,7 +535,7 @@ private fun HomeQuickActions(
         items(actions, key = { it.title }) { action ->
             Surface(
                 modifier = Modifier.clickable(onClick = action.onClick),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(50),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh
             ) {
                 Row(
@@ -599,7 +643,7 @@ private fun ForYouSection(
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Shuffle,
+                        imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Shuffle",
                         tint = MaterialTheme.colorScheme.primary
                     )
@@ -609,7 +653,7 @@ private fun ForYouSection(
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.PlayArrow,
+                        imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = "Play All",
                         modifier = Modifier.size(24.dp)
                     )
@@ -701,7 +745,7 @@ private fun ContinueListeningCard(
                 )
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
+                    imageVector = Icons.Rounded.PlayArrow,
                     contentDescription = "Play",
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(28.dp)
@@ -727,7 +771,7 @@ private fun ListenAgainGrid(
 ) {
     // 3x3 grid = 9 songs per page, 3 pages = 27 songs total
     val songsPerPage = 9
-    val pageCount = (songs.size + songsPerPage - 1) / songsPerPage
+    val pageCount = ((songs.size + songsPerPage - 1) / songsPerPage).coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
     Column(
@@ -768,7 +812,7 @@ private fun ListenAgainGrid(
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Shuffle,
+                            imageVector = Icons.Rounded.Shuffle,
                             contentDescription = "Shuffle",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
@@ -779,7 +823,7 @@ private fun ListenAgainGrid(
                         modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
+                            imageVector = Icons.Rounded.PlayArrow,
                             contentDescription = "Play All",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(24.dp)
@@ -871,7 +915,7 @@ private fun ListenAgainGridItem(
     Card(
         onClick = onClick,
         modifier = modifier.aspectRatio(1f),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         )
@@ -969,7 +1013,7 @@ private fun QuickPicksSection(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Shuffle,
+                        imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Shuffle",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
@@ -980,7 +1024,7 @@ private fun QuickPicksSection(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.PlayArrow,
+                        imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = "Play All",
                         modifier = Modifier.size(20.dp)
                     )
@@ -1012,7 +1056,7 @@ private fun QuickPickCard(
     Card(
         onClick = onClick,
         modifier = Modifier.width(140.dp),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         ),
@@ -1024,7 +1068,7 @@ private fun QuickPickCard(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier
                     .size(140.dp)
-                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
                 contentDescription = song.title
             )
             
@@ -1114,7 +1158,7 @@ private fun SongSection(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Shuffle,
+                        imageVector = Icons.Rounded.Shuffle,
                         contentDescription = "Shuffle",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
@@ -1127,7 +1171,7 @@ private fun SongSection(
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.PlayArrow,
+                        imageVector = Icons.Rounded.PlayArrow,
                         contentDescription = "Play All",
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
@@ -1174,7 +1218,7 @@ private fun SongSection(
                     modifier = Modifier.padding(horizontal = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    songs.take(5).forEach { song ->
+                    songs.take(8).forEach { song ->
                         CompactSongRow(song = song, onClick = { onSongClick(song) })
                     }
                 }
@@ -1241,7 +1285,7 @@ private fun LargeSongCard(
                 )
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
+                    imageVector = Icons.Rounded.PlayArrow,
                     contentDescription = "Play",
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(24.dp)
@@ -1286,7 +1330,7 @@ private fun MediumSongCard(
         // Album art
         ElevatedCard(
             modifier = Modifier.size(140.dp),
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
         ) {
             SongThumbnail(
@@ -1328,7 +1372,7 @@ private fun CompactSongRow(
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         )
@@ -1344,7 +1388,7 @@ private fun CompactSongRow(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(12.dp)),
                 contentDescription = song.title
             )
             
@@ -1383,7 +1427,7 @@ private fun CompactSongRow(
             // Play button
             IconButton(onClick = onClick) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
+                    imageVector = Icons.Rounded.PlayArrow,
                     contentDescription = "Play",
                     tint = MaterialTheme.colorScheme.primary
                 )
@@ -1437,7 +1481,7 @@ private fun ShimmerSongSection() {
             modifier = Modifier
                 .width(160.dp)
                 .height(24.dp)
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(brush)
         )
         
@@ -1448,7 +1492,7 @@ private fun ShimmerSongSection() {
             modifier = Modifier
                 .width(120.dp)
                 .height(16.dp)
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(brush)
         )
         
@@ -1474,7 +1518,7 @@ private fun ShimmerSongCard(brush: Brush) {
         Box(
             modifier = Modifier
                 .size(140.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(16.dp))
                 .background(brush)
         )
         
@@ -1485,7 +1529,7 @@ private fun ShimmerSongCard(brush: Brush) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(16.dp)
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(brush)
         )
         
@@ -1496,7 +1540,7 @@ private fun ShimmerSongCard(brush: Brush) {
             modifier = Modifier
                 .width(80.dp)
                 .height(14.dp)
-                .clip(RoundedCornerShape(4.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(brush)
         )
     }

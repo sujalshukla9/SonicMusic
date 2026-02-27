@@ -9,8 +9,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
-import com.sonicmusic.app.data.util.ThumbnailUrlUtils
+import coil.size.Size
+import com.sonicmusic.app.core.util.ThumbnailUrlUtils
 
 @Composable
 fun SongThumbnail(
@@ -18,22 +20,36 @@ fun SongThumbnail(
     modifier: Modifier = Modifier,
     contentDescription: String? = null,
     contentScale: ContentScale = ContentScale.Crop,
-    crossfade: Boolean = true
+    crossfade: Boolean = true,
+    targetSizePx: Int = 320,
+    highQuality: Boolean = false
 ) {
     val context = LocalContext.current
 
-    val candidateUrls = remember(artworkUrl) {
-        ThumbnailUrlUtils.buildCandidates(artworkUrl)
+    // High quality uses maxresdefault candidates for full-screen artwork;
+    // display quality uses hqdefault (~15KB) for lists/grids.
+    val candidateUrls = remember(artworkUrl, highQuality) {
+        if (highQuality) ThumbnailUrlUtils.buildCandidates(artworkUrl)
+        else ThumbnailUrlUtils.buildDisplayCandidates(artworkUrl)
     }
-    var candidateIndex by remember(artworkUrl) { mutableIntStateOf(0) }
+    var candidateIndex by remember(candidateUrls) { mutableIntStateOf(0) }
     val modelUrl = candidateUrls.getOrNull(candidateIndex) ?: artworkUrl
+    val imageRequest = remember(context, modelUrl, crossfade, targetSizePx) {
+        ImageRequest.Builder(context)
+            .data(modelUrl)
+            .allowHardware(true)
+            .crossfade(crossfade)
+            .size(Size(targetSizePx, targetSizePx))
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .networkCachePolicy(CachePolicy.ENABLED)
+            .placeholder(android.R.color.transparent)
+            .error(android.R.drawable.ic_media_play)
+            .build()
+    }
 
     AsyncImage(
-        model = ImageRequest.Builder(context)
-            .data(modelUrl)
-            .allowHardware(false)
-            .crossfade(crossfade)
-            .build(),
+        model = imageRequest,
         contentDescription = contentDescription,
         modifier = modifier,
         contentScale = contentScale,

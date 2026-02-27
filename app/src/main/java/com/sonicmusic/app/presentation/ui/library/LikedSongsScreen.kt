@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -34,7 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,8 +55,8 @@ fun LikedSongsScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: LikedSongsViewModel = hiltViewModel()
 ) {
-    val likedSongs by viewModel.likedSongs.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
+    val likedSongs by viewModel.likedSongs.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -75,14 +75,12 @@ fun LikedSongsScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            SongListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else if (likedSongs.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -188,8 +186,8 @@ private fun LikedSongItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
-            model = song.thumbnailUrl,
+        com.sonicmusic.app.presentation.ui.components.SongThumbnail(
+            artworkUrl = song.thumbnailUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier

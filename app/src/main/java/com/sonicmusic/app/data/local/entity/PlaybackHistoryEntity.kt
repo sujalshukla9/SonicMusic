@@ -12,5 +12,6 @@ data class PlaybackHistoryEntity(
     val thumbnailUrl: String,
     val playedAt: Long,
     val playDuration: Int,
+    val totalDuration: Int = 0,
     val completed: Boolean
 )

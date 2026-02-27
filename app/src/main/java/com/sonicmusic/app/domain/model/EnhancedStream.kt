@@ -29,6 +29,12 @@ data class EnhancedStream(
     
     @SerializedName("container")
     val container: String = "M4A",
+
+    @SerializedName("processing_chain")
+    val processingChain: List<String> = emptyList(),
+
+    @SerializedName("ai_mastered")
+    val aiMastered: Boolean = false,
 )
 
 /**
@@ -46,4 +52,38 @@ data class TranscodeRequest(
     
     @SerializedName("quality")
     val quality: String = "lossless",
+)
+
+/**
+ * Full backend processing request for FFmpeg + optional AI mastering.
+ */
+data class AudioProcessRequest(
+    @SerializedName("source_url")
+    val sourceUrl: String,
+
+    @SerializedName("output_format")
+    val outputFormat: String = "flac",
+
+    @SerializedName("codec")
+    val codec: String = "flac",
+
+    @SerializedName("quality")
+    val quality: String = "lossless",
+
+    @SerializedName("audio_filters")
+    val audioFilters: String = "loudnorm,acompressor",
+
+    @SerializedName("enable_ai_mastering")
+    val enableAiMastering: Boolean = false,
+)
+
+/**
+ * AI mastering request for dedicated mastering stage.
+ */
+data class AiMasteringRequest(
+    @SerializedName("source_url")
+    val sourceUrl: String,
+
+    @SerializedName("target_profile")
+    val targetProfile: String = "streaming",
 )

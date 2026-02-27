@@ -9,21 +9,21 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.DeleteForever
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Policy
-import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.RestartAlt
-import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material.icons.rounded.Policy
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +45,7 @@ import com.sonicmusic.app.presentation.viewmodel.SettingsViewModel
 import kotlinx.coroutines.launch
 
 private enum class SettingsSheet {
-    None, Theme, SeekBarStyle, WifiQuality, CellularQuality, DownloadQuality
+    None, Theme, DarkMode, SeekBarStyle, WifiQuality, CellularQuality, DownloadQuality
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -54,25 +54,30 @@ fun SettingsScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val wifiStreamingQuality by viewModel.wifiStreamingQuality.collectAsState()
-    val cellularStreamingQuality by viewModel.cellularStreamingQuality.collectAsState()
-    val downloadQuality by viewModel.downloadQuality.collectAsState()
-    val themeMode by viewModel.themeMode.collectAsState()
-    val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsState()
-    val dynamicColors by viewModel.dynamicColors.collectAsState()
-    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsState()
-    val normalizeVolume by viewModel.normalizeVolume.collectAsState()
-    val gaplessPlayback by viewModel.gaplessPlayback.collectAsState()
-    val crossfadeDuration by viewModel.crossfadeDuration.collectAsState()
-    val pauseHistory by viewModel.pauseHistory.collectAsState()
-    val skipSilence by viewModel.skipSilence.collectAsState()
-    val albumArtBlur by viewModel.albumArtBlur.collectAsState()
-    val cacheSize by viewModel.cacheSize.collectAsState()
-    val enhancedAudio by viewModel.enhancedAudio.collectAsState()
+    val wifiStreamingQuality by viewModel.wifiStreamingQuality.collectAsStateWithLifecycle()
+    val cellularStreamingQuality by viewModel.cellularStreamingQuality.collectAsStateWithLifecycle()
+    val downloadQuality by viewModel.downloadQuality.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
+    val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsStateWithLifecycle()
+    val dynamicColors by viewModel.dynamicColors.collectAsStateWithLifecycle()
+    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
+    val normalizeVolume by viewModel.normalizeVolume.collectAsStateWithLifecycle()
+    val songBassEnabled by viewModel.songBassEnabled.collectAsStateWithLifecycle()
+    val songBassStrengthPercent by viewModel.songBassStrengthPercent.collectAsStateWithLifecycle()
+    val gaplessPlayback by viewModel.gaplessPlayback.collectAsStateWithLifecycle()
+    val crossfadeDuration by viewModel.crossfadeDuration.collectAsStateWithLifecycle()
+    val pauseHistory by viewModel.pauseHistory.collectAsStateWithLifecycle()
+    val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
+    val albumArtBlur by viewModel.albumArtBlur.collectAsStateWithLifecycle()
+    val autoUpdateEnabled by viewModel.autoUpdateEnabled.collectAsStateWithLifecycle()
+    val cacheSize by viewModel.cacheSize.collectAsStateWithLifecycle()
+    val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+
     
-    val regionCode by viewModel.regionCode.collectAsState()
-    val countryCode by viewModel.countryCode.collectAsState()
-    val countryName by viewModel.countryName.collectAsState()
+    val regionCode by viewModel.regionCode.collectAsStateWithLifecycle()
+    val countryCode by viewModel.countryCode.collectAsStateWithLifecycle()
+    val countryName by viewModel.countryName.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -87,9 +92,10 @@ fun SettingsScreen(
     if (showClearCacheDialog) {
         AlertDialog(
             onDismissRequest = { showClearCacheDialog = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.DeleteForever, contentDescription = null) },
             title = { Text("Clear Cache") },
             text = { Text("This will remove all cached audio data. Downloaded songs will not be affected.") },
+            shape = RoundedCornerShape(28.dp),
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -115,9 +121,10 @@ fun SettingsScreen(
     if (showClearHistoryDialog) {
         AlertDialog(
             onDismissRequest = { showClearHistoryDialog = false },
-            icon = { Icon(Icons.Default.DeleteForever, contentDescription = null) },
+            icon = { Icon(Icons.Rounded.DeleteForever, contentDescription = null) },
             title = { Text("Clear Search History") },
             text = { Text("This will remove all your search history. This action cannot be undone.") },
+            shape = RoundedCornerShape(28.dp),
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -199,13 +206,6 @@ fun SettingsScreen(
                         checked = normalizeVolume,
                         onCheckedChange = { viewModel.setNormalizeVolume(it) }
                     )
-                    SettingsDivider()
-                    SettingsSwitchItem(
-                        title = "Enhanced Audio (FFmpeg)",
-                        subtitle = "Transcode to M4A Lossless via cloud backend",
-                        checked = enhancedAudio,
-                        onCheckedChange = { viewModel.setEnhancedAudio(it) }
-                    )
                 }
                 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -266,10 +266,27 @@ fun SettingsScreen(
                         onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) }
                     )
                     SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Increase Song Bass",
+                        subtitle = "Adds extra bass directly to song playback",
+                        checked = songBassEnabled,
+                        onCheckedChange = { viewModel.setSongBassEnabled(it) }
+                    )
+                    SettingsDivider()
+                    SettingsSliderItem(
+                        title = "Bass Amount",
+                        subtitle = "Simple bass intensity control",
+                        value = songBassStrengthPercent.toFloat(),
+                        valueRange = 0f..100f,
+                        steps = 19,
+                        valueText = "${songBassStrengthPercent}%",
+                        onValueChange = { viewModel.setSongBassStrength(it.toInt()) }
+                    )
+                    SettingsDivider()
                     SettingsActionItem(
                         title = "Device Equalizer",
                         subtitle = "Open system audio effects panel",
-                        icon = Icons.Default.GraphicEq,
+                        icon = Icons.Rounded.GraphicEq,
                         onClick = {
                             if (!openDeviceEqualizerPanel(context)) {
                                 scope.launch {
@@ -277,6 +294,13 @@ fun SettingsScreen(
                                 }
                             }
                         }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Auto Queue Similar",
+                        subtitle = "Continuously add similar songs when queue ends",
+                        checked = viewModel.autoQueueSimilar.collectAsStateWithLifecycle().value,
+                        onCheckedChange = { viewModel.setAutoQueueSimilar(it) }
                     )
                 }
             }
@@ -296,11 +320,11 @@ fun SettingsScreen(
                     SettingsInfoItem(
                         title = "Country",
                         subtitle = countryName ?: countryCode ?: "Detecting...",
-                        icon = Icons.Default.Public,
+                        icon = Icons.Rounded.Public,
                         trailingContent = {
                             IconButton(onClick = { viewModel.refreshRegion() }) {
                                 Icon(
-                                    imageVector = Icons.Default.RestartAlt,
+                                    imageVector = Icons.Rounded.RestartAlt,
                                     contentDescription = "Refresh Region",
                                     tint = MaterialTheme.colorScheme.primary
                                 )
@@ -311,7 +335,7 @@ fun SettingsScreen(
                     SettingsInfoItem(
                         title = "Region Code",
                         subtitle = regionCode ?: "Detecting...",
-                        icon = Icons.Default.Place
+                        icon = Icons.Rounded.Place
                     )
                 }
             }
@@ -328,11 +352,23 @@ fun SettingsScreen(
                         title = "Theme",
                         subtitle = "Choose app appearance",
                         value = when (themeMode) {
-                            ThemeMode.LIGHT -> "Light"
-                            ThemeMode.DARK -> "Dark"
-                            ThemeMode.SYSTEM -> "System"
+                            ThemeMode.DEFAULT -> "Default"
+                            ThemeMode.DYNAMIC -> "Dynamic"
+                            ThemeMode.MATERIAL_YOU -> "Material You"
+                            ThemeMode.PURE_BLACK -> "Pure Black"
                         },
                         onClick = { activeSheet = SettingsSheet.Theme }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Dark Mode",
+                        subtitle = "Light, Dark, or System Default",
+                        value = when (darkMode) {
+                            com.sonicmusic.app.domain.model.DarkMode.LIGHT -> "Light"
+                            com.sonicmusic.app.domain.model.DarkMode.DARK -> "Dark"
+                            com.sonicmusic.app.domain.model.DarkMode.SYSTEM -> "System"
+                        },
+                        onClick = { activeSheet = SettingsSheet.DarkMode }
                     )
                     SettingsDivider()
                     SettingsActionItem(
@@ -381,7 +417,7 @@ fun SettingsScreen(
                     SettingsActionItem(
                         title = "Clear Cache",
                         subtitle = "Using $cacheSize",
-                        icon = Icons.Default.Storage,
+                        icon = Icons.Rounded.Storage,
                         onClick = { showClearCacheDialog = true }
                     )
                     SettingsDivider()
@@ -395,14 +431,14 @@ fun SettingsScreen(
                     SettingsActionItem(
                         title = "Clear Search History",
                         subtitle = "Remove past searches",
-                        icon = Icons.Default.DeleteForever,
+                        icon = Icons.Rounded.DeleteForever,
                         onClick = { showClearHistoryDialog = true }
                     )
                     SettingsDivider()
                     SettingsActionItem(
                         title = "Reset to Defaults",
                         subtitle = "Restore all settings to factory values",
-                        icon = Icons.Default.RestartAlt,
+                        icon = Icons.Rounded.RestartAlt,
                         onClick = {
                             viewModel.resetToDefaults()
                             scope.launch {
@@ -418,37 +454,61 @@ fun SettingsScreen(
             // ═══════════════════════════════════════════
             item {
                 SettingsGroup(
+                    title = "Updates",
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                ) {
+                    SettingsSwitchItem(
+                        title = "Auto Update",
+                        subtitle = "Automatically check for new releases",
+                        checked = autoUpdateEnabled,
+                        onCheckedChange = { viewModel.setAutoUpdateEnabled(it) }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = "Check for Updates",
+                        subtitle = appUpdateState.statusText,
+                        value = when {
+                            appUpdateState.isChecking -> "..."
+                            appUpdateState.isUpdateAvailable && appUpdateState.latestVersion != null ->
+                                "v${appUpdateState.latestVersion}"
+                            else -> null
+                        },
+                        icon = Icons.Rounded.RestartAlt,
+                        onClick = {
+                            if (!appUpdateState.isChecking) {
+                                viewModel.checkForUpdates()
+                            }
+                        }
+                    )
+                    if (appUpdateState.isUpdateAvailable && !appUpdateState.releaseUrl.isNullOrBlank()) {
+                        SettingsDivider()
+                        SettingsActionItem(
+                            title = "Open Release Page",
+                            subtitle = "Download and install the latest version",
+                            icon = Icons.Rounded.Code,
+                            onClick = {
+                                openUrl(context, appUpdateState.releaseUrl!!)
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
+                SettingsGroup(
                     title = "About",
                     modifier = Modifier.padding(horizontal = 16.dp)
                 ) {
                     SettingsInfoItem(
                         title = "App Version",
                         subtitle = viewModel.appVersion,
-                        icon = Icons.Default.Info
-                    )
-                    SettingsDivider()
-                    SettingsActionItem(
-                        title = "Source Code",
-                        subtitle = "View on GitHub",
-                        icon = Icons.Default.Code,
-                        onClick = {
-                            openUrl(context, "https://github.com/sonicmusic/app")
-                        }
-                    )
-                    SettingsDivider()
-                    SettingsActionItem(
-                        title = "Privacy Policy",
-                        subtitle = "Read our policy",
-                        icon = Icons.Default.Policy,
-                        onClick = {
-                            openUrl(context, "https://sonicmusic.app/privacy")
-                        }
+                        icon = Icons.Rounded.Info
                     )
                     SettingsDivider()
                     SettingsActionItem(
                         title = "Help & Feedback",
                         subtitle = "Get support",
-                        icon = Icons.AutoMirrored.Filled.HelpOutline,
+                        icon = Icons.AutoMirrored.Rounded.HelpOutline,
                         onClick = {
                             openUrl(context, "https://sonicmusic.app/help")
                         }
@@ -477,6 +537,7 @@ fun SettingsScreen(
                 Text(
                     text = when (activeSheet) {
                         SettingsSheet.Theme -> "Select Theme"
+                        SettingsSheet.DarkMode -> "Dark Mode"
                         SettingsSheet.SeekBarStyle -> "Seek Bar Style"
                         SettingsSheet.WifiQuality -> "Wi-Fi Streaming Quality"
                         SettingsSheet.CellularQuality -> "Mobile Streaming Quality"
@@ -492,13 +553,30 @@ fun SettingsScreen(
                         ThemeMode.entries.forEach { mode ->
                              OptionItem(
                                  text = when(mode) {
-                                     ThemeMode.LIGHT -> "Light"
-                                     ThemeMode.DARK -> "Dark"
-                                     ThemeMode.SYSTEM -> "System"
+                                     ThemeMode.DEFAULT -> "Default"
+                                     ThemeMode.DYNAMIC -> "Dynamic"
+                                     ThemeMode.MATERIAL_YOU -> "Material You"
+                                     ThemeMode.PURE_BLACK -> "Pure Black"
                                  },
                                  selected = themeMode == mode,
                                  onClick = {
                                      viewModel.setThemeMode(mode)
+                                     activeSheet = SettingsSheet.None
+                                 }
+                             )
+                        }
+                    }
+                    SettingsSheet.DarkMode -> {
+                        com.sonicmusic.app.domain.model.DarkMode.entries.forEach { mode ->
+                             OptionItem(
+                                 text = when(mode) {
+                                     com.sonicmusic.app.domain.model.DarkMode.LIGHT -> "Light"
+                                     com.sonicmusic.app.domain.model.DarkMode.DARK -> "Dark"
+                                     com.sonicmusic.app.domain.model.DarkMode.SYSTEM -> "System"
+                                 },
+                                 selected = darkMode == mode,
+                                 onClick = {
+                                     viewModel.setDarkMode(mode)
                                      activeSheet = SettingsSheet.None
                                  }
                              )
@@ -570,7 +648,7 @@ private fun OptionItem(
         trailingContent = {
             if (selected) {
                  Icon(
-                     imageVector = Icons.Default.Check,
+                     imageVector = Icons.Rounded.Check,
                      contentDescription = "Selected",
                      tint = MaterialTheme.colorScheme.primary
                  )
@@ -594,7 +672,7 @@ private fun QualityOptionItem(
         headlineContent = { Text(qualityMenuLabel(quality)) },
         supportingContent = { Text(qualityMenuDescription(quality)) },
         leadingContent = {
-             if (quality == StreamQuality.BEST || quality == StreamQuality.LOSSLESS) {
+             if (quality == StreamQuality.BEST) {
                  Surface(
                      color = MaterialTheme.colorScheme.primaryContainer,
                      shape = MaterialTheme.shapes.extraSmall,
@@ -611,7 +689,7 @@ private fun QualityOptionItem(
         trailingContent = {
             if (selected) {
                  Icon(
-                     imageVector = Icons.Default.Check,
+                     imageVector = Icons.Rounded.Check,
                      contentDescription = "Selected",
                      tint = MaterialTheme.colorScheme.primary
                  )
@@ -684,7 +762,16 @@ private fun SettingsSwitchItem(
         trailingContent = {
             Switch(
                 checked = checked,
-                onCheckedChange = onCheckedChange
+                onCheckedChange = onCheckedChange,
+                thumbContent = if (checked) {
+                    {
+                        Icon(
+                            imageVector = Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                } else null
             )
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
@@ -725,7 +812,7 @@ private fun SettingsActionItem(
                      Spacer(modifier = Modifier.width(4.dp))
                  }
                  Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
+                    Icons.AutoMirrored.Rounded.ArrowForward,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -833,7 +920,7 @@ private fun AudioQualityItem(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (currentQuality.isHighRes || currentQuality.isLossless) {
+                if (currentQuality.isHighRes) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer,
                         shape = MaterialTheme.shapes.extraSmall,
@@ -854,7 +941,7 @@ private fun AudioQualityItem(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Icon(
-                    Icons.AutoMirrored.Filled.ArrowForward,
+                    Icons.AutoMirrored.Rounded.ArrowForward,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
@@ -868,8 +955,7 @@ private val menuQualityEntries = listOf(
     StreamQuality.LOW,
     StreamQuality.MEDIUM,
     StreamQuality.HIGH,
-    StreamQuality.BEST,
-    StreamQuality.LOSSLESS
+    StreamQuality.BEST
 )
 
 private fun fullPlayerStyleMenuLabel(style: FullPlayerStyle): String {
@@ -884,8 +970,7 @@ private fun qualityMenuLabel(quality: StreamQuality): String {
         StreamQuality.LOW -> "Low"
         StreamQuality.MEDIUM -> "Medium"
         StreamQuality.HIGH -> "High"
-        StreamQuality.BEST -> "Very High"
-        StreamQuality.LOSSLESS -> "Lossless"
+        StreamQuality.BEST -> "Very High (Opus)"
     }
 }
 
@@ -894,15 +979,13 @@ private fun qualityMenuDescription(quality: StreamQuality): String {
         StreamQuality.LOW -> "Lower quality, saves data"
         StreamQuality.MEDIUM -> "Balanced quality and data usage"
         StreamQuality.HIGH -> "High quality streaming"
-        StreamQuality.BEST -> "High-res quality with efficient data usage"
-        StreamQuality.LOSSLESS -> "Highest quality, uses more data"
+        StreamQuality.BEST -> "Opus codec · Best available quality"
     }
 }
 
 private fun qualityBadge(quality: StreamQuality): String {
     return when (quality) {
-        StreamQuality.LOSSLESS -> "LL"
-        StreamQuality.BEST -> "VH"
+        StreamQuality.BEST -> "OPUS"
         StreamQuality.LOW,
         StreamQuality.MEDIUM,
         StreamQuality.HIGH -> ""

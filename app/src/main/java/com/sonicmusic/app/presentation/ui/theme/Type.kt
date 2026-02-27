@@ -9,6 +9,27 @@ import androidx.compose.ui.unit.sp
 private val SonicFontFamily = FontFamily.SansSerif
 
 val Typography = Typography(
+    displayLarge = TextStyle(
+        fontFamily = SonicFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 57.sp,
+        lineHeight = 64.sp,
+        letterSpacing = (-0.25).sp
+    ),
+    displayMedium = TextStyle(
+        fontFamily = SonicFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 45.sp,
+        lineHeight = 52.sp,
+        letterSpacing = 0.sp
+    ),
+    displaySmall = TextStyle(
+        fontFamily = SonicFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 36.sp,
+        lineHeight = 44.sp,
+        letterSpacing = 0.sp
+    ),
     headlineLarge = TextStyle(
         fontFamily = SonicFontFamily,
         fontWeight = FontWeight.SemiBold,

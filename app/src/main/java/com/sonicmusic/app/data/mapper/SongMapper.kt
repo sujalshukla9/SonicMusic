@@ -1,7 +1,7 @@
 package com.sonicmusic.app.data.mapper
 
 import com.sonicmusic.app.data.local.entity.SongEntity
-import com.sonicmusic.app.data.util.ThumbnailUrlUtils
+import com.sonicmusic.app.core.util.ThumbnailUrlUtils
 import com.sonicmusic.app.domain.model.Song
 
 fun Song.toEntity(): SongEntity {

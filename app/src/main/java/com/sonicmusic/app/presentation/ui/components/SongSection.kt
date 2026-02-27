@@ -44,7 +44,9 @@ fun SongSection(
         ) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleMedium
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
             )
             IconButton(onClick = onSeeAllClick) {
                 Icon(
@@ -61,7 +63,7 @@ fun SongSection(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(songs) { song ->
+            items(items = songs, key = { song -> song.id }) { song ->
                 SongCard(
                     song = song,
                     onClick = { onSongClick(song) }

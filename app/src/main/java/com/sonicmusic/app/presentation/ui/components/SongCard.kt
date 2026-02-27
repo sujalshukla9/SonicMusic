@@ -1,8 +1,12 @@
 package com.sonicmusic.app.presentation.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -16,6 +20,7 @@ import androidx.compose.ui.unit.dp
 
 import com.sonicmusic.app.domain.model.Song
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SongCard(
     song: Song,
@@ -26,14 +31,17 @@ fun SongCard(
     Column(
         modifier = modifier
             .width(140.dp)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
-        Surface(
+        ElevatedCard(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(8.dp)),
-            tonalElevation = 2.dp
+                .aspectRatio(1f),
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+            )
         ) {
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,
@@ -81,8 +89,9 @@ fun SongCardCompact(
         Surface(
             modifier = Modifier
                 .size(56.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            tonalElevation = 2.dp
+                .clip(RoundedCornerShape(12.dp)),
+            tonalElevation = 2.dp,
+            color = MaterialTheme.colorScheme.surfaceContainerLow
         ) {
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,

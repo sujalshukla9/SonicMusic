@@ -10,6 +10,7 @@ import com.sonicmusic.app.domain.model.HomeContent
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.usecase.GetHomeContentUseCase
+import com.sonicmusic.app.presentation.ui.components.pullrefresh.RefreshResult
 import com.sonicmusic.app.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -42,7 +44,7 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     companion object {
-        private const val TAG = "HomeViewModel"
+        private const val TAG = "SonicHome"
         private const val SECTION_LIMIT = 100
         private const val SECTION_ARTIST_PREFIX = "artist:"
 
@@ -69,6 +71,12 @@ class HomeViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _refreshResult = MutableStateFlow<RefreshResult?>(null)
+    val refreshResult: StateFlow<RefreshResult?> = _refreshResult.asStateFlow()
+
+    /** Prevents concurrent load / refresh from racing. */
+    private var loadJob: Job? = null
+
     val countryName: StateFlow<String?> = regionRepository.countryName
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
@@ -77,23 +85,11 @@ class HomeViewModel @Inject constructor(
     }
 
     fun loadHomeContent() {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-
-            try {
-                getHomeContentUseCase()
-                    .onSuccess { content ->
-                        _homeContent.value = content
-                    }
-                    .onFailure { exception ->
-                        _error.value = exception.message ?: "Failed to load content"
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error loading home content", e)
-                _error.value = "Failed to load: ${e.message}"
-            }
-
+            fetchHomeContent()
             _isLoading.value = false
         }
     }
@@ -102,24 +98,37 @@ class HomeViewModel @Inject constructor(
      * Pull-to-refresh handler — force reloads all sections.
      */
     fun refreshHomeContent() {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _isRefreshing.value = true
+            _refreshResult.value = null
             _error.value = null
-
             try {
-                getHomeContentUseCase()
-                    .onSuccess { content ->
-                        _homeContent.value = content
-                    }
-                    .onFailure { exception ->
-                        _error.value = exception.message ?: "Failed to refresh"
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error refreshing home content", e)
-                _error.value = "Failed to refresh: ${e.message}"
+                fetchHomeContent()
+                _refreshResult.value = if (_error.value == null) RefreshResult.SUCCESS else RefreshResult.ERROR
+            } catch (_: Exception) {
+                _refreshResult.value = RefreshResult.ERROR
             }
-
             _isRefreshing.value = false
+        }
+    }
+
+    /** Shared loader used by both initial load and refresh. */
+    private suspend fun fetchHomeContent() {
+        val startMs = System.currentTimeMillis()
+        try {
+            getHomeContentUseCase()
+                .onSuccess { content ->
+                    _homeContent.value = content
+                    Log.d(TAG, "⏱️ Home content loaded in ${System.currentTimeMillis() - startMs}ms")
+                }
+                .onFailure { exception ->
+                    _error.value = exception.message ?: "Failed to load content"
+                    Log.w(TAG, "⏱️ Home content failed in ${System.currentTimeMillis() - startMs}ms")
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading home content (${System.currentTimeMillis() - startMs}ms)", e)
+            _error.value = "Failed to load: ${e.message}"
         }
     }
 
@@ -258,11 +267,11 @@ class HomeViewModel @Inject constructor(
     fun playNext(song: Song) {
         viewModelScope.launch {
             try {
-                // Use lazy add to queue - currently appends, but robust
+                // Append through normal queue path so local queue state is updated.
                 playerServiceConnection.addSongsToQueueLazy(
                     songs = listOf(song),
                     songRepository = songRepository,
-                    isQueueAlreadyPopulated = true 
+                    isQueueAlreadyPopulated = true
                 )
                 Log.d(TAG, "➕ Added to queue: ${song.title}")
             } catch (e: Exception) {
@@ -272,11 +281,56 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Navigate to section detail view
+     * Validate section before navigating to section detail.
+     *
+     * @return section key if it can be opened, otherwise null.
      */
-    fun onSectionSeeAll(section: String) {
-        Log.d(TAG, "See all clicked for section: $section")
-        // TODO: Navigate to section detail view with full song list
+    fun onSectionSeeAll(section: String): String? {
+        if (section.isBlank()) {
+            _error.value = "Section unavailable"
+            return null
+        }
+
+        val songs = getSongsForSection(section)
+        if (songs.isEmpty()) {
+            _error.value = "No songs available in this section"
+            return null
+        }
+
+        Log.d(TAG, "See all clicked for section: $section (${songs.size} songs)")
+        return section
+    }
+
+    /**
+     * Play all songs for a home section key.
+     *
+     * @return true if a section had songs and playback was started.
+     */
+    fun playSection(section: String, shuffle: Boolean = false): Boolean {
+        val songs = getSongsForSection(section)
+        if (songs.isEmpty()) {
+            _error.value = "No songs available in this section"
+            return false
+        }
+        playAllSongs(songs, shuffle = shuffle)
+        return true
+    }
+
+    /**
+     * Handle section song click with queue context for richer playback.
+     *
+     * Falls back to radio queue if the section cannot be resolved.
+     */
+    fun onSectionSongClick(section: String, song: Song): Boolean {
+        val sectionSongs = getSongsForSection(section)
+        if (sectionSongs.isEmpty()) {
+            onSongClickWithRadioQueue(song)
+            return true
+        }
+
+        val clickedSong = sectionSongs.firstOrNull { it.id == song.id } ?: song
+        onSongClickWithContext(clickedSong, sectionSongs)
+        return true
     }
 
     /**
@@ -334,5 +388,9 @@ class HomeViewModel @Inject constructor(
 
     fun clearError() {
         _error.value = null
+    }
+
+    fun clearRefreshResult() {
+        _refreshResult.value = null
     }
 }

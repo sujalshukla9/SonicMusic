@@ -4,28 +4,23 @@ import android.util.Log
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.StreamQuality
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import com.sonicmusic.app.BuildConfig
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * YouTube Audio Stream Extractor — Apple Music-Style Quality Pipeline
- * 
- * Multi-strategy extraction with codec-aware quality selection:
- * 1. NewPipe Extractor (primary - handles cipher/signatures)
- * 2. Android TV Client (best for direct streams)
- * 3. Android Music Client (music-optimized)
- * 4. iOS Client (fallback)
- * 5. Retry with exponential backoff
- * 
- * Returns stream URL + AudioStreamInfo for quality badge display.
+ * YouTube audio stream extractor with resilient fallback strategy.
+ *
+ * Strategy:
+ * 1. NewPipe (primary, handles signature/cipher flows more reliably)
+ * 2. Innertube clients (fallback)
  */
 @Singleton
 class AudioStreamExtractor @Inject constructor(
@@ -38,13 +33,11 @@ class AudioStreamExtractor @Inject constructor(
         .build()
 
     companion object {
-        private const val TAG = "AudioStreamExtractor"
-        private const val MAX_RETRIES = 3
-        private const val INITIAL_DELAY_MS = 500L
+        private const val TAG = "SonicStream"
         
         // YouTube InnerTube API endpoints
         private const val YOUTUBE_API = "https://www.youtube.com/youtubei/v1/player"
-        private const val API_KEY = "REDACTED_API_KEY"
+        private const val API_KEY = BuildConfig.YOUTUBE_API_KEY
     }
 
     /**
@@ -55,84 +48,40 @@ class AudioStreamExtractor @Inject constructor(
         videoId: String,
         quality: StreamQuality,
     ): Result<Pair<String, AudioStreamInfo>> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "🎵 Extracting audio for: $videoId, quality: ${quality.displayName}")
+        Log.d(TAG, "🎵 Extracting audio stream for: $videoId (requested=${quality.displayName})")
 
-        // Strategy 1: Try NewPipe first (handles cipher/signatures)
-        newPipeService.getStreamUrl(videoId, quality).let { result ->
-            if (result.isSuccess) {
-                val pair = result.getOrNull()
-                if (pair != null && pair.first.isNotEmpty()) {
-                    Log.d(TAG, "✅ NewPipe extraction successful")
-                    return@withContext Result.success(pair)
-                }
-            }
-            Log.w(TAG, "⚠️ NewPipe failed: ${result.exceptionOrNull()?.message}")
+        // NewPipe first: in runtime logs this path is more resilient against player-side 403 churn.
+        val newPipeResult = newPipeService.getStreamUrl(videoId, quality)
+        if (newPipeResult.isSuccess) {
+            Log.d(TAG, "✅ NewPipe extraction succeeded for $videoId")
+            return@withContext newPipeResult
         }
+        val newPipeError = newPipeResult.exceptionOrNull()
+        Log.w(TAG, "⚠️ NewPipe failed for $videoId: ${newPipeError?.message}")
 
-        // Strategy 2: Try Android TV Client (best for streams)
-        extractWithClient(videoId, ClientType.ANDROID_TV, quality).let { result ->
+        val clients = listOf(
+            ClientType.ANDROID_MUSIC,
+            ClientType.ANDROID_TV,
+            ClientType.ANDROID,
+            ClientType.IOS,
+        )
+        var lastError: Throwable? = null
+
+        for (clientType in clients) {
+            val result = extractWithClient(videoId, clientType, quality)
             if (result.isSuccess) {
-                Log.d(TAG, "✅ Android TV client successful")
                 return@withContext result
             }
-            Log.w(TAG, "⚠️ Android TV client failed")
+            lastError = result.exceptionOrNull()
+            Log.w(TAG, "⚠️ ${clientType.name} Innertube client failed: ${lastError?.message}")
         }
 
-        // Strategy 3: Try Android Music Client
-        extractWithClient(videoId, ClientType.ANDROID_MUSIC, quality).let { result ->
-            if (result.isSuccess) {
-                Log.d(TAG, "✅ Android Music client successful")
-                return@withContext result
-            }
-            Log.w(TAG, "⚠️ Android Music client failed")
-        }
-
-        // Strategy 4: Try iOS Client
-        extractWithClient(videoId, ClientType.IOS, quality).let { result ->
-            if (result.isSuccess) {
-                Log.d(TAG, "✅ iOS client successful")
-                return@withContext result
-            }
-            Log.w(TAG, "⚠️ iOS client failed")
-        }
-
-        // Strategy 5: Try Android Client (standard)
-        extractWithClient(videoId, ClientType.ANDROID, quality).let { result ->
-            if (result.isSuccess) {
-                Log.d(TAG, "✅ Android client successful")
-                return@withContext result
-            }
-            Log.w(TAG, "⚠️ Android client failed")
-        }
-
-        // Strategy 6: Retry NewPipe with exponential backoff
-        var lastError: Exception? = null
-        var currentDelay = INITIAL_DELAY_MS
-
-        repeat(MAX_RETRIES) { attempt ->
-            Log.d(TAG, "📡 Retry attempt ${attempt + 1}/$MAX_RETRIES")
-
-            try {
-                delay(currentDelay)
-                currentDelay *= 2
-
-                val result = newPipeService.getStreamUrl(videoId, quality)
-                if (result.isSuccess) {
-                    val pair = result.getOrNull()
-                    if (pair != null && pair.first.isNotEmpty()) {
-                        Log.d(TAG, "✅ Retry successful")
-                        return@withContext Result.success(pair)
-                    }
-                }
-                lastError = result.exceptionOrNull() as? Exception ?: Exception("Empty result")
-            } catch (e: Exception) {
-                Log.w(TAG, "❌ Retry ${attempt + 1} failed", e)
-                lastError = e
-            }
-        }
-
-        Log.e(TAG, "❌ All extraction strategies failed for $videoId")
-        Result.failure(lastError ?: Exception("Failed to extract audio stream"))
+        Log.e(
+            TAG,
+            "❌ All extraction strategies failed for $videoId (NewPipe + Innertube). " +
+                "NewPipe=${newPipeError?.message}, lastInnertube=${lastError?.message}",
+        )
+        Result.failure(lastError ?: newPipeError ?: Exception("Failed to extract audio stream"))
     }
 
     /**
@@ -151,7 +100,7 @@ class AudioStreamExtractor @Inject constructor(
     private suspend fun extractWithClient(
         videoId: String,
         clientType: ClientType,
-        quality: StreamQuality,
+        requestedQuality: StreamQuality,
     ): Result<Pair<String, AudioStreamInfo>> = withContext(Dispatchers.IO) {
         try {
             val requestBody = buildClientRequest(videoId, clientType)
@@ -230,8 +179,7 @@ class AudioStreamExtractor @Inject constructor(
                 return@withContext Result.failure(Exception("No audio formats found"))
             }
 
-            // Apple Music-style codec-aware format selection
-            val selectedFormat = selectBestFormat(formats, quality)
+            val selectedFormat = selectBestFormat(formats, requestedQuality)
 
             selectedFormat?.let { fmt ->
                 val info = AudioStreamInfo(
@@ -244,7 +192,10 @@ class AudioStreamExtractor @Inject constructor(
                     channelCount = fmt.channelCount,
                 )
                 
-                Log.d(TAG, "📊 Selected: ${info.fullDescription} (itag ${fmt.itag})")
+                Log.d(
+                    TAG,
+                    "📊 Selected: ${info.fullDescription} (itag ${fmt.itag}, requested=${requestedQuality.name})",
+                )
                 return@withContext Result.success(Pair(fmt.url, info))
             }
 
@@ -255,52 +206,53 @@ class AudioStreamExtractor @Inject constructor(
         }
     }
 
-    /**
-     * Apple Music-style format selection based on quality tier
-     */
-    private fun selectBestFormat(formats: List<AudioFormat>, quality: StreamQuality): AudioFormat? {
+    private fun selectBestFormat(
+        formats: List<AudioFormat>,
+        requestedQuality: StreamQuality,
+    ): AudioFormat? {
         if (formats.isEmpty()) return null
-        
-        // Filter out very low quality streams if possible
-        val validFormats = formats.filter { it.bitrateKbps > 0 }
-            .ifEmpty { formats }
+        val validFormats = formats.filter { it.bitrateKbps > 0 }.ifEmpty { formats }
 
-        return when (quality) {
-            StreamQuality.LOSSLESS, StreamQuality.BEST -> {
-                // Priority: WebM (Opus) at highest bitrate
-                validFormats.filter { it.isOpus() && it.container.contains("webm", true) }
-                    .maxByOrNull { it.bitrateKbps }
-                    ?: validFormats.filter { it.isOpus() }.maxByOrNull { it.bitrateKbps }
-                    ?: validFormats.filter { it.itag == 251 }.maxByOrNull { it.bitrateKbps }
-                    ?: validFormats.filter { it.itag == 272 }.maxByOrNull { it.bitrateKbps }
-                    ?: validFormats.firstOrNull { it.itag == 141 }
-                    ?: validFormats.firstOrNull { it.itag == 140 }
-                    ?: validFormats.maxByOrNull { it.bitrateKbps }
+        return when (requestedQuality) {
+            StreamQuality.BEST -> {
+                val opusFormats = validFormats.filter { it.isOpus() }
+                opusFormats.maxWithOrNull(
+                    compareBy<AudioFormat> { it.bitrateKbps }
+                        .thenBy { it.sampleRate }
+                        .thenBy { it.channelCount },
+                ) ?: validFormats.maxByOrNull(::bestSourceScore)
             }
-            
+
             StreamQuality.HIGH -> {
-                // Priority: AAC 256 (itag 141) -> AAC 128 (itag 140) -> Opus 160 (itag 251) -> Highest
-                validFormats.firstOrNull { it.itag == 141 }
-                    ?: validFormats.firstOrNull { it.itag == 140 }
-                    ?: validFormats.firstOrNull { it.itag == 251 }
-                    ?: validFormats.maxByOrNull { it.bitrateKbps }
+                validFormats
+                    .filter { it.isAac() && it.bitrateKbps >= 120 }
+                    .maxByOrNull(::bestSourceScore)
+                    ?: validFormats
+                        .filter { it.bitrateKbps >= 120 }
+                        .maxByOrNull(::bestSourceScore)
+                    ?: validFormats.maxByOrNull(::bestSourceScore)
             }
-            
+
             StreamQuality.MEDIUM -> {
-                // ~128kbps
-                validFormats.firstOrNull { it.itag == 140 } // AAC 128
-                    ?: validFormats.firstOrNull { it.itag == 251 } // Opus 160 (efficient)
-                    ?: validFormats.sortedBy { kotlin.math.abs(it.bitrateKbps - 128) }.firstOrNull()
+                validFormats
+                    .filter { it.bitrateKbps in 100..160 }
+                    .maxByOrNull(::bestSourceScore)
+                    ?: validFormats.minByOrNull { kotlin.math.abs(it.bitrateKbps - 128) }
             }
-            
+
             StreamQuality.LOW -> {
-                // Lowest bitrate (itag 139, 249, 250)
-                validFormats.firstOrNull { it.itag == 249 } // Opus 50k
-                    ?: validFormats.firstOrNull { it.itag == 250 } // Opus 70k
-                    ?: validFormats.firstOrNull { it.itag == 139 } // AAC 48k
-                    ?: validFormats.minByOrNull { it.bitrateKbps }
+                validFormats.minByOrNull { it.bitrateKbps }
             }
         }
+    }
+
+    private fun bestSourceScore(format: AudioFormat): Long {
+        val codecBonus = when {
+            format.isOpus() -> 20L
+            format.isAac() -> 10L
+            else -> 0L
+        }
+        return (format.bitrateKbps.toLong() * 1_000L) + format.sampleRate + codecBonus
     }
 
     /**
@@ -381,7 +333,7 @@ data class AudioFormat(
     fun isAac(): Boolean = codec.contains("AAC", true)
     
     fun qualityLabel(): String = when {
-        isOpus() && bitrateKbps >= 160 -> "Lossless (${bitrateKbps}kbps OPUS)"
+        isOpus() && bitrateKbps >= 160 -> "Very High (${bitrateKbps}kbps OPUS)"
         bitrateKbps >= 256 -> "High (${bitrateKbps}kbps)"
         bitrateKbps >= 128 -> "Medium (${bitrateKbps}kbps)"
         else -> "Low (${bitrateKbps}kbps)"

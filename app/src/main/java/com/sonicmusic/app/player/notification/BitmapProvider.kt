@@ -1,4 +1,4 @@
-package com.sonicmusic.app.service
+package com.sonicmusic.app.player.notification
 
 import android.content.Context
 import android.content.res.Configuration
@@ -163,5 +163,6 @@ class BitmapProvider(
         }
         lastBitmap?.recycle()
         lastBitmap = null
+        imageLoader.shutdown()
     }
 }

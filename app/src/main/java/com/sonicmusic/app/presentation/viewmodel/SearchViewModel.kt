@@ -3,7 +3,7 @@ package com.sonicmusic.app.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.player.audio.AudioEngine
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.domain.repository.SearchRepository
 import com.sonicmusic.app.domain.repository.SongRepository
@@ -41,7 +41,8 @@ class SearchViewModel @Inject constructor(
     private val searchRepository: SearchRepository,
     private val recentSearchRepository: RecentSearchRepository,
     private val songRepository: SongRepository,
-    private val playerServiceConnection: PlayerServiceConnection
+    private val playerServiceConnection: PlayerServiceConnection,
+    private val audioEngine: AudioEngine
 ) : ViewModel() {
 
     // State
@@ -59,7 +60,7 @@ class SearchViewModel @Inject constructor(
     val effects = _effects.receiveAsFlow()
 
     // Pagination
-    private val pageSize = 50
+    private val pageSize = 100
     private var currentQuery: String = ""
     private var currentFilters: SearchFilters = SearchFilters()
     private var activeSearchToken: Long = 0L
@@ -192,7 +193,8 @@ class SearchViewModel @Inject constructor(
                             } else {
                                 PaginationState.NoMoreData
                             },
-                            filters = currentFilters
+                            filters = currentFilters,
+                            continuationToken = result.continuationToken
                         )
                         _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
                     }
@@ -217,6 +219,9 @@ class SearchViewModel @Inject constructor(
 
         val currentState = _searchState.value
         if (currentState is SearchState.Results && currentState.query == trimmedQuery) {
+            return
+        }
+        if (currentState is SearchState.LoadingResults && currentState.query == trimmedQuery) {
             return
         }
 
@@ -277,7 +282,7 @@ class SearchViewModel @Inject constructor(
             }
 
             // Get stream URL and play
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+            songRepository.getStreamUrl(song.id, audioEngine.getOptimalQuality())
                 .fold(
                     onSuccess = { streamUrl ->
                         playerServiceConnection.playSong(song, streamUrl)
@@ -347,6 +352,7 @@ class SearchViewModel @Inject constructor(
                 query = currentState.query,
                 limit = pageSize,
                 offset = offset,
+                continuation = currentState.continuationToken,
                 filters = currentState.filters
             ).fold(
                 onSuccess = { result ->
@@ -365,7 +371,8 @@ class SearchViewModel @Inject constructor(
                             PaginationState.Idle
                         } else {
                             PaginationState.NoMoreData
-                        }
+                        },
+                        continuationToken = result.continuationToken
                     )
                 },
                 onFailure = { exception ->

@@ -3,7 +3,7 @@ package com.sonicmusic.app.domain.model
 /**
  * Rich metadata about the currently playing audio stream.
  * 
- * Inspired by Apple Music's "Lossless · ALAC · 24-bit/48 kHz" display.
+ * Inspired by Apple Music-style quality badges.
  * Tracks codec, bitrate, sample rate, bit depth, and quality tier.
  */
 data class AudioStreamInfo(
@@ -17,13 +17,6 @@ data class AudioStreamInfo(
     val isEnhanced: Boolean = false,
 ) {
     /**
-     * Whether this stream qualifies as lossless
-     * OPUS at 160kbps+ is perceptually transparent (lossless for most listeners)
-     */
-    val isLossless: Boolean
-        get() = qualityTier.isLossless || (codec.equals("OPUS", true) && bitrate >= 160) || isEnhanced
-
-    /**
      * Whether this stream qualifies as high-res
      */
     val isHighRes: Boolean
@@ -31,14 +24,12 @@ data class AudioStreamInfo(
 
     /**
      * Human-readable quality badge like Apple Music shows
-     * e.g., "Lossless", "Hi-Res Lossless", "Hi-Res", "AAC", "Enhanced"
+     * e.g., "Hi-Res", "AAC", "Enhanced"
      */
     val qualityBadge: String
         get() = when {
-            isEnhanced && isLossless && sampleRate > 48000 -> "Enhanced · Hi-Res"
-            isEnhanced -> "Enhanced · Lossless"
-            isLossless && sampleRate > 48000 -> "Hi-Res Lossless"
-            isLossless -> "Lossless"
+            isEnhanced && isHighRes -> "Enhanced · Hi-Res"
+            isEnhanced -> "Enhanced"
             isHighRes -> "Hi-Res"
             codec.equals("AAC", true) || codec.equals("AAC-LC", true) -> "AAC"
             codec.equals("AAC-HE", true) -> "HE-AAC"
@@ -96,7 +87,6 @@ data class AudioStreamInfo(
          * Determine quality tier from stream parameters
          */
         fun qualityTierFromStream(codec: String, bitrate: Int): StreamQuality = when {
-            codec.equals("OPUS", true) && bitrate >= 160 -> StreamQuality.LOSSLESS
             codec.equals("OPUS", true) && bitrate >= 128 -> StreamQuality.BEST
             bitrate >= 256 -> StreamQuality.HIGH
             bitrate >= 128 -> StreamQuality.MEDIUM

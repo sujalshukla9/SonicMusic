@@ -1,6 +1,9 @@
 package com.sonicmusic.app.presentation.ui.player
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,15 +18,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DragHandle
-import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -42,27 +50,32 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /**
- * Redesigned Queue Bottom Sheet - ViTune Style
+ * Queue Bottom Sheet — Music App Style (ViTune / YTMusic)
  *
- * @param isVisible Whether the sheet is visible
- * @param onDismiss Callback when sheet is dismissed
- * @param queue List of songs in queue
- * @param currentIndex Index of currently playing song
- * @param onReorder Callback when songs are reordered
- * @param onClearQueue Callback when queue is cleared
- * @param onPlay Callback when a song is clicked
- * @param modifier Modifier for the sheet
+ * Layout:
+ * 1. Header (title + song count + clear button)
+ * 2. Settings card (Auto Queue Similar, Shuffle)
+ * 3. "Now Playing" card
+ * 4. "Up Next" numbered track list (reorderable via drag)
+ * 5. "History" collapsed section (previously played, dimmed)
+ *
+ * DRAG FIX: We use a SEPARATE LazyColumn for the reorderable "Up Next" list
+ * to avoid index offset issues with headers in the same LazyColumn.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,14 +96,34 @@ fun QueueSheet(
 ) {
     if (!isVisible) return
 
-    var localQueue by remember(queue) { mutableStateOf(queue) }
+    var showHistory by remember { mutableStateOf(false) }
+    val safeIndex = currentIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
+    val nowPlayingSong = queue.getOrNull(safeIndex)
+    val upNextSongs = if (queue.size > safeIndex + 1) queue.subList(safeIndex + 1, queue.size) else emptyList()
+    val historySongs = if (safeIndex > 0) queue.subList(0, safeIndex) else emptyList()
+    val upNextStartIndexInLazyList = (if (nowPlayingSong != null) 2 else 0) + 1
+
+    // Local mutable copy of the up-next list so drag-and-drop reflects instantly
+    var localUpNext by remember(upNextSongs) { mutableStateOf(upNextSongs) }
 
     val lazyListState = rememberLazyListState()
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        localQueue = localQueue.toMutableList().apply {
-            add(to.index, removeAt(from.index))
+        // Reorderable callbacks use absolute LazyColumn indices (including headers).
+        val fromRelative = from.index - upNextStartIndexInLazyList
+        val toRelative = to.index - upNextStartIndexInLazyList
+        if (fromRelative !in localUpNext.indices || toRelative !in localUpNext.indices) {
+            return@rememberReorderableLazyListState
         }
-        onReorder(from.index, to.index)
+
+        // These indices are now relative to localUpNext (0-based)
+        localUpNext = localUpNext.toMutableList().apply {
+            add(toRelative, removeAt(fromRelative))
+        }
+
+        // Convert to absolute queue indices for the player
+        val absoluteFrom = safeIndex + 1 + fromRelative
+        val absoluteTo = safeIndex + 1 + toRelative
+        onReorder(absoluteFrom, absoluteTo)
     }
 
     val colorScheme = MaterialTheme.colorScheme
@@ -104,9 +137,9 @@ fun QueueSheet(
         tonalElevation = 2.dp,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+
+            // ── Header ──────────────────────────────────────────────
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -135,26 +168,21 @@ fun QueueSheet(
 
                     Column {
                         Text(
-                            text = "Up Next",
+                            text = "Queue",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = colorScheme.onSurface
                         )
                         Text(
-                            text = "${localQueue.size} songs in queue",
+                            text = "${queue.size} tracks",
                             style = MaterialTheme.typography.bodySmall,
                             color = colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                if (localQueue.isNotEmpty()) {
-                    TextButton(
-                        onClick = {
-                            onClearQueue()
-                            localQueue = emptyList()
-                        }
-                    ) {
+                if (queue.isNotEmpty()) {
+                    TextButton(onClick = onClearQueue) {
                         Text(
                             text = "Clear",
                             color = colorScheme.error,
@@ -164,7 +192,8 @@ fun QueueSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            // ── Settings Card ───────────────────────────────────────
+            Spacer(modifier = Modifier.height(4.dp))
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -230,18 +259,17 @@ fun QueueSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            if (localQueue.isEmpty()) {
+            if (queue.isEmpty()) {
+                // ── Empty State ─────────────────────────────────────
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(200.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                             contentDescription = null,
@@ -262,153 +290,386 @@ fun QueueSheet(
                     }
                 }
             } else {
+                // ── Scrollable queue content ────────────────────────
                 LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
                     state = lazyListState
                 ) {
-                    itemsIndexed(
-                        items = localQueue,
-                        key = { _, song -> song.id }
-                    ) { index, song ->
-                        val isPlaying = index == currentIndex
-
-                        ReorderableItem(reorderableState, key = song.id) { isDragging ->
-                            val elevation by animateDpAsState(
-                                targetValue = if (isDragging) 8.dp else 0.dp,
-                                label = "DragElevation"
+                    // ── Now Playing ─────────────────────────────────
+                    nowPlayingSong?.let { song ->
+                        item(key = "now_playing_header") {
+                            SectionHeader(
+                                title = "Now Playing",
+                                color = colorScheme.primary
                             )
+                        }
 
-                            Surface(
-                                modifier = Modifier.shadow(elevation),
-                                color = if (isDragging) {
-                                    colorScheme.surfaceContainerHigh
-                                } else {
-                                    Color.Transparent
-                                }
-                            ) {
-                                QueueItemCard(
-                                    song = song,
-                                    isPlaying = isPlaying,
-                                    isDragging = isDragging,
-                                    onClick = { onPlay(index) },
-                                    onRemove = {
-                                        onRemove(index)
-                                        if (index in localQueue.indices) {
-                                            localQueue = localQueue.toMutableList().apply { removeAt(index) }
+                        item(key = "now_playing_${song.id}") {
+                            NowPlayingCard(
+                                song = song,
+                                onClick = { onPlay(safeIndex) }
+                            )
+                        }
+                    }
+
+                    // ── Up Next ──────────────────────────────────────
+                    if (localUpNext.isNotEmpty()) {
+                        item(key = "up_next_header") {
+                            SectionHeader(
+                                title = "Up Next",
+                                subtitle = "${localUpNext.size} tracks",
+                                color = colorScheme.onSurface
+                            )
+                        }
+
+                        itemsIndexed(
+                            items = localUpNext,
+                            key = { _, song -> song.id }
+                        ) { relativeIndex, song ->
+                            val absoluteIndex = safeIndex + 1 + relativeIndex
+
+                            ReorderableItem(reorderableState, key = song.id) { isDragging ->
+                                val elevation by animateDpAsState(
+                                    targetValue = if (isDragging) 12.dp else 0.dp,
+                                    animationSpec = androidx.compose.animation.core.spring(
+                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                        stiffness = androidx.compose.animation.core.Spring.StiffnessLow
+                                    ),
+                                    label = "DragElevation"
+                                )
+                                val scale by androidx.compose.animation.core.animateFloatAsState(
+                                    targetValue = if (isDragging) 1.03f else 1f,
+                                    animationSpec = androidx.compose.animation.core.spring(
+                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
+                                    ),
+                                    label = "DragScale"
+                                )
+
+                                Surface(
+                                    modifier = Modifier
+                                        .shadow(elevation, shape = RoundedCornerShape(12.dp))
+                                        .graphicsLayer {
+                                            scaleX = scale
+                                            scaleY = scale
                                         }
-                                    },
-                                    dragModifier = Modifier.draggableHandle()
+                                        .animateItem(
+                                            fadeInSpec = androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+                                            fadeOutSpec = androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+                                            placementSpec = androidx.compose.animation.core.spring(
+                                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                                                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                                            )
+                                        ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (isDragging) colorScheme.surfaceContainerHigh else Color.Transparent
+                                ) {
+                                    TrackItem(
+                                        song = song,
+                                        trackNumber = relativeIndex + 1,
+                                        isPlaying = false,
+                                        isDimmed = false,
+                                        onClick = { onPlay(absoluteIndex) },
+                                        onRemove = {
+                                            onRemove(absoluteIndex)
+                                            localUpNext = localUpNext.filterNot { it.id == song.id }
+                                        },
+                                        dragModifier = Modifier.draggableHandle()
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // ── History (previously played) ─────────────────
+                    if (historySongs.isNotEmpty()) {
+                        item(key = "history_header") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showHistory = !showHistory }
+                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.History,
+                                    contentDescription = null,
+                                    tint = colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Previously Played",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "${historySongs.size}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                )
+                                Icon(
+                                    imageVector = if (showHistory) Icons.Rounded.KeyboardArrowUp
+                                        else Icons.Rounded.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        if (showHistory) {
+                            itemsIndexed(
+                                items = historySongs,
+                                key = { idx, song -> "hist_${song.id}_$idx" }
+                            ) { index, song ->
+                                TrackItem(
+                                    song = song,
+                                    trackNumber = index + 1,
+                                    isPlaying = false,
+                                    isDimmed = true,
+                                    onClick = { onPlay(index) },
+                                    onRemove = null,
+                                    dragModifier = null
                                 )
                             }
                         }
                     }
+
+                    // Bottom spacer
+                    item { Spacer(modifier = Modifier.height(24.dp)) }
                 }
             }
         }
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// COMPONENTS
+// ═════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun QueueItemCard(
+private fun SectionHeader(
+    title: String,
+    subtitle: String? = null,
+    color: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = color
+        )
+        if (subtitle != null) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+/**
+ * Now Playing card — prominent display of the current track
+ */
+@Composable
+private fun NowPlayingCard(
     song: Song,
+    onClick: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = colorScheme.primaryContainer.copy(alpha = 0.18f),
+        tonalElevation = 1.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Thumbnail with equalizer overlay
+            Box(modifier = Modifier.size(56.dp)) {
+                SongThumbnail(
+                    artworkUrl = song.thumbnailUrl,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(12.dp))
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = "Now Playing",
+                        tint = colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = song.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = song.artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Duration badge
+            if (song.duration > 0) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = colorScheme.primary.copy(alpha = 0.12f)
+                ) {
+                    Text(
+                        text = song.formattedDuration(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colorScheme.primary,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Track item — numbered row for Up Next and History sections
+ */
+@Composable
+private fun TrackItem(
+    song: Song,
+    trackNumber: Int,
     isPlaying: Boolean,
-    isDragging: Boolean,
+    isDimmed: Boolean,
     onClick: () -> Unit,
-    onRemove: () -> Unit,
-    dragModifier: Modifier = Modifier,
+    onRemove: (() -> Unit)?,
+    dragModifier: Modifier?,
     modifier: Modifier = Modifier
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val contentAlpha = if (isDimmed) 0.5f else 1f
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .background(
-                when {
-                    isDragging -> colorScheme.surfaceContainerHigh
-                    isPlaying -> colorScheme.primaryContainer.copy(alpha = 0.15f)
-                    else -> Color.Transparent
-                }
-            )
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .alpha(contentAlpha)
+            .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.DragHandle,
-            contentDescription = "Drag to reorder",
-            tint = if (isDragging) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-            modifier = dragModifier.size(24.dp)
+        // Drag handle (only for reorderable items)
+        if (dragModifier != null) {
+            Icon(
+                imageVector = Icons.Rounded.DragHandle,
+                contentDescription = "Drag to reorder",
+                tint = colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                modifier = dragModifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+        }
+
+        // Track number
+        Text(
+            text = "$trackNumber",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = if (isPlaying) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.width(28.dp),
+            maxLines = 1
         )
 
-        Spacer(modifier = Modifier.width(12.dp))
-
+        // Thumbnail
         Surface(
-            modifier = Modifier.size(48.dp),
+            modifier = Modifier.size(46.dp),
             shape = RoundedCornerShape(8.dp),
             color = colorScheme.surfaceContainerHigh
         ) {
-            Box {
-                SongThumbnail(
-                    artworkUrl = song.thumbnailUrl,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                if (isPlaying) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.5f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.GraphicEq,
-                            contentDescription = "Now Playing",
-                            tint = colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-            }
+            SongThumbnail(
+                artworkUrl = song.thumbnailUrl,
+                modifier = Modifier.fillMaxSize()
+            )
         }
 
         Spacer(modifier = Modifier.width(12.dp))
 
+        // Title + Artist
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = song.title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = if (isPlaying) FontWeight.SemiBold else FontWeight.Normal,
                 color = if (isPlaying) colorScheme.primary else colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = song.artist,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
 
-        if (isPlaying) {
-            Spacer(modifier = Modifier.width(8.dp))
-            Surface(
-                shape = CircleShape,
-                color = colorScheme.primary,
-                modifier = Modifier.size(8.dp)
-            ) {}
-        } else {
+        // Duration
+        if (song.duration > 0) {
+            Text(
+                text = song.formattedDuration(),
+                style = MaterialTheme.typography.labelSmall,
+                color = colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.padding(end = 4.dp)
+            )
+        }
+
+        // Remove button (only for Up Next items)
+        if (onRemove != null) {
             IconButton(
                 onClick = onRemove,
                 modifier = Modifier.size(28.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Remove from queue",
-                    tint = colorScheme.onSurfaceVariant
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Remove",
+                    tint = colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }

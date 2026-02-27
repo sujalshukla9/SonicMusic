@@ -3,12 +3,14 @@ package com.sonicmusic.app.presentation.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.data.downloadmanager.SongDownloadManager
+import com.sonicmusic.app.data.local.entity.FollowedArtistEntity
 import com.sonicmusic.app.data.local.dao.ArtistPlayCount
 import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.repository.ArtistRepository
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
@@ -20,16 +22,24 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@OptIn(FlowPreview::class)
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
     private val songRepository: SongRepository,
     private val playlistRepository: PlaylistRepository,
     private val historyRepository: HistoryRepository,
     private val localMusicRepository: LocalMusicRepository,
+    private val artistRepository: ArtistRepository,
     private val songDownloadManager: SongDownloadManager,
     private val playerServiceConnection: PlayerServiceConnection
 ) : ViewModel() {
@@ -49,11 +59,14 @@ class LibraryViewModel @Inject constructor(
     private val _localSongs = MutableStateFlow<List<LocalSong>>(emptyList())
     val localSongs: StateFlow<List<LocalSong>> = _localSongs.asStateFlow()
 
-    private val _artists = MutableStateFlow<List<ArtistPlayCount>>(emptyList())
-    val artists: StateFlow<List<ArtistPlayCount>> = _artists.asStateFlow()
+    private val _artists = MutableStateFlow<List<FollowedArtistEntity>>(emptyList())
+    val artists: StateFlow<List<FollowedArtistEntity>> = _artists.asStateFlow()
 
     private val _downloadedSongs = MutableStateFlow<List<Song>>(emptyList())
     val downloadedSongs: StateFlow<List<Song>> = _downloadedSongs.asStateFlow()
+
+    /** Active downloads being tracked — exposed for UI progress indicators */
+    val activeDownloads = songDownloadManager.activeDownloads
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -70,7 +83,7 @@ class LibraryViewModel @Inject constructor(
 
     // Filtered playlists based on search query
     val filteredPlaylists: StateFlow<List<Playlist>> = combine(
-        _playlists, _searchQuery
+        _playlists, _searchQuery.debounce(300)
     ) { playlists, query ->
         if (query.isBlank()) playlists
         else playlists.filter { it.name.contains(query, ignoreCase = true) }
@@ -78,7 +91,7 @@ class LibraryViewModel @Inject constructor(
 
     // Filtered liked songs based on search query
     val filteredLikedSongs: StateFlow<List<Song>> = combine(
-        _likedSongs, _searchQuery
+        _likedSongs, _searchQuery.debounce(300)
     ) { songs, query ->
         if (query.isBlank()) songs
         else songs.filter {
@@ -95,42 +108,37 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
 
-            // Load liked songs
+            // Launch all data loaders
             launch {
                 songRepository.getLikedSongs().collect { songs ->
                     _likedSongs.value = songs
                 }
             }
 
-            // Load playlists
             launch {
                 playlistRepository.getAllPlaylists().collect { playlists ->
                     _playlists.value = playlists
                 }
             }
 
-            // Load recently played
             launch {
                 historyRepository.getRecentlyPlayed(RECENTLY_PLAYED_LIMIT).collect { history ->
                     _recentlyPlayed.value = history
                 }
             }
             
-            // Load local songs
             launch {
                 localMusicRepository.getLocalSongs().collect { songs ->
                     _localSongs.value = songs
                 }
             }
 
-            // Load artists from play history
             launch {
-                historyRepository.getAllArtists().collect { artistList ->
+                artistRepository.getFollowedArtists().collect { artistList ->
                     _artists.value = artistList
                 }
             }
 
-            // Load downloaded songs
             launch {
                 songDownloadManager.getDownloadedSongs().collect { downloaded ->
                     _downloadedSongs.value = downloaded.map { entity ->
@@ -145,6 +153,9 @@ class LibraryViewModel @Inject constructor(
                 }
             }
 
+            // Dismiss loading spinner once ANY data arrives
+            // (all these flows emit immediately from Room)
+            kotlinx.coroutines.delay(300)
             _isLoading.value = false
         }
     }
@@ -278,64 +289,22 @@ class LibraryViewModel @Inject constructor(
         val songs = _likedSongs.value
         if (songs.isEmpty()) return
 
-        viewModelScope.launch {
-            val firstSong = songs.first()
-            songRepository.getStreamUrl(firstSong.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    val urlMap = mutableMapOf(firstSong.id to streamUrl)
-                    // Fetch URLs for remaining songs
-                    songs.drop(1).forEach { song ->
-                        songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                            .onSuccess { url -> urlMap[song.id] = url }
-                    }
-                    playerServiceConnection.playWithQueue(songs, urlMap, 0)
-                }
-                .onFailure { exception ->
-                    _error.value = "Failed to play: ${exception.message}"
-                }
-        }
+        // Use lazy loading — starts playback instantly, fetches remaining URLs in background
+        playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
     fun shuffleLikedSongs() {
         val songs = _likedSongs.value.shuffled()
         if (songs.isEmpty()) return
 
-        viewModelScope.launch {
-            val firstSong = songs.first()
-            songRepository.getStreamUrl(firstSong.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    val urlMap = mutableMapOf(firstSong.id to streamUrl)
-                    songs.drop(1).forEach { song ->
-                        songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                            .onSuccess { url -> urlMap[song.id] = url }
-                    }
-                    playerServiceConnection.playWithQueue(songs, urlMap, 0)
-                }
-                .onFailure { exception ->
-                    _error.value = "Failed to play: ${exception.message}"
-                }
-        }
+        playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
     fun playAllDownloadedSongs(shuffle: Boolean = false) {
         val songs = if (shuffle) _downloadedSongs.value.shuffled() else _downloadedSongs.value
         if (songs.isEmpty()) return
 
-        viewModelScope.launch {
-            val firstSong = songs.first()
-            songRepository.getStreamUrl(firstSong.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    val urlMap = mutableMapOf(firstSong.id to streamUrl)
-                    songs.drop(1).forEach { song ->
-                        songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                            .onSuccess { url -> urlMap[song.id] = url }
-                    }
-                    playerServiceConnection.playWithQueue(songs, urlMap, 0)
-                }
-                .onFailure { exception ->
-                    _error.value = "Failed to play: ${exception.message}"
-                }
-        }
+        playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
     fun removeDownloadedSong(songId: String) {

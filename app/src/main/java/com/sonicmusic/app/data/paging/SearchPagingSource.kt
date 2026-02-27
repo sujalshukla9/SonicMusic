@@ -16,7 +16,7 @@ class SearchPagingSource(
     private val youTubeiService: YouTubeiService,
     private val query: String,
     private val filters: SearchFilters = SearchFilters(),
-    private val pageSize: Int = 100
+    private val pageSize: Int = DEFAULT_PAGE_SIZE
 ) : PagingSource<Int, Song>() {
 
     override fun getRefreshKey(state: PagingState<Int, Song>): Int? {
@@ -66,29 +66,28 @@ class SearchPagingSource(
      * Apply local filters to search results
      */
     private fun applyFilters(songs: List<Song>, filters: SearchFilters): List<Song> {
-        val strictSongs = songs.filter { song ->
+        // Accept SONG and UNKNOWN (YTM API already returns songs-only via SearchFilter.Song)
+        val musicSongs = songs.filter { song ->
             when (song.contentType) {
                 ContentType.SONG -> true
-                ContentType.UNKNOWN -> song.duration == 0 || song.duration in 60..600
+                ContentType.VIDEO -> true  // Music videos are valid search results
+                ContentType.UNKNOWN -> true
                 else -> false
             }
         }
 
-        return strictSongs.filter { song ->
-            // Duration filter
-            val durationMatch = when (filters.duration) {
+        return musicSongs.filter { song ->
+            // Duration filter (user-selected)
+            when (filters.duration) {
                 com.sonicmusic.app.presentation.state.DurationFilter.Any -> true
                 com.sonicmusic.app.presentation.state.DurationFilter.Short -> song.duration in 0..240
                 com.sonicmusic.app.presentation.state.DurationFilter.Medium -> song.duration in 240..600
                 com.sonicmusic.app.presentation.state.DurationFilter.Long -> song.duration > 600
             }
-            
-            // Add more filters as needed
-            durationMatch
         }
     }
     
     companion object {
-        const val DEFAULT_PAGE_SIZE = 100
+        const val DEFAULT_PAGE_SIZE = 40
     }
 }

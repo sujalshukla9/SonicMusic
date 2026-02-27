@@ -5,7 +5,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -13,7 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.with
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,20 +26,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.NorthWest
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SearchOff
-import androidx.compose.material.icons.outlined.Album
-import androidx.compose.material.icons.outlined.MicExternalOn
-import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.NorthWest
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SearchOff
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.MicExternalOn
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
@@ -50,7 +48,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
@@ -60,6 +57,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.state.PaginationState
 import com.sonicmusic.app.presentation.state.SearchAction
@@ -75,12 +73,13 @@ import kotlinx.coroutines.flow.filter
 fun SearchScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     onShowFullPlayer: () -> Unit = {},
+    onNavigateToArtist: (String, String?) -> Unit = { _, _ -> },
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
-    val searchState by viewModel.searchState.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val recentSearches by viewModel.recentSearches.collectAsState()
-    val trendingSearches by viewModel.trendingSearches.collectAsState()
+    val searchState by viewModel.searchState.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
+    val trendingSearches by viewModel.trendingSearches.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
@@ -126,11 +125,14 @@ fun SearchScreen(
             )
 
             // Content
+            val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
             Box(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    com.sonicmusic.app.presentation.ui.components.NoInternetBanner(isVisible = !isOnline)
                 AnimatedContent(
                     targetState = searchState,
                     transitionSpec = {
-                        fadeIn(animationSpec = tween(300)) with
+                        fadeIn(animationSpec = tween(300)) togetherWith
                         fadeOut(animationSpec = tween(300))
                     },
                     label = "search_state"
@@ -187,6 +189,9 @@ fun SearchScreen(
                                 onSongClick = {
                                     viewModel.onAction(SearchAction.SongClicked(it))
                                 },
+                                onArtistClick = { name, browseId ->
+                                    onNavigateToArtist(name, browseId)
+                                },
                                 onLoadMore = {
                                     viewModel.onAction(SearchAction.LoadMore)
                                 },
@@ -214,9 +219,10 @@ fun SearchScreen(
                         }
                     }
                 }
-            }
-        }
-    }
+                } // Column
+            } // Box
+        } // Outer Column
+    } // Scaffold
 }
 
 @Composable
@@ -242,7 +248,7 @@ private fun SearchBarSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = Icons.Default.Search,
+                imageVector = Icons.Rounded.Search,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(24.dp),
@@ -281,7 +287,7 @@ private fun SearchBarSection(
             ) {
                 IconButton(onClick = onClear) {
                     Icon(
-                        imageVector = Icons.Default.Close,
+                        imageVector = Icons.Rounded.Close,
                         contentDescription = "Clear",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -363,7 +369,7 @@ private fun SuggestionsContent(
                 
                 recentSearches.forEach { search ->
                     SuggestionItem(
-                        icon = Icons.Default.History,
+                        icon = Icons.Rounded.History,
                         text = search,
                         onClick = { onRecentSearchClick(search) }
                     )
@@ -380,7 +386,7 @@ private fun SuggestionsContent(
             // API suggestions
             suggestions.forEach { suggestion ->
                 SuggestionItem(
-                    icon = Icons.Default.Search,
+                    icon = Icons.Rounded.Search,
                     text = suggestion,
                     onClick = { onSuggestionClick(suggestion) }
                 )
@@ -429,7 +435,7 @@ private fun SuggestionItem(
         )
 
         Icon(
-            imageVector = Icons.Default.NorthWest,
+            imageVector = Icons.Rounded.NorthWest,
             contentDescription = "Use suggestion",
             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
             modifier = Modifier.size(18.dp),
@@ -444,6 +450,7 @@ private fun SearchResultsContent(
     totalCount: Int,
     paginationState: PaginationState,
     onSongClick: (com.sonicmusic.app.domain.model.Song) -> Unit,
+    onArtistClick: (String, String?) -> Unit,
     onLoadMore: () -> Unit,
     listState: androidx.compose.foundation.lazy.LazyListState,
     bottomPadding: androidx.compose.ui.unit.Dp
@@ -474,11 +481,18 @@ private fun SearchResultsContent(
         itemsIndexed(
             items = songs,
             key = { index, song -> "${song.id}_$index" },
+            contentType = { _, song -> song.contentType }
         ) { index, song ->
             SearchResultCard(
                 song = song,
                 index = index + 1,
-                onClick = { onSongClick(song) },
+                onClick = {
+                    if (song.contentType == com.sonicmusic.app.domain.model.ContentType.ARTIST) {
+                        onArtistClick(song.title, song.id.takeIf { it.startsWith("UC") })
+                    } else {
+                        onSongClick(song)
+                    }
+                },
             )
         }
 
@@ -564,7 +578,7 @@ private fun PaginationErrorItem(message: String, onRetry: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            imageVector = Icons.Default.Refresh,
+            imageVector = Icons.Rounded.Refresh,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.error,
             modifier = Modifier.size(20.dp)
@@ -597,16 +611,9 @@ private fun SearchResultCard(
     index: Int,
     onClick: () -> Unit,
 ) {
-    val animatedAlpha by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = tween(durationMillis = 300, delayMillis = minOf(index * 30, 300)),
-        label = "alpha",
-    )
-
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .graphicsLayer(alpha = animatedAlpha)
             .padding(horizontal = 16.dp, vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -643,7 +650,7 @@ private fun SearchResultCard(
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
+                            imageVector = Icons.Rounded.PlayArrow,
                             contentDescription = null,
                             tint = Color.White.copy(alpha = 0.9f),
                             modifier = Modifier.size(24.dp),
@@ -718,7 +725,7 @@ private fun EmptyResultsContent(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    imageVector = Icons.Default.SearchOff,
+                    imageVector = Icons.Rounded.SearchOff,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -785,7 +792,7 @@ private fun ErrorContent(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    imageVector = Icons.Default.SearchOff,
+                    imageVector = Icons.Rounded.SearchOff,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.error,
@@ -820,7 +827,7 @@ private fun ErrorContent(
                 )
             ) {
                 Icon(
-                    imageVector = Icons.Default.Refresh,
+                    imageVector = Icons.Rounded.Refresh,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
@@ -870,7 +877,7 @@ private fun ShimmerLoadingState() {
                 .height(24.dp)
                 .background(
                     MaterialTheme.colorScheme.surfaceContainerHighest,
-                    RoundedCornerShape(4.dp)
+                    RoundedCornerShape(12.dp)
                 )
         )
         
@@ -908,7 +915,7 @@ private fun ShimmerSearchResultItem() {
                 .size(56.dp)
                 .background(
                     MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                    RoundedCornerShape(12.dp)
+                    RoundedCornerShape(16.dp)
                 )
         )
         
@@ -921,7 +928,7 @@ private fun ShimmerSearchResultItem() {
                     .height(16.dp)
                     .background(
                         MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                        RoundedCornerShape(4.dp)
+                        RoundedCornerShape(12.dp)
                     )
             )
             
@@ -933,7 +940,7 @@ private fun ShimmerSearchResultItem() {
                     .height(12.dp)
                     .background(
                         MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                        RoundedCornerShape(4.dp)
+                        RoundedCornerShape(12.dp)
                     )
             )
         }
@@ -961,7 +968,7 @@ private fun TrendingSearchesSection(
                 SuggestionChip(
                     onClick = { onSuggestionClick(suggestion) },
                     label = { Text(suggestion, style = MaterialTheme.typography.labelLarge) },
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(50),
                     colors = SuggestionChipDefaults.suggestionChipColors(
                         containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
                     ),
@@ -1001,7 +1008,7 @@ private fun RecentSearchItem(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 2.dp),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = Color.Transparent,
         onClick = onClick,
     ) {
@@ -1012,7 +1019,7 @@ private fun RecentSearchItem(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = Icons.Default.History,
+                imageVector = Icons.Rounded.History,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
@@ -1028,7 +1035,7 @@ private fun RecentSearchItem(
 
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                 Icon(
-                    imageVector = Icons.Default.Close,
+                    imageVector = Icons.Rounded.Close,
                     contentDescription = "Remove",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                     modifier = Modifier.size(18.dp),
@@ -1056,19 +1063,19 @@ private fun BrowseCategoriesSection() {
         ) {
             BrowseCategoryCard(
                 title = "Songs",
-                icon = Icons.Outlined.MusicNote,
+                icon = Icons.Rounded.MusicNote,
                 color = MaterialTheme.colorScheme.primaryContainer,
                 modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Artists",
-                icon = Icons.Outlined.MicExternalOn,
+                icon = Icons.Rounded.MicExternalOn,
                 color = MaterialTheme.colorScheme.secondaryContainer,
                 modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Albums",
-                icon = Icons.Outlined.Album,
+                icon = Icons.Rounded.Album,
                 color = MaterialTheme.colorScheme.tertiaryContainer,
                 modifier = Modifier.weight(1f),
             )
@@ -1094,7 +1101,7 @@ private fun BrowseCategoryCard(
     
     Surface(
         modifier = modifier.height(100.dp),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         color = Color.Transparent,
     ) {
         Box(

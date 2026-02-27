@@ -24,9 +24,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Person
+import com.sonicmusic.app.presentation.ui.components.ArtistListSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,31 +40,33 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.sonicmusic.app.data.local.dao.ArtistPlayCount
+import coil.compose.AsyncImage
 import com.sonicmusic.app.presentation.viewmodel.ArtistsViewModel
+import com.sonicmusic.app.presentation.viewmodel.MergedArtist
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtistsScreen(
     onNavigateBack: () -> Unit,
-    onArtistClick: (String) -> Unit,
+    onArtistClick: (String, String?) -> Unit,
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: ArtistsViewModel = hiltViewModel()
 ) {
-    val artists by viewModel.filteredArtists.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val isSearchActive by viewModel.isSearchActive.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    
+    val artists by viewModel.filteredArtists.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val isSearchActive by viewModel.isSearchActive.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior(rememberTopAppBarState())
 
     Scaffold(
@@ -92,7 +95,7 @@ fun ArtistsScreen(
                     scrollBehavior = scrollBehavior,
                     windowInsets = WindowInsets.statusBars
                 )
-                
+
                 // Animated search bar
                 AnimatedVisibility(
                     visible = isSearchActive,
@@ -121,14 +124,12 @@ fun ArtistsScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            ArtistListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else if (artists.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -138,16 +139,21 @@ fun ArtistsScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        imageVector = Icons.Default.Person,
+                        imageVector = Icons.Rounded.Person,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No artists found" else "No artists yet",
+                        text = if (searchQuery.isNotEmpty()) "No artists found" else "No followed artists",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = if (searchQuery.isNotEmpty()) "Try a different search" else "Follow artists from their profile to see them here",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )
                 }
             }
@@ -168,10 +174,10 @@ fun ArtistsScreen(
                     )
                 }
 
-                items(artists, key = { it.artist }) { artist ->
-                    ArtistListItem(
+                items(artists, key = { it.name }) { artist ->
+                    MergedArtistListItem(
                         artist = artist,
-                        onClick = { onArtistClick(artist.artist) }
+                        onClick = { onArtistClick(artist.name, artist.browseId) }
                     )
                 }
             }
@@ -180,8 +186,8 @@ fun ArtistsScreen(
 }
 
 @Composable
-private fun ArtistListItem(
-    artist: ArtistPlayCount,
+private fun MergedArtistListItem(
+    artist: MergedArtist,
     onClick: () -> Unit
 ) {
     Row(
@@ -201,15 +207,15 @@ private fun ArtistListItem(
                 contentAlignment = Alignment.Center
             ) {
                 if (artist.thumbnailUrl != null) {
-                    coil.compose.AsyncImage(
-                        model = artist.thumbnailUrl,
+                    com.sonicmusic.app.presentation.ui.components.SongThumbnail(
+                        artworkUrl = artist.thumbnailUrl,
                         contentDescription = null,
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Default.Person,
+                        imageVector = Icons.Rounded.Person,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.size(24.dp)
@@ -217,21 +223,38 @@ private fun ArtistListItem(
                 }
             }
         }
-        
+
         Spacer(modifier = Modifier.width(16.dp))
-        
+
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = artist.artist,
+                text = artist.name,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = "${artist.playCount} plays",
+                text = buildString {
+                    if (artist.isFollowed) append("Following")
+                    if (artist.playCount > 0) {
+                        if (artist.isFollowed) append(" · ")
+                        append("${artist.playCount} plays")
+                    }
+                    if (isEmpty()) append("Artist")
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // Following indicator
+        if (artist.isFollowed) {
+            Icon(
+                imageVector = Icons.Rounded.Check,
+                contentDescription = "Following",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
             )
         }
     }

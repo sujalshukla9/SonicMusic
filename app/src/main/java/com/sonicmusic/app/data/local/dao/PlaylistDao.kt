@@ -33,6 +33,9 @@ interface PlaylistDao {
     @Insert
     suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef)
 
+    @Query("SELECT EXISTS(SELECT 1 FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId LIMIT 1)")
+    suspend fun hasSongInPlaylist(playlistId: Long, songId: String): Boolean
+
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId")
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: String)
 

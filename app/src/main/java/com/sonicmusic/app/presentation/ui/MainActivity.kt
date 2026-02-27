@@ -24,14 +24,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.LibraryMusic
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.LibraryMusic
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -40,7 +36,6 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,16 +44,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.presentation.ui.home.HomeSectionDetailScreen
@@ -73,7 +72,7 @@ import com.sonicmusic.app.presentation.ui.library.PlaylistDetailScreen
 import com.sonicmusic.app.presentation.ui.library.RecentlyPlayedScreen
 import com.sonicmusic.app.presentation.ui.player.FullPlayerScreen
 import com.sonicmusic.app.presentation.ui.player.MiniPlayer
-import com.sonicmusic.app.presentation.ui.player.rememberPlayerArtworkPalette
+import com.sonicmusic.app.presentation.ui.theme.LocalDynamicThemeState
 import com.sonicmusic.app.presentation.ui.search.SearchScreen
 import com.sonicmusic.app.presentation.ui.settings.SettingsScreen
 import com.sonicmusic.app.presentation.ui.theme.SonicMusicTheme
@@ -91,6 +90,9 @@ class MainActivity : ComponentActivity() {
 
     @javax.inject.Inject
     lateinit var settingsRepository: SettingsRepository
+
+    @javax.inject.Inject
+    lateinit var networkStatusMonitor: com.sonicmusic.app.core.network.NetworkStatusMonitor
     
     // Notification permission launcher for Android 13+
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -116,24 +118,20 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         
         setContent {
-            val themeMode by settingsRepository.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
-            val dynamicColors by settingsRepository.dynamicColors.collectAsState(initial = true)
-            val dynamicColorIntensity by settingsRepository.dynamicColorIntensity.collectAsState(initial = 85)
             val playerViewModel: com.sonicmusic.app.presentation.viewmodel.PlayerViewModel =
                 androidx.hilt.navigation.compose.hiltViewModel()
-            val currentSong by playerViewModel.currentSong.collectAsState(initial = null)
+            val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
+
+            val isOnline by networkStatusMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
 
             SonicMusicTheme(
-                themeMode = themeMode,
-                dynamicColor = dynamicColors,
-                dynamicColorIntensity = dynamicColorIntensity,
                 artworkUrl = currentSong?.thumbnailUrl
             ) {
-                SonicMusicApp(
-                    artworkUrl = currentSong?.thumbnailUrl,
-                    dynamicColorsEnabled = dynamicColors,
-                    dynamicColorIntensity = dynamicColorIntensity
-                )
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.sonicmusic.app.presentation.ui.components.LocalIsOnline provides isOnline
+                ) {
+                    SonicMusicApp()
+                }
             }
         }
     }
@@ -160,10 +158,10 @@ sealed class Screen(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    object Home : Screen("home", "Home", Icons.Filled.Home, Icons.Outlined.Home)
-    object Search : Screen("search", "Search", Icons.Filled.Search, Icons.Outlined.Search)
-    object Library : Screen("library", "Library", Icons.Filled.LibraryMusic, Icons.Outlined.LibraryMusic)
-    object Settings : Screen("settings", "Settings", Icons.Filled.Settings, Icons.Outlined.Settings)
+    object Home : Screen("home", "Home", Icons.Rounded.Home, Icons.Rounded.Home)
+    object Search : Screen("search", "Search", Icons.Rounded.Search, Icons.Rounded.Search)
+    object Library : Screen("library", "Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic)
+    object Settings : Screen("settings", "Settings", Icons.Rounded.Settings, Icons.Rounded.Settings)
 }
 
 // Sub-screens (no bottom nav)
@@ -176,12 +174,22 @@ object SubScreens {
     const val LOCAL_SONGS = "library/local_songs"
     const val DOWNLOADS = "library/downloads"
     const val ARTISTS = "library/artists"
-    const val ARTIST_DETAIL = "library/artist/{artistName}"
+    const val ARTIST_DETAIL = "library/artist/{artistName}?browseId={browseId}"
     
     fun homeSection(sectionKey: String): String =
         "home/section/${java.net.URLEncoder.encode(sectionKey, "UTF-8")}"
     fun playlistDetail(playlistId: Long) = "library/playlist/$playlistId"
-    fun artistDetail(artistName: String) = "library/artist/${java.net.URLEncoder.encode(artistName, "UTF-8")}"
+    fun artistDetail(artistName: String, browseId: String? = null): String {
+        val encodedName = java.net.URLEncoder.encode(artistName, "UTF-8")
+        val encodedBrowseId = browseId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            java.net.URLEncoder.encode(it, "UTF-8")
+        }
+        return if (encodedBrowseId.isNullOrBlank()) {
+            "library/artist/$encodedName"
+        } else {
+            "library/artist/$encodedName?browseId=$encodedBrowseId"
+        }
+    }
 }
 
 val bottomNavItems = listOf(
@@ -192,11 +200,7 @@ val bottomNavItems = listOf(
 )
 
 @Composable
-fun SonicMusicApp(
-    artworkUrl: String? = null,
-    dynamicColorsEnabled: Boolean = true,
-    dynamicColorIntensity: Int = 85
-) {
+fun SonicMusicApp() {
     val navController = rememberNavController()
     var showFullPlayer by remember { mutableStateOf(false) }
     
@@ -206,33 +210,30 @@ fun SonicMusicApp(
 
     // Global Error Handling (Player)
     val playerViewModel: com.sonicmusic.app.presentation.viewmodel.PlayerViewModel = androidx.hilt.navigation.compose.hiltViewModel()
-    val playbackError by playerViewModel.playbackError.collectAsState(initial = null)
-    val playerError by playerViewModel.error.collectAsState(initial = null)
+    val playbackError by playerViewModel.playbackError.collectAsStateWithLifecycle(initialValue = null)
+    val playerError by playerViewModel.error.collectAsStateWithLifecycle(initialValue = null)
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
-    val appPalette = rememberPlayerArtworkPalette(
-        artworkUrl = artworkUrl,
-        fallbackColorScheme = MaterialTheme.colorScheme,
-        enabled = dynamicColorsEnabled,
-        intensity = dynamicColorIntensity / 100f
-    )
+    val dynamicState = LocalDynamicThemeState.current
+    val colorScheme = MaterialTheme.colorScheme
+    
     val backgroundTop by animateColorAsState(
-        targetValue = appPalette.containerSoft.copy(alpha = 0.46f),
-        animationSpec = tween(durationMillis = 500),
+        targetValue = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f)),
+        animationSpec = tween(durationMillis = 1000),
         label = "app_background_top"
     )
     val backgroundMid by animateColorAsState(
-        targetValue = appPalette.container.copy(alpha = 0.30f),
-        animationSpec = tween(durationMillis = 500),
+        targetValue = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f)),
+        animationSpec = tween(durationMillis = 1000),
         label = "app_background_mid"
     )
     val navBarContainer by animateColorAsState(
-        targetValue = appPalette.colorScheme.surfaceContainerHigh,
-        animationSpec = tween(durationMillis = 450),
+        targetValue = colorScheme.surfaceContainerHigh,
+        animationSpec = tween(durationMillis = 1000),
         label = "app_nav_bar_container"
     )
     val navBarIndicator by animateColorAsState(
-        targetValue = appPalette.accent.copy(alpha = 0.20f),
-        animationSpec = tween(durationMillis = 450),
+        targetValue = colorScheme.secondaryContainer,
+        animationSpec = tween(durationMillis = 1000),
         label = "app_nav_bar_indicator"
     )
 
@@ -265,7 +266,7 @@ fun SonicMusicApp(
                     NavigationBar(
                         containerColor = navBarContainer,
                         contentColor = MaterialTheme.colorScheme.onSurface,
-                        tonalElevation = 6.dp,
+                        tonalElevation = 3.dp,
                         windowInsets = WindowInsets.navigationBars
                     ) {
                         bottomNavItems.forEach { screen ->
@@ -333,7 +334,13 @@ fun SonicMusicApp(
                     HomeScreen(
                         bottomPadding = bottomPadding,
                         onNavigateToSearch = { 
-                            navController.navigate(Screen.Search.route) 
+                            navController.navigate(Screen.Search.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
                         },
                         onNavigateToHomeSection = { sectionKey ->
                             navController.navigate(SubScreens.homeSection(sectionKey))
@@ -351,7 +358,13 @@ fun SonicMusicApp(
                             navController.navigate(SubScreens.RECENTLY_PLAYED)
                         },
                         onNavigateToSettings = { 
-                            navController.navigate(Screen.Settings.route) 
+                            navController.navigate(Screen.Settings.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
                         },
                         onShowFullPlayer = { showFullPlayer = true }
                     )
@@ -359,7 +372,10 @@ fun SonicMusicApp(
                 composable(Screen.Search.route) {
                     SearchScreen(
                         bottomPadding = bottomPadding,
-                        onShowFullPlayer = { showFullPlayer = true }
+                        onShowFullPlayer = { showFullPlayer = true },
+                        onNavigateToArtist = { artistName, browseId ->
+                            navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                        }
                     )
                 }
                 composable(Screen.Library.route) {
@@ -473,14 +489,31 @@ fun SonicMusicApp(
                         )
                     }
                 }
-                composable(SubScreens.ARTIST_DETAIL) { backStackEntry ->
+                composable(
+                    route = SubScreens.ARTIST_DETAIL,
+                    arguments = listOf(
+                        navArgument("artistName") { type = NavType.StringType },
+                        navArgument("browseId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        }
+                    )
+                ) { backStackEntry ->
                     val artistName = backStackEntry.arguments?.getString("artistName")?.let {
                         java.net.URLDecoder.decode(it, "UTF-8")
                     } ?: ""
+                    val browseId = backStackEntry.arguments?.getString("browseId")?.let {
+                        java.net.URLDecoder.decode(it, "UTF-8")
+                    }
                     ArtistDetailScreen(
                         artistName = artistName,
+                        browseId = browseId,
                         onNavigateBack = { navController.popBackStack() },
                         onShowFullPlayer = { showFullPlayer = true },
+                        onNavigateToArtist = { relatedArtist, relatedBrowseId ->
+                            navController.navigate(SubScreens.artistDetail(relatedArtist, relatedBrowseId))
+                        },
                         bottomPadding = bottomPadding
                     )
                 }
@@ -488,8 +521,8 @@ fun SonicMusicApp(
                 composable(SubScreens.ARTISTS) {
                     com.sonicmusic.app.presentation.ui.library.ArtistsScreen(
                         onNavigateBack = { navController.popBackStack() },
-                        onArtistClick = { artistName ->
-                            navController.navigate(SubScreens.artistDetail(artistName))
+                        onArtistClick = { artistName, browseId ->
+                            navController.navigate(SubScreens.artistDetail(artistName, browseId))
                         },
                         bottomPadding = bottomPadding
                     )
@@ -502,9 +535,9 @@ fun SonicMusicApp(
     if (showFullPlayer) {
         FullPlayerScreen(
             onDismiss = { showFullPlayer = false },
-            onOpenArtist = { artistName ->
+            onOpenArtist = { artistName, browseId ->
                 showFullPlayer = false
-                navController.navigate(SubScreens.artistDetail(artistName))
+                navController.navigate(SubScreens.artistDetail(artistName, browseId))
             }
         )
     }

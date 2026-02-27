@@ -1,67 +1,60 @@
 package com.sonicmusic.app.di
 
-import com.sonicmusic.app.data.remote.source.AudioEnhancementApi
+import android.content.Context
+import com.sonicmusic.app.BuildConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import okhttp3.Cache
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 /**
- * Network DI Module — Provides Retrofit and API instances.
- * 
- * The FFmpeg backend URL should be updated to point to your actual server.
- * Default: localhost for development.
+ * Network DI Module — Provides OkHttpClient and API instances.
+ *
+ * Optimizations applied:
+ * - Connection pool: reuses up to 5 idle connections for 30s
+ * - HTTP response cache: 10 MB disk cache
+ * - Tighter timeouts to reduce ANR risk
+ * - retryOnConnectionFailure for transient network errors
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
     
-    /**
-     * Base URL for the FFmpeg transcoding backend.
-     * 
-     * TODO: Update this to your production backend URL.
-     * Examples:
-     *   - Local: "http://10.0.2.2:8080/" (Android emulator → host)
-     *   - Cloud: "https://sonic-ffmpeg.fly.dev/"
-     */
-    private const val FFMPEG_BACKEND_URL = "http://10.0.2.2:8080/"
-    
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
+    fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+                    else HttpLoggingInterceptor.Level.NONE
         }
+
+        // 10 MB HTTP response cache
+        val cacheDir = File(context.cacheDir, "http_cache")
+        val cache = Cache(cacheDir, 10L * 1024 * 1024)
         
-        return OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .addInterceptor(logging)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .cache(cache)
+            .connectionPool(ConnectionPool(5, 30, TimeUnit.SECONDS))
+            
+        return builder
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
-    
-    @Provides
-    @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient): Retrofit {
-        return Retrofit.Builder()
-            .baseUrl(FFMPEG_BACKEND_URL)
-            .client(okHttpClient)
-            .addConverterFactory(GsonConverterFactory.create())
-            .build()
-    }
-    
-    @Provides
-    @Singleton
-    fun provideAudioEnhancementApi(retrofit: Retrofit): AudioEnhancementApi {
-        return retrofit.create(AudioEnhancementApi::class.java)
-    }
+
 
     @Provides
     @Singleton
@@ -74,3 +67,4 @@ object NetworkModule {
         return retrofit.create(com.sonicmusic.app.data.remote.api.RegionApi::class.java)
     }
 }
+

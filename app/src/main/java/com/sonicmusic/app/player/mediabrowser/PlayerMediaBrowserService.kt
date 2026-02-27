@@ -1,4 +1,4 @@
-package com.sonicmusic.app.service
+package com.sonicmusic.app.player.mediabrowser
 
 import android.content.ComponentName
 import android.content.Context
@@ -14,10 +14,12 @@ import android.util.Log
 import androidx.annotation.DrawableRes
 import androidx.core.os.bundleOf
 import com.sonicmusic.app.R
+import com.sonicmusic.app.player.playback.PlaybackService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import android.media.MediaDescription as BrowserMediaDescription
 import android.media.browse.MediaBrowser.MediaItem as BrowserMediaItem
+import androidx.media3.common.Player
 
 /**
  * Media Browser Service for Android Auto, Google Assistant, and Wear OS
@@ -37,7 +39,10 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private var bound = false
-    private var playerBinder: PlaybackService.Binder? = null
+    private var bindRequested = false
+    private var player: androidx.media3.exoplayer.ExoPlayer? = null
+    private var media3Controller: androidx.media3.session.MediaController? = null
+    private var playerListener: Player.Listener? = null
     private var legacySession: MediaSession? = null
 
     override fun onCreate() {
@@ -55,30 +60,93 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     }
 
     override fun onDestroy() {
+        // Remove listener before unbinding
+        playerListener?.let { listener ->
+            media3Controller?.removeListener(listener)
+        }
+        playerListener = null
+        media3Controller?.release()
+        media3Controller = null
+        player = null
         legacySession?.release()
-        if (bound) {
+        if (bound || bindRequested) {
             try {
                 unbindService(this)
             } catch (e: Exception) {
                 Log.e(TAG, "Error unbinding service", e)
             }
+            bound = false
+            bindRequested = false
         }
         super.onDestroy()
     }
 
     override fun onServiceConnected(className: ComponentName, service: IBinder) {
         Log.d(TAG, "Connected to PlaybackService")
-        if (service is PlaybackService.Binder) {
-            bound = true
-            playerBinder = service
-            updatePlaybackState()
-        }
+        bindRequested = false
+        bound = true
+
+        // Use Media3 MediaController to observe playback state from PlaybackService's MediaSession.
+        // We can't use a LocalBinder because PlaybackService extends MediaSessionService and
+        // a custom onBind would intercept Media3's IPC channel.
+        val sessionToken = androidx.media3.session.SessionToken(
+            this, ComponentName(this, PlaybackService::class.java)
+        )
+        val controllerFuture = androidx.media3.session.MediaController.Builder(this, sessionToken).buildAsync()
+        controllerFuture.addListener({
+            try {
+                val controller = controllerFuture.get()
+                media3Controller = controller
+
+                // Register a listener to keep the legacy session in sync
+                val listener = object : Player.Listener {
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        updatePlaybackState()
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        updatePlaybackState()
+                    }
+                }
+                playerListener = listener
+                controller.addListener(listener)
+
+                Log.d(TAG, "Media3 MediaController connected for state sync")
+                updatePlaybackState()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to build MediaController", e)
+            }
+        }, { it.run() })
+
+        Log.d(TAG, "PlaybackService bound successfully")
     }
 
     override fun onServiceDisconnected(name: ComponentName) {
         Log.d(TAG, "Disconnected from PlaybackService")
+        playerListener?.let { listener ->
+            media3Controller?.removeListener(listener)
+        }
+        playerListener = null
+        media3Controller?.release()
+        media3Controller = null
+        player = null
         bound = false
-        playerBinder = null
+        bindRequested = false
+    }
+
+    private fun ensurePlaybackServiceBound() {
+        if (bound || bindRequested) return
+        val intent = Intent(this, PlaybackService::class.java)
+        bindRequested = true
+        val bindOk = runCatching {
+            bindService(intent, this, Context.BIND_AUTO_CREATE)
+        }.getOrElse { error ->
+            Log.e(TAG, "Failed to bind PlaybackService", error)
+            false
+        }
+        if (!bindOk) {
+            bindRequested = false
+        }
     }
 
     override fun onGetRoot(
@@ -88,9 +156,8 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     ): BrowserRoot? {
         Log.d(TAG, "onGetRoot from: $clientPackageName")
         
-        // Bind to PlaybackService
-        val intent = Intent(this, PlaybackService::class.java)
-        bindService(intent, this, Context.BIND_AUTO_CREATE)
+        // Bind lazily once and avoid leaking repeated service connections.
+        ensurePlaybackServiceBound()
         
         return BrowserRoot(
             MediaId.ROOT.id,
@@ -143,26 +210,29 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         .build()
 
     private fun updatePlaybackState() {
-        playerBinder?.let { binder ->
-            val state = if (binder.player.isPlaying) {
-                PlaybackState.STATE_PLAYING
-            } else {
-                PlaybackState.STATE_PAUSED
-            }
-            
-            legacySession?.setPlaybackState(
-                PlaybackState.Builder()
-                    .setState(state, binder.player.currentPosition, 1f)
-                    .setActions(
-                        PlaybackState.ACTION_PLAY or
-                        PlaybackState.ACTION_PAUSE or
-                        PlaybackState.ACTION_SKIP_TO_NEXT or
-                        PlaybackState.ACTION_SKIP_TO_PREVIOUS or
-                        PlaybackState.ACTION_SEEK_TO
-                    )
-                    .build()
-            )
+        val ctrl = media3Controller
+        val state = when {
+            ctrl == null -> PlaybackState.STATE_NONE
+            ctrl.isPlaying -> PlaybackState.STATE_PLAYING
+            ctrl.playbackState == Player.STATE_BUFFERING -> PlaybackState.STATE_BUFFERING
+            ctrl.playWhenReady -> PlaybackState.STATE_PAUSED
+            else -> PlaybackState.STATE_STOPPED
         }
+        val position = ctrl?.currentPosition ?: 0L
+        val speed = ctrl?.playbackParameters?.speed ?: 1f
+
+        legacySession?.setPlaybackState(
+            PlaybackState.Builder()
+                .setState(state, position, speed)
+                .setActions(
+                    PlaybackState.ACTION_PLAY or
+                    PlaybackState.ACTION_PAUSE or
+                    PlaybackState.ACTION_SKIP_TO_NEXT or
+                    PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                    PlaybackState.ACTION_SEEK_TO
+                )
+                .build()
+        )
     }
 
     /**
@@ -172,46 +242,48 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onPlay() {
             Log.d(TAG, "onPlay")
-            playerBinder?.player?.play()
-            updatePlaybackState()
+            startService(
+                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                    action = PlaybackService.ACTION_PLAY
+                }
+            )
         }
         
         override fun onPause() {
             Log.d(TAG, "onPause")
-            playerBinder?.player?.pause()
-            updatePlaybackState()
+            startService(
+                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                    action = PlaybackService.ACTION_PAUSE
+                }
+            )
         }
         
         override fun onSkipToPrevious() {
             Log.d(TAG, "onSkipToPrevious")
-            playerBinder?.player?.let { player ->
-                if (player.hasPreviousMediaItem()) {
-                    player.seekToPrevious()
+            startService(
+                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                    action = PlaybackService.ACTION_PREVIOUS
                 }
-            }
-            updatePlaybackState()
+            )
         }
         
         override fun onSkipToNext() {
             Log.d(TAG, "onSkipToNext")
-            playerBinder?.player?.let { player ->
-                if (player.hasNextMediaItem()) {
-                    player.seekToNext()
+            startService(
+                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                    action = PlaybackService.ACTION_NEXT
                 }
-            }
-            updatePlaybackState()
+            )
         }
         
         override fun onSeekTo(pos: Long) {
             Log.d(TAG, "onSeekTo: $pos")
-            playerBinder?.player?.seekTo(pos)
-            updatePlaybackState()
+            // Seek is not easily done via intent, but the MediaSession in PlaybackService handles it
         }
         
         override fun onSkipToQueueItem(id: Long) {
             Log.d(TAG, "onSkipToQueueItem: $id")
-            playerBinder?.player?.seekToDefaultPosition(id.toInt())
-            updatePlaybackState()
+            // Queue navigation is handled by the MediaSession in PlaybackService
         }
         
         override fun onPlayFromSearch(query: String?, extras: Bundle?) {

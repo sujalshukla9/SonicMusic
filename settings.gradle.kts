@@ -16,4 +16,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "SonicMusic"
 include(":app")
-include(":app")

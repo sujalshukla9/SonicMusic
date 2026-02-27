@@ -14,9 +14,28 @@ import org.mockito.kotlin.any
 import org.mockito.kotlin.never
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import org.junit.Before
+import org.junit.After
+import org.mockito.MockedStatic
+import org.mockito.Mockito.mockStatic
+import org.mockito.ArgumentMatchers
 
 @RunWith(MockitoJUnitRunner::class)
 class RegionRepositoryTest {
+
+    private lateinit var logMock: MockedStatic<android.util.Log>
+
+    @Before
+    fun setup() {
+        logMock = mockStatic(android.util.Log::class.java)
+        logMock.`when`<Int> { android.util.Log.e(ArgumentMatchers.anyString(), ArgumentMatchers.anyString(), ArgumentMatchers.any()) }.thenReturn(0)
+        logMock.`when`<Int> { android.util.Log.e(ArgumentMatchers.anyString(), ArgumentMatchers.anyString()) }.thenReturn(0)
+    }
+
+    @After
+    fun teardown() {
+        logMock.close()
+    }
 
     @Mock
     private lateinit var regionApi: RegionApi
@@ -90,6 +109,7 @@ class RegionRepositoryTest {
         whenever(settingsDataStore.countryCode).thenReturn(flowOf(""))
         whenever(settingsDataStore.countryName).thenReturn(flowOf("")) // Missing name
         whenever(regionApi.getRegion()).thenThrow(RuntimeException("Network Error"))
+        whenever(regionApi.getRegionByUrl(any())).thenThrow(RuntimeException("Network Error 2"))
         
         val repository = RegionRepository(regionApi, settingsDataStore, newPipeService)
         
@@ -98,6 +118,7 @@ class RegionRepositoryTest {
         
         // Assert
         verify(regionApi).getRegion()
+        verify(regionApi).getRegionByUrl(any())
         verify(settingsDataStore).setCountryCode(any())
         verify(settingsDataStore).setRegionCode(any())
         verify(settingsDataStore).setCountryName(any())

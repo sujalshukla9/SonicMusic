@@ -74,6 +74,11 @@ class PlaylistRepositoryImpl @Inject constructor(
             val playlist = playlistDao.getPlaylistById(playlistId)
                 ?: return Result.failure(Exception("Playlist not found"))
 
+            if (playlistDao.hasSongInPlaylist(playlistId, songId)) {
+                // Already present; keep operation idempotent for UI actions.
+                return Result.success(Unit)
+            }
+
             val count = playlistDao.getSongCount(playlistId)
             playlistDao.addSongToPlaylist(
                 com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef(

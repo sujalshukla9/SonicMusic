@@ -11,7 +11,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +25,7 @@ import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
 import com.sonicmusic.app.presentation.ui.components.permissions.AudioStoragePermissionHandler
 import androidx.compose.runtime.LaunchedEffect
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,8 +42,8 @@ fun LocalSongsScreen(
                 viewModel.refreshLocalMusic()
             }
 
-            val localSongs by viewModel.localSongs.collectAsState()
-            val isLoading by viewModel.isLoading.collectAsState()
+            val localSongs by viewModel.localSongs.collectAsStateWithLifecycle()
+            val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -61,14 +62,12 @@ fun LocalSongsScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            SongListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else if (localSongs.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -138,7 +137,11 @@ fun LocalSongsScreen(
                     )
                 }
 
-                items(localSongs, key = { it.id }) { song ->
+                items(
+                    items = localSongs, 
+                    key = { it.id },
+                    contentType = { "local_song" }
+                ) { song ->
                     LocalSongItem(
                         song = song,
                         onClick = { 

@@ -1,14 +1,17 @@
 package com.sonicmusic.app.domain.model
 
 enum class ThemeMode {
-    LIGHT, DARK, SYSTEM;
+    DEFAULT,
+    DYNAMIC,
+    MATERIAL_YOU,
+    PURE_BLACK;
 
     companion object {
         fun fromString(value: String): ThemeMode {
             return try {
                 valueOf(value)
             } catch (e: IllegalArgumentException) {
-                SYSTEM
+                DYNAMIC
             }
         }
     }

@@ -33,10 +33,20 @@ interface UserTasteRepository {
     suspend fun getPersonalizedMix(limit: Int = 20): Result<List<Song>>
     
     /**
-     * Get personalized songs to auto-add to queue when current song ends
+     * Get queue recommendations based on current song and user taste
      */
     suspend fun getQueueRecommendations(
         currentSong: Song,
-        queueSize: Int = 5
+        queueSize: Int = 10
     ): Result<List<Song>>
+
+    /**
+     * Record a skip event (user played < 30s and moved on)
+     */
+    suspend fun recordSkip(song: Song)
+
+    /**
+     * Get inferred top genres from listening history
+     */
+    suspend fun getTopGenres(limit: Int = 5): List<String>
 }

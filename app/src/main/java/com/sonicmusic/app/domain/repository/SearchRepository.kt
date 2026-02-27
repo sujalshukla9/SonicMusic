@@ -26,12 +26,14 @@ interface SearchRepository {
      * @param query Search query string
      * @param limit Maximum number of results
      * @param offset Offset for pagination
+     * @param continuation Continuation token for token-based pagination
      * @return Result containing list of songs
      */
     suspend fun searchSongs(
         query: String,
         limit: Int = 100,
         offset: Int = 0,
+        continuation: String? = null,
         filters: SearchFilters = SearchFilters()
     ): Result<SearchResult>
 
@@ -73,5 +75,6 @@ data class SearchResult(
     val totalCount: Int,
     val hasMore: Boolean,
     val query: String,
-    val nextOffset: Int? = null
+    val nextOffset: Int? = null,
+    val continuationToken: String? = null
 )

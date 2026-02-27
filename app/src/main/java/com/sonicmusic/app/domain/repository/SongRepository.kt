@@ -11,6 +11,7 @@ interface SongRepository {
     suspend fun getSongById(id: String): Result<Song>
     suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String>
     suspend fun getStreamWithInfo(songId: String, quality: StreamQuality): Result<Pair<String, AudioStreamInfo>>
+    suspend fun getArtistSongs(artistName: String, limit: Int = 30): Result<List<Song>>
     suspend fun getNewReleases(limit: Int = 25): Result<List<Song>>
     suspend fun getTrending(limit: Int = 30): Result<List<Song>>
     suspend fun getEnglishHits(limit: Int = 25): Result<List<Song>>
@@ -23,4 +24,5 @@ interface SongRepository {
     suspend fun unlikeSong(songId: String)
     fun getLikedSongs(): Flow<List<Song>>
     suspend fun isLiked(songId: String): Boolean
+    fun observeIsLiked(songId: String): kotlinx.coroutines.flow.Flow<Boolean>
 }

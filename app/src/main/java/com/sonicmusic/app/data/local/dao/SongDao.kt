@@ -31,6 +31,9 @@ interface SongDao {
     @Query("SELECT isLiked FROM songs WHERE id = :songId")
     suspend fun isLiked(songId: String): Boolean?
 
+    @Query("SELECT isLiked FROM songs WHERE id = :songId")
+    fun observeIsLiked(songId: String): kotlinx.coroutines.flow.Flow<Boolean?>
+
     @Query("DELETE FROM songs WHERE id = :songId")
     suspend fun deleteSong(songId: String)
 }

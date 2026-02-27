@@ -22,7 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -84,14 +84,12 @@ fun HomeSectionDetailScreen(
     ) { paddingValues ->
         when {
             isLoading && songs.isEmpty() -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
+                SongListSkeleton(
+                    contentPadding = PaddingValues(
+                        top = paddingValues.calculateTopPadding(),
+                        bottom = bottomPadding + 20.dp
+                    )
+                )
             }
 
             songs.isEmpty() -> {
@@ -142,8 +140,9 @@ fun HomeSectionDetailScreen(
                         ) {
                             Button(
                                 onClick = {
-                                    viewModel.playAllSongs(songs)
-                                    onShowFullPlayer()
+                                    if (viewModel.playSection(sectionKey, shuffle = false)) {
+                                        onShowFullPlayer()
+                                    }
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
@@ -158,8 +157,9 @@ fun HomeSectionDetailScreen(
 
                             FilledTonalButton(
                                 onClick = {
-                                    viewModel.playAllSongs(songs, shuffle = true)
-                                    onShowFullPlayer()
+                                    if (viewModel.playSection(sectionKey, shuffle = true)) {
+                                        onShowFullPlayer()
+                                    }
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
@@ -179,8 +179,9 @@ fun HomeSectionDetailScreen(
                             song = song,
                             index = index + 1,
                             onClick = {
-                                viewModel.onSongClickWithContext(song, songs)
-                                onShowFullPlayer()
+                                if (viewModel.onSectionSongClick(sectionKey, song)) {
+                                    onShowFullPlayer()
+                                }
                             }
                         )
                     }

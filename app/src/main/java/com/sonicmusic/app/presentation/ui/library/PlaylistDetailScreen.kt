@@ -6,24 +6,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlaylistDetailViewModel
+import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +36,7 @@ fun PlaylistDetailScreen(
     val playlist by viewModel.playlist.collectAsState()
     val songs by viewModel.songs.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val error by viewModel.error.collectAsState()
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     // Load playlist data
@@ -44,15 +44,25 @@ fun PlaylistDetailScreen(
         viewModel.loadPlaylist(playlistId)
     }
 
+    // Show errors as snackbar
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(error) {
+        error?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearError()
+        }
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(playlist?.name ?: "Playlist") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                             contentDescription = "Back"
                         )
                     }
@@ -60,7 +70,7 @@ fun PlaylistDetailScreen(
                 actions = {
                     IconButton(onClick = { showDeleteDialog = true }) {
                         Icon(
-                            imageVector = Icons.Default.Delete,
+                            imageVector = Icons.Rounded.Delete,
                             contentDescription = "Delete playlist"
                         )
                     }
@@ -69,14 +79,12 @@ fun PlaylistDetailScreen(
         }
     ) { paddingValues ->
         if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            SongListSkeleton(
+                contentPadding = PaddingValues(
+                    top = paddingValues.calculateTopPadding(),
+                    bottom = bottomPadding + 16.dp
+                )
+            )
         } else if (playlist == null) {
             Box(
                 modifier = Modifier
@@ -112,7 +120,9 @@ fun PlaylistDetailScreen(
                                 SongThumbnail(
                                     artworkUrl = playlist!!.coverArtUrl,
                                     modifier = Modifier.fillMaxSize(),
-                                    contentDescription = null
+                                    contentDescription = null,
+                                    highQuality = true,
+                                    targetSizePx = 480
                                 )
                             } else {
                                 Box(
@@ -164,7 +174,7 @@ fun PlaylistDetailScreen(
                                 enabled = songs.isNotEmpty()
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.PlayArrow,
+                                    imageVector = Icons.Rounded.PlayArrow,
                                     contentDescription = null,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -182,7 +192,7 @@ fun PlaylistDetailScreen(
                                 enabled = songs.isNotEmpty()
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Shuffle,
+                                    imageVector = Icons.Rounded.Shuffle,
                                     contentDescription = null,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -249,13 +259,12 @@ private fun PlaylistSongItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
-            model = song.thumbnailUrl,
-            contentDescription = null,
+        SongThumbnail(
+            artworkUrl = song.thumbnailUrl,
             modifier = Modifier
                 .size(56.dp)
                 .clip(RoundedCornerShape(8.dp)),
-            contentScale = ContentScale.Crop
+            contentDescription = null
         )
 
         Spacer(modifier = Modifier.width(12.dp))
@@ -276,15 +285,19 @@ private fun PlaylistSongItem(
             )
         }
 
-        Text(
-            text = song.formattedDuration(),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // Only show duration if it's not zero (songs cached without duration)
+        val duration = song.formattedDuration()
+        if (song.duration > 0) {
+            Text(
+                text = duration,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         IconButton(onClick = onRemoveClick) {
             Icon(
-                imageVector = Icons.Default.MoreVert,
+                imageVector = Icons.Rounded.MoreVert,
                 contentDescription = "Remove from playlist"
             )
         }

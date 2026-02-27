@@ -26,7 +26,7 @@ internal object RegionalRecommendationHelper {
 
     fun regionalKeywords(countryCode: String): List<String> {
         return when (countryCode) {
-            "IN" -> listOf("bollywood", "hindi", "punjabi", "indian pop")
+            "IN" -> listOf("english pop", "global hits", "international charts", "indie pop")
             "US", "GB", "CA", "AU", "NZ" -> listOf("pop", "hip hop", "r&b", "indie")
             "BR" -> listOf("brazilian pop", "sertanejo", "funk brasileiro", "mpb")
             "ES", "MX", "AR", "CO", "CL" -> listOf("latin", "reggaeton", "musica latina", "espanol")
@@ -43,7 +43,7 @@ internal object RegionalRecommendationHelper {
 
     fun preferredLanguages(countryCode: String): List<String> {
         return when (countryCode) {
-            "IN" -> listOf("Hindi", "English", "Punjabi")
+            "IN" -> listOf("English")
             "ES", "MX", "AR", "CO", "CL" -> listOf("Spanish", "English")
             "BR", "PT" -> listOf("Portuguese", "English")
             "JP" -> listOf("Japanese", "English")

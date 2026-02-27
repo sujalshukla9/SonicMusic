@@ -28,52 +28,62 @@ class RegionRepository @Inject constructor(
      * If not, it tries to get it from the API, falling back to the device locale.
      */
     suspend fun initializeRegion() {
-        val currentRegion = settingsDataStore.regionCode.first()
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-        val cachedCountryCode = settingsDataStore.countryCode.first()
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-        val currentCountry = normalizeCountryCode(cachedCountryCode)
-        val currentCountryName = settingsDataStore.countryName.first()
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-        val isNameJustCode = currentCountryName != null &&
-            (currentCountry != null && currentCountryName.equals(cachedCountryCode, ignoreCase = true) ||
-                isLikelyCode(currentCountryName))
+        try {
+            val currentRegion = settingsDataStore.regionCode.first()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val cachedCountryCode = settingsDataStore.countryCode.first()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val currentCountry = normalizeCountryCode(cachedCountryCode)
+            val currentCountryName = settingsDataStore.countryName.first()
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val isNameJustCode = currentCountryName != null &&
+                (currentCountry != null && currentCountryName.equals(cachedCountryCode, ignoreCase = true) ||
+                    isLikelyCode(currentCountryName))
 
-        // If cache is missing or stale, fetch fresh region from IP.
-        if (currentRegion == null || currentCountry == null || currentCountryName == null || isNameJustCode) {
-            fetchAndSaveRegion()
-        } else {
-            // Canonicalize legacy country codes like UK -> GB.
-            if (!cachedCountryCode.equals(currentCountry, ignoreCase = true)) {
-                settingsDataStore.setCountryCode(currentCountry)
-                if (currentRegion.equals(cachedCountryCode, ignoreCase = true)) {
-                    settingsDataStore.setRegionCode(normalizeRegion(currentCountry, currentCountry))
+            // If cache is missing or stale, fetch fresh region from IP.
+            if (currentRegion == null || currentCountry == null || currentCountryName == null || isNameJustCode) {
+                fetchAndSaveRegion()
+            } else {
+                // Canonicalize legacy country codes like UK -> GB.
+                if (!cachedCountryCode.equals(currentCountry, ignoreCase = true)) {
+                    settingsDataStore.setCountryCode(currentCountry)
+                    if (currentRegion.equals(cachedCountryCode, ignoreCase = true)) {
+                        settingsDataStore.setRegionCode(normalizeRegion(currentCountry, currentCountry))
+                    }
+                    if (currentCountryName.equals(cachedCountryCode, ignoreCase = true)) {
+                        settingsDataStore.setCountryName(normalizeCountryName(currentCountryName, currentCountry))
+                    }
                 }
-                if (currentCountryName.equals(cachedCountryCode, ignoreCase = true)) {
-                    settingsDataStore.setCountryName(normalizeCountryName(currentCountryName, currentCountry))
+
+                val canonicalRegion = normalizeRegion(currentRegion, currentCountry)
+                if (canonicalRegion != currentRegion) {
+                    settingsDataStore.setRegionCode(canonicalRegion)
                 }
-            }
 
-            val canonicalRegion = normalizeRegion(currentRegion, currentCountry)
-            if (canonicalRegion != currentRegion) {
-                settingsDataStore.setRegionCode(canonicalRegion)
-            }
+                val canonicalCountryName = normalizeCountryName(currentCountryName, currentCountry)
+                if (canonicalCountryName != currentCountryName) {
+                    settingsDataStore.setCountryName(canonicalCountryName)
+                }
 
-            val canonicalCountryName = normalizeCountryName(currentCountryName, currentCountry)
-            if (canonicalCountryName != currentCountryName) {
-                settingsDataStore.setCountryName(canonicalCountryName)
+                // Restore NewPipe region from cache.
+                newPipeService.updateRegion(currentCountry)
             }
-
-            // Restore NewPipe region from cache.
-            newPipeService.updateRegion(currentCountry)
+        } catch (e: Exception) {
+            // Never crash app startup due to region detection failures.
+            android.util.Log.e("RegionRepository", "Error initializing region", e)
+            fallbackToLocale()
         }
     }
 
     suspend fun refreshRegion() {
-        fetchAndSaveRegion()
+        try {
+            fetchAndSaveRegion()
+        } catch (_: Exception) {
+            fallbackToLocale()
+        }
     }
 
     private suspend fun fetchAndSaveRegion() {
@@ -87,6 +97,7 @@ class RegionRepository @Inject constructor(
             return
         }
 
+        android.util.Log.e("RegionRepository", "All region fetch attempts failed, falling back to locale")
         fallbackToLocale()
     }
 

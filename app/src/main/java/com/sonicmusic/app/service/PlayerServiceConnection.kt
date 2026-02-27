@@ -14,8 +14,12 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.player.playback.PlaybackService
+import com.sonicmusic.app.player.audio.AudioEngine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,7 +52,7 @@ class PlayerServiceConnection @Inject constructor(
     val audioEngine: AudioEngine
 ) {
     companion object {
-        private const val TAG = "PlayerServiceConnection"
+        private const val TAG = "SonicConnection"
         private const val QUEUE_LOW_THRESHOLD = 2 // Trigger fetch when this many songs left
         private const val QUEUE_CHECK_COOLDOWN_MS = 5000L // 5 seconds between checks
         private const val PRELOAD_THRESHOLD = 5 // Start preloading when 5 songs left
@@ -63,6 +67,7 @@ class PlayerServiceConnection @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var positionUpdateJob: Job? = null
     private var queueCheckJob: Job? = null
+    private var lazyPlaybackJob: Job? = null
 
     // ═══════════════════════════════════════════════════════════════
     // PLAYBACK STATE FLOWS
@@ -117,10 +122,14 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     // Cache of stream URLs by song ID
-    private val streamUrlCache = mutableMapOf<String, String>()
+    private val streamUrlCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
+            return size > 200
+        }
+    }
     
     // Queue of songs (mirrors player queue)
-    private val songQueue = mutableListOf<Song>()
+    private val songQueue: MutableList<Song> = Collections.synchronizedList(mutableListOf<Song>())
     
     // Callback for when queue needs more songs
     private var lastQueueCheckTime = 0L
@@ -131,6 +140,12 @@ class PlayerServiceConnection @Inject constructor(
     
     // Track if we're at end of queue
     private var reachedEndOfQueue = false
+
+    // Guard queue refill while lazy queue hydration is still adding known songs.
+    private val lazyQueueHydrationJobs = AtomicInteger(0)
+
+    // Monotonic session id to ignore stale async queue work after new playback starts.
+    private val queueSessionId = AtomicInteger(0)
 
     // ═══════════════════════════════════════════════════════════════
     // PLAYER LISTENER - ViTune Style
@@ -150,7 +165,6 @@ class PlayerServiceConnection @Inject constructor(
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
-            Log.d(TAG, "📊 Playback state: $playbackState")
             when (playbackState) {
                 Player.STATE_BUFFERING -> _isBuffering.value = true
                 Player.STATE_READY -> {
@@ -172,15 +186,16 @@ class PlayerServiceConnection @Inject constructor(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            Log.d(TAG, "🎵 Media transition: ${mediaItem?.mediaId}, reason: $reason")
             mediaItem?.let { item ->
                 // Update current song from our queue
-                val song = songQueue.find { it.id == item.mediaId }
-                _currentSong.value = song ?: item.toSong()
-                
-                // Update queue index
-                val index = songQueue.indexOfFirst { it.id == item.mediaId }
-                _currentQueueIndex.value = index
+                synchronized(songQueue) {
+                    val song = songQueue.find { it.id == item.mediaId }
+                    _currentSong.value = song ?: item.toSong()
+                    
+                    // Update queue index
+                    val index = songQueue.indexOfFirst { it.id == item.mediaId }
+                    _currentQueueIndex.value = index
+                }
                 
                 // Check if we need more songs after transition
                 // This is key for ViTune-style continuous playback
@@ -332,6 +347,9 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun playSong(song: Song, streamUrl: String) {
         Log.d(TAG, "▶️ Playing: ${song.title}")
+
+        lazyPlaybackJob?.cancel()
+        queueSessionId.incrementAndGet()
         
         // Cache the URL
         streamUrlCache[song.id] = streamUrl
@@ -365,38 +383,68 @@ class PlayerServiceConnection @Inject constructor(
      * @param streamUrls Map of song IDs to stream URLs
      * @param startIndex Index to start playing from
      */
-    fun playWithQueue(songs: List<Song>, streamUrls: Map<String, String>, startIndex: Int = 0) {
+    fun playWithQueue(
+        songs: List<Song>,
+        streamUrls: Map<String, String>,
+        startIndex: Int = 0,
+        invalidatePendingLazyLoads: Boolean = true
+    ) {
         if (songs.isEmpty()) return
-        Log.d(TAG, "▶️ Playing queue: ${songs.size} songs, starting at $startIndex")
-        
-        // Cache URLs
-        streamUrls.forEach { (id, url) -> streamUrlCache[id] = url }
-        
-        // Build queue
-        songQueue.clear()
-        songQueue.addAll(songs)
-        _queue.value = songQueue.toList()
-        reachedEndOfQueue = false
-        
-        // Create media items
-        val mediaItems = songs.mapNotNull { song ->
-            streamUrls[song.id]?.let { url -> createMediaItem(song, url) }
+
+        if (invalidatePendingLazyLoads) {
+            lazyPlaybackJob?.cancel()
+            queueSessionId.incrementAndGet()
         }
-        
-        if (mediaItems.isEmpty()) {
+
+        val safeRequestedIndex = startIndex.coerceIn(0, songs.lastIndex)
+        Log.d(TAG, "▶️ Playing queue: ${songs.size} songs, starting at $safeRequestedIndex")
+
+        val playableEntries = songs.mapIndexedNotNull { originalIndex, song ->
+            streamUrls[song.id]?.let { url -> Triple(originalIndex, song, url) }
+        }
+
+        if (playableEntries.isEmpty()) {
             Log.e(TAG, "❌ No valid media items")
             return
         }
-        
+
+        val exactStartPlayableIndex = playableEntries.indexOfFirst { it.first == safeRequestedIndex }
+        val startPlayableIndex = if (exactStartPlayableIndex >= 0) {
+            exactStartPlayableIndex
+        } else {
+            val nextPlayableIndex = playableEntries.indexOfFirst { it.first > safeRequestedIndex }
+            if (nextPlayableIndex >= 0) nextPlayableIndex else 0
+        }
+
+        // Cache only playable URLs.
+        playableEntries.forEach { (_, song, url) ->
+            streamUrlCache[song.id] = url
+        }
+
+        // Keep local queue and player queue aligned 1:1.
+        songQueue.clear()
+        songQueue.addAll(playableEntries.map { it.second })
+        _queue.value = songQueue.toList()
+        reachedEndOfQueue = false
+
+        val mediaItems = playableEntries.map { (_, song, url) ->
+            createMediaItem(song, url)
+        }
+
         mediaController?.apply {
-            setMediaItems(mediaItems, startIndex, 0)
+            setMediaItems(mediaItems, startPlayableIndex, 0)
             prepare()
             play()
         }
-        
-        _currentSong.value = songs.getOrNull(startIndex)
-        _currentQueueIndex.value = startIndex
-        
+
+        _currentSong.value = songQueue.getOrNull(startPlayableIndex)
+        _currentQueueIndex.value = startPlayableIndex
+
+        val skippedCount = songs.size - songQueue.size
+        if (skippedCount > 0) {
+            Log.w(TAG, "⚠️ Skipped $skippedCount songs without playable stream URLs")
+        }
+
         // ViTune: Check if we need more songs immediately
         checkQueueAndRequestMore()
     }
@@ -421,8 +469,11 @@ class PlayerServiceConnection @Inject constructor(
             connect() // Try to reconnect
             return
         }
-        
-        scope.launch {
+
+        lazyPlaybackJob?.cancel()
+        val sessionId = queueSessionId.incrementAndGet()
+
+        lazyPlaybackJob = scope.launch {
             val safeStartIndex = startIndex.coerceIn(0, songs.lastIndex)
             val targetSong = songs[safeStartIndex]
             val orderedQueue = buildList {
@@ -437,9 +488,9 @@ class PlayerServiceConnection @Inject constructor(
 
             // 1. Fetch only the first song immediately for instant playback
             try {
-                // Clear queue immediately for UI checking
+                // Expose the initial song immediately; remaining songs are appended as URLs resolve.
                 songQueue.clear()
-                songQueue.addAll(orderedQueue)
+                songQueue.add(targetSong)
                 _queue.value = songQueue.toList()
                 _currentSong.value = targetSong
                 _currentQueueIndex.value = 0
@@ -449,15 +500,33 @@ class PlayerServiceConnection @Inject constructor(
                 val streamUrlResult = songRepository.getStreamUrl(targetSong.id, com.sonicmusic.app.domain.model.StreamQuality.BEST)
                 
                 streamUrlResult.onSuccess { streamUrl ->
+                    if (sessionId != queueSessionId.get()) {
+                        Log.d(TAG, "⏹️ Ignoring stale lazy play success for old session")
+                        return@onSuccess
+                    }
+
                     // Play immediately
-                     playWithQueue(orderedQueue, mapOf(targetSong.id to streamUrl), 0)
+                     playWithQueue(
+                         songs = orderedQueue,
+                         streamUrls = mapOf(targetSong.id to streamUrl),
+                         startIndex = 0,
+                         invalidatePendingLazyLoads = false
+                     )
                      
                      // 2. Fetch remaining in background
                      val remainingSongs = orderedQueue.drop(1)
                      if (remainingSongs.isNotEmpty()) {
-                         addSongsToQueueLazy(remainingSongs, songRepository, true)
+                         addSongsToQueueLazy(
+                             songs = remainingSongs,
+                             songRepository = songRepository,
+                             isQueueAlreadyPopulated = false,
+                             expectedSessionId = sessionId
+                         )
                      }
                 }.onFailure { e ->
+                    if (sessionId != queueSessionId.get()) {
+                        return@onFailure
+                    }
                     Log.e(TAG, "❌ Failed to fetch first song URL", e)
                     _playbackError.value = "Failed to play: ${e.message}"
                     _isBuffering.value = false
@@ -476,21 +545,29 @@ class PlayerServiceConnection @Inject constructor(
      * 
      * @param songs Songs to add
      * @param songRepository Repository to fetch URLs
-     * @param isQueueAlreadyPopulated Whether the local queue list is already populated (true for playSongsLazy)
+     * @param isQueueAlreadyPopulated True only when these songs are already present in local queue state.
      */
     fun addSongsToQueueLazy(
         songs: List<Song>, 
         songRepository: com.sonicmusic.app.domain.repository.SongRepository,
-        isQueueAlreadyPopulated: Boolean = false
+        isQueueAlreadyPopulated: Boolean = false,
+        expectedSessionId: Int? = null
     ) {
         if (songs.isEmpty()) return
+        val targetSessionId = expectedSessionId ?: queueSessionId.get()
+        if (targetSessionId != queueSessionId.get()) return
+        lazyQueueHydrationJobs.incrementAndGet()
         
         scope.launch(Dispatchers.IO) {
             try {
                 Log.d(TAG, "⏳ Background fetching URLs for ${songs.size} songs...")
                 
-                songs.chunked(5).forEach { batch ->
-                    if (!isActive) return@forEach
+                for (batch in songs.chunked(5)) {
+                    if (!isActive) break
+                    if (targetSessionId != queueSessionId.get()) {
+                        Log.d(TAG, "⏹️ Stopping stale lazy hydration for old session")
+                        break
+                    }
                     
                     val urlMap = mutableMapOf<String, String>()
                     val validSongs = mutableListOf<Song>()
@@ -510,16 +587,39 @@ class PlayerServiceConnection @Inject constructor(
                     
                     if (validSongs.isNotEmpty()) {
                         withContext(Dispatchers.Main) {
+                            if (targetSessionId != queueSessionId.get()) return@withContext
+
                             if (isQueueAlreadyPopulated) {
-                                // Just update URLs for existing items (handled by streamUrlCache update mostly)
+                                // Keep cache and local queue synced even when caller pre-populated queue metadata.
                                 updateStreamUrls(urlMap)
-                                
-                                validSongs.forEach { song ->
-                                    if (song.id != _currentSong.value?.id) { // Don't duplicate current
-                                        urlMap[song.id]?.let { url ->
-                                            mediaController?.addMediaItem(createMediaItem(song, url))
-                                        }
+
+                                val existingLocalIds = songQueue.asSequence().map { it.id }.toMutableSet()
+                                val controller = mediaController
+                                val existingControllerIds = mutableSetOf<String>()
+                                if (controller != null) {
+                                    repeat(controller.mediaItemCount) { index ->
+                                        existingControllerIds.add(controller.getMediaItemAt(index).mediaId)
                                     }
+                                }
+
+                                var localQueueChanged = false
+                                validSongs.forEach validSongLoop@{ song ->
+                                    val streamUrl = urlMap[song.id] ?: return@validSongLoop
+
+                                    if (!existingLocalIds.contains(song.id)) {
+                                        songQueue.add(song)
+                                        existingLocalIds.add(song.id)
+                                        localQueueChanged = true
+                                    }
+
+                                    if (song.id != _currentSong.value?.id && !existingControllerIds.contains(song.id)) {
+                                        controller?.addMediaItem(createMediaItem(song, streamUrl))
+                                        existingControllerIds.add(song.id)
+                                    }
+                                }
+
+                                if (localQueueChanged) {
+                                    _queue.value = songQueue.toList()
                                 }
                             } else {
                                 // Normal add to queue (append)
@@ -533,6 +633,15 @@ class PlayerServiceConnection @Inject constructor(
                  Log.d(TAG, "✅ Finished background URL fetching")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error in background fetch", e)
+            } finally {
+                val remainingJobs = lazyQueueHydrationJobs.decrementAndGet()
+                if (remainingJobs <= 0) {
+                    lazyQueueHydrationJobs.set(0)
+                    withContext(Dispatchers.Main) {
+                        // Re-evaluate recommendations once hydration has finished.
+                        checkQueueAndRequestMore()
+                    }
+                }
             }
         }
     }
@@ -561,7 +670,12 @@ class PlayerServiceConnection @Inject constructor(
             existingIds.add(song.id)
             addedCount += 1
         }
-        
+
+        if (addedCount == 0) {
+            Log.d(TAG, "⚠️ No playable songs were appended to queue")
+            return
+        }
+
         _queue.value = songQueue.toList()
         reachedEndOfQueue = false
         
@@ -633,6 +747,9 @@ class PlayerServiceConnection @Inject constructor(
      * Seek to position (0.0 to 1.0)
      * Uses cached duration for more reliable seeking
      */
+    // Job that resets isSeeking — cancelled on each new seek to prevent premature reset
+    private var seekResetJob: Job? = null
+
     fun seekTo(progress: Float) {
         mediaController?.let { controller ->
             val cachedDuration = _duration.value
@@ -650,10 +767,11 @@ class PlayerServiceConnection @Inject constructor(
                 _currentPosition.value = position
                 
                 controller.seekTo(position)
-                Log.d("PlayerServiceConnection", "Seeking to ${position}ms (${(progress * 100).toInt()}%)")
+                Log.d(TAG, "Seeking to ${position}ms (${(progress * 100).toInt()}%)")
                 
-                // Reset seeking flag after a short delay to allow player to catch up
-                scope.launch {
+                // Cancel previous reset job to prevent premature isSeeking clear on rapid seeks
+                seekResetJob?.cancel()
+                seekResetJob = scope.launch {
                     delay(500) // 500ms grace period
                     isSeeking = false
                 }
@@ -705,9 +823,12 @@ class PlayerServiceConnection @Inject constructor(
      * Clear the queue
      */
     fun clearQueue() {
+        lazyPlaybackJob?.cancel()
+        queueSessionId.incrementAndGet()
         mediaController?.clearMediaItems()
         songQueue.clear()
         streamUrlCache.clear()
+        lazyQueueHydrationJobs.set(0)
         _queue.value = emptyList()
         _currentQueueIndex.value = -1
         _currentSong.value = null
@@ -806,6 +927,10 @@ class PlayerServiceConnection @Inject constructor(
         val controller = mediaController ?: return
         val callback = onQueueNeedsMoreSongs ?: return
         val currentSong = _currentSong.value ?: return
+
+        if (lazyQueueHydrationJobs.get() > 0) {
+            return
+        }
         
         // Debounce: only check once every few seconds
         val now = System.currentTimeMillis()
@@ -817,7 +942,7 @@ class PlayerServiceConnection @Inject constructor(
         val totalItems = controller.mediaItemCount
         val remaining = totalItems - currentIndex - 1
         
-        Log.d(TAG, "📊 Queue check: $remaining songs remaining (threshold: $QUEUE_LOW_THRESHOLD)")
+
         
         // ViTune-style: Request more songs early for seamless playback
         if (remaining <= QUEUE_LOW_THRESHOLD || reachedEndOfQueue) {
@@ -878,7 +1003,8 @@ class PlayerServiceConnection @Inject constructor(
             _repeatMode.value = controller.repeatMode
             _shuffleEnabled.value = controller.shuffleModeEnabled
             
-            controller.currentMediaItem?.let { item ->
+            synchronized(songQueue) {
+                val item = controller.currentMediaItem ?: return@let
                 val song = songQueue.find { it.id == item.mediaId } ?: item.toSong()
                 _currentSong.value = song
             }

@@ -6,6 +6,7 @@ import androidx.paging.PagingData
 import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.paging.SearchPagingSource
+import com.sonicmusic.app.data.remote.source.NewPipeService
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
@@ -29,13 +30,13 @@ import javax.inject.Singleton
 @Singleton
 class SearchRepositoryImpl @Inject constructor(
     private val youTubeiService: YouTubeiService,
+    private val newPipeService: NewPipeService,
     private val songDao: SongDao,
     private val settingsDataStore: SettingsDataStore
 ) : SearchRepository {
 
     // Simple in-memory cache
     private val searchCache = mutableMapOf<String, CacheEntry>()
-    private val cacheDuration = TimeUnit.MINUTES.toMillis(5)
     private val fallbackCountryCode = "US"
 
     override fun searchSongsPaged(
@@ -45,9 +46,9 @@ class SearchRepositoryImpl @Inject constructor(
         return Pager(
             config = PagingConfig(
                 pageSize = SearchPagingSource.DEFAULT_PAGE_SIZE,
-                prefetchDistance = 5,
+                prefetchDistance = 3,
                 enablePlaceholders = false,
-                initialLoadSize = SearchPagingSource.DEFAULT_PAGE_SIZE * 2
+                initialLoadSize = SearchPagingSource.DEFAULT_PAGE_SIZE
             ),
             pagingSourceFactory = {
                 SearchPagingSource(
@@ -63,60 +64,158 @@ class SearchRepositoryImpl @Inject constructor(
         query: String,
         limit: Int,
         offset: Int,
+        continuation: String?,
         filters: SearchFilters
     ): Result<SearchResult> {
         val normalizedQuery = normalizeSearchTerm(query)
         val safeLimit = limit.coerceAtLeast(1)
         val safeOffset = offset.coerceAtLeast(0)
+        val safeContinuation = continuation?.trim()?.takeIf { it.isNotEmpty() }
+        val isInitialTokenPage = safeOffset == 0 && safeContinuation == null
+        val isTokenPagingRequest = safeContinuation != null || safeOffset == 0
 
-        // Check cache first
-        val cacheKey = "$normalizedQuery-$safeLimit-$safeOffset-${filters.hashCode()}"
-        searchCache[cacheKey]?.let { entry ->
-            if (entry.isValid()) {
-                return Result.success(entry.result)
-            } else {
-                searchCache.remove(cacheKey)
+        // Cache only first-page searches; continuation pages are query-session specific.
+        val cacheKey = if (isInitialTokenPage) {
+            "$normalizedQuery-$safeLimit-${filters.hashCode()}"
+        } else {
+            null
+        }
+        cacheKey?.let { key ->
+            searchCache[key]?.let { entry ->
+                if (entry.isValid()) {
+                    val cached = entry.result ?: return@let
+                    return Result.success(cached)
+                } else {
+                    searchCache.remove(key)
+                }
             }
         }
 
         return try {
-            val result = youTubeiService.searchSongs(
-                query = normalizedQuery,
-                limit = safeLimit,
-                offset = safeOffset
-            )
-            
-            result.fold(
-                onSuccess = { songsPage ->
-                    val pageSongs = applyFilters(
-                        songs = songsPage.distinctBy { it.id },
-                        filters = filters
-                    ).take(safeLimit)
+            if (isTokenPagingRequest) {
+                val primaryResult = youTubeiService.searchSongsPage(
+                    query = normalizedQuery,
+                    continuationToken = safeContinuation,
+                    limit = safeLimit
+                )
 
-                    if (pageSongs.isNotEmpty()) {
-                        songDao.insertAll(pageSongs.map { it.toEntity() })
-                    }
-
-                    val nextOffsetCandidate = safeOffset + safeLimit
-                    val hasMore = songsPage.size >= safeLimit
-                    
-                    val searchResult = SearchResult(
-                        songs = pageSongs,
-                        totalCount = safeOffset + pageSongs.size,
-                        hasMore = hasMore,
+                val result = if (primaryResult.isSuccess) {
+                    primaryResult
+                } else if (safeContinuation == null) {
+                    // First page fallback only. Continuation requests cannot switch backend.
+                    newPipeService.searchSongs(
                         query = normalizedQuery,
-                        nextOffset = if (hasMore) nextOffsetCandidate else null
-                    )
-                    
-                    // Cache the result
-                    searchCache[cacheKey] = CacheEntry(searchResult)
-                    
-                    Result.success(searchResult)
-                },
-                onFailure = { exception ->
-                    Result.failure(exception)
+                        limit = safeLimit,
+                        offset = 0
+                    ).map { fallbackSongs ->
+                        com.sonicmusic.app.data.remote.source.YouTubeiService.SongSearchPage(
+                            songs = fallbackSongs,
+                            continuationToken = null
+                        )
+                    }.recoverCatching {
+                        primaryResult.getOrThrow()
+                    }
+                } else {
+                    primaryResult
                 }
-            )
+
+                result.fold(
+                    onSuccess = { page ->
+                        val pageSongs = applyFilters(
+                            songs = page.songs.distinctBy { it.id },
+                            filters = filters
+                        ).take(safeLimit)
+
+                        if (pageSongs.isNotEmpty()) {
+                            songDao.insertAll(pageSongs.map { it.toEntity() })
+                        }
+
+                        val nextContinuation = page.continuationToken?.takeIf { it.isNotBlank() }
+                        val hasMore = if (nextContinuation != null) {
+                            true
+                        } else {
+                            // Offset fallback path (e.g. NewPipe first page)
+                            page.songs.size >= safeLimit
+                        }
+                        val nextOffsetCandidate = if (nextContinuation == null && hasMore) {
+                            safeOffset + safeLimit
+                        } else {
+                            null
+                        }
+
+                        val searchResult = SearchResult(
+                            songs = pageSongs,
+                            totalCount = safeOffset + pageSongs.size,
+                            hasMore = hasMore,
+                            query = normalizedQuery,
+                            nextOffset = nextOffsetCandidate,
+                            continuationToken = nextContinuation
+                        )
+
+                        cacheKey?.let { key ->
+                            searchCache[key] = CacheEntry(searchResult)
+                        }
+
+                        Result.success(searchResult)
+                    },
+                    onFailure = { exception ->
+                        Result.failure(exception)
+                    }
+                )
+            } else {
+                // Legacy offset-based path retained for compatibility.
+                val primaryResult = youTubeiService.searchSongs(
+                    query = normalizedQuery,
+                    limit = safeLimit,
+                    offset = safeOffset
+                )
+
+                val result = if (!primaryResult.getOrNull().isNullOrEmpty()) {
+                    primaryResult
+                } else {
+                    newPipeService.searchSongs(
+                        query = normalizedQuery,
+                        limit = safeLimit,
+                        offset = safeOffset
+                    ).recoverCatching {
+                        primaryResult.getOrThrow()
+                    }
+                }
+
+                result.fold(
+                    onSuccess = { songsPage ->
+                        val pageSongs = applyFilters(
+                            songs = songsPage.distinctBy { it.id },
+                            filters = filters
+                        ).take(safeLimit)
+
+                        if (pageSongs.isNotEmpty()) {
+                            songDao.insertAll(pageSongs.map { it.toEntity() })
+                        }
+
+                        val nextOffsetCandidate = safeOffset + safeLimit
+                        val hasMore = songsPage.size >= safeLimit
+
+                        val searchResult = SearchResult(
+                            songs = pageSongs,
+                            totalCount = safeOffset + pageSongs.size,
+                            hasMore = hasMore,
+                            query = normalizedQuery,
+                            nextOffset = if (hasMore) nextOffsetCandidate else null,
+                            continuationToken = null
+                        )
+
+                        cacheKey?.let { key ->
+                            searchCache[key] = CacheEntry(searchResult)
+                        }
+
+                        Result.success(searchResult)
+                    },
+                    onFailure = { exception ->
+                        Result.failure(exception)
+                    }
+                )
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -210,28 +309,23 @@ class SearchRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Cache entry with expiration
+     * Cache entry with expiration.
+     * Stores any cacheable payload — SearchResult or List<String> — as a single `data` field.
      */
-    private inner class CacheEntry(
-        val result: SearchResult,
+    private class CacheEntry(
+        val data: Any,
         val timestamp: Long = System.currentTimeMillis()
     ) {
-        constructor(data: List<String>) : this(
-            SearchResult(
-                songs = emptyList(),
-                totalCount = 0,
-                hasMore = false,
-                query = ""
-            )
-        ) {
-            @Suppress("UNCHECKED_CAST")
-            this.data = data as Any
-        }
-        
-        var data: Any = result
-        
+        /** Return the data as a [SearchResult] if it is one, otherwise null. */
+        val result: SearchResult?
+            get() = data as? SearchResult
+
         fun isValid(): Boolean {
             return System.currentTimeMillis() - timestamp < cacheDuration
+        }
+
+        companion object {
+            private val cacheDuration = TimeUnit.MINUTES.toMillis(5)
         }
     }
 
@@ -287,9 +381,11 @@ class SearchRepositoryImpl @Inject constructor(
     )
 
     private fun Song.isStrictSong(): Boolean {
+        // Accept songs and videos from YouTube Music API
         return when (contentType) {
             ContentType.SONG -> true
-            ContentType.UNKNOWN -> duration == 0 || duration in 60..600
+            ContentType.VIDEO -> true  // Music videos are valid search results
+            ContentType.UNKNOWN -> true // YTM API already returns songs-only
             else -> false
         }
     }

@@ -20,12 +20,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -36,7 +36,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
 import kotlin.math.roundToInt
@@ -74,12 +74,12 @@ fun MiniPlayer(
     backgroundColorOverride: Color? = null,
     onExpand: () -> Unit = {}
 ) {
-    val currentSong by viewModel.currentSong.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
-    val isBuffering by viewModel.isBuffering.collectAsState()
-    val isLiked by viewModel.isLiked.collectAsState()
-    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsState()
-    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsState()
+    val currentSong by viewModel.currentSong.collectAsStateWithLifecycle()
+    val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
+    val isBuffering by viewModel.isBuffering.collectAsStateWithLifecycle()
+    val isLiked by viewModel.isLiked.collectAsStateWithLifecycle()
+    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
+    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
 
     if (currentSong == null) return
 
@@ -103,18 +103,18 @@ fun MiniPlayer(
         val colorScheme = MaterialTheme.colorScheme
         val accentColor by animateColorAsState(
             targetValue = artworkPalette.accent,
-            animationSpec = tween(300),
+            animationSpec = tween(1000),
             label = "miniAccent"
         )
         val onAccentColor by animateColorAsState(
             targetValue = artworkPalette.onAccent,
-            animationSpec = tween(300),
+            animationSpec = tween(1000),
             label = "miniOnAccent"
         )
 
         val backgroundColor by animateColorAsState(
             targetValue = backgroundColorOverride ?: colorScheme.surfaceContainerHigh,
-            animationSpec = tween(250),
+            animationSpec = tween(1000),
             label = "bgColor"
         )
 
@@ -139,34 +139,13 @@ fun MiniPlayer(
                     )
                 }
                 .clickable(onClick = onExpand),
-            shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
             color = backgroundColor,
             tonalElevation = 6.dp,
             shadowElevation = 2.dp
         ) {
             Box {
                 // Swipe indicators (background)
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.SkipPrevious,
-                        contentDescription = null,
-                        tint = accentColor.copy(alpha = if (isSwipingPrevious) 1f else 0.2f),
-                        modifier = Modifier.size(32.dp)
-                    )
-                    Icon(
-                        imageVector = Icons.Default.SkipNext,
-                        contentDescription = null,
-                        tint = accentColor.copy(alpha = if (isSwipingNext) 1f else 0.2f),
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
                 // Main content
                 Column(
                     modifier = Modifier.offset { IntOffset(animatedOffsetX.roundToInt(), 0) }
@@ -183,8 +162,8 @@ fun MiniPlayer(
                             artworkUrl = currentSong?.thumbnailUrl,
                             modifier = Modifier
                                 .size(52.dp)
-                                .shadow(8.dp, RoundedCornerShape(12.dp))
-                                .clip(RoundedCornerShape(12.dp))
+                                .shadow(8.dp, RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(8.dp))
                         )
 
                         Spacer(modifier = Modifier.width(12.dp))
@@ -228,7 +207,7 @@ fun MiniPlayer(
                             )
                         ) {
                             Icon(
-                                imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                                imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                                 contentDescription = if (isLiked) "Unlike" else "Like",
                                 modifier = Modifier.size(18.dp)
                             )
@@ -254,7 +233,7 @@ fun MiniPlayer(
                                     )
                                 ) {
                                     Icon(
-                                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                         contentDescription = if (isPlaying) "Pause" else "Play",
                                         modifier = Modifier.size(28.dp)
                                     )
@@ -279,7 +258,7 @@ private fun MiniPlayerProgress(
     viewModel: PlayerViewModel,
     progressColor: Color
 ) {
-    val progress by viewModel.progress.collectAsState()
+    val progress by viewModel.progress.collectAsStateWithLifecycle()
     
     LinearProgressIndicator(
         progress = { progress },

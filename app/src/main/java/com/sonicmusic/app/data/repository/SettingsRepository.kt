@@ -1,7 +1,9 @@
 package com.sonicmusic.app.data.repository
 
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
+import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.FullPlayerStyle
+import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import kotlinx.coroutines.flow.Flow
@@ -15,6 +17,9 @@ class SettingsRepository @Inject constructor(
     val streamQuality: Flow<StreamQuality> = settingsDataStore.streamQuality
     val downloadQuality: Flow<StreamQuality> = settingsDataStore.downloadQuality
     val themeMode: Flow<ThemeMode> = settingsDataStore.themeMode
+    val darkMode: Flow<DarkMode> = settingsDataStore.darkMode
+    val paletteStyle: Flow<PaletteStyle> = settingsDataStore.paletteStyle
+    val pureBlack: Flow<Boolean> = settingsDataStore.pureBlack
     val fullPlayerStyle: Flow<FullPlayerStyle> = settingsDataStore.fullPlayerStyle
     val dynamicColors: Flow<Boolean> = settingsDataStore.dynamicColors
     val dynamicColorIntensity: Flow<Int> = settingsDataStore.dynamicColorIntensity
@@ -27,6 +32,7 @@ class SettingsRepository @Inject constructor(
     val skipSilence: Flow<Boolean> = settingsDataStore.skipSilence
     val autoQueueSimilar: Flow<Boolean> = settingsDataStore.autoQueueSimilar
     val blacklistedSongIds: Flow<Set<String>> = settingsDataStore.blacklistedSongIds
+    val autoUpdateEnabled: Flow<Boolean> = settingsDataStore.autoUpdateEnabled
 
     suspend fun setStreamQuality(quality: StreamQuality) {
         settingsDataStore.setStreamQuality(quality)
@@ -38,6 +44,18 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setThemeMode(mode: ThemeMode) {
         settingsDataStore.setThemeMode(mode)
+    }
+
+    suspend fun setDarkMode(mode: DarkMode) {
+        settingsDataStore.setDarkMode(mode)
+    }
+
+    suspend fun setPaletteStyle(style: PaletteStyle) {
+        settingsDataStore.setPaletteStyle(style)
+    }
+
+    suspend fun setPureBlack(enabled: Boolean) {
+        settingsDataStore.setPureBlack(enabled)
     }
 
     suspend fun setFullPlayerStyle(style: FullPlayerStyle) {
@@ -90,6 +108,10 @@ class SettingsRepository @Inject constructor(
 
     suspend fun removeBlacklistedSongId(songId: String) {
         settingsDataStore.removeBlacklistedSongId(songId)
+    }
+
+    suspend fun setAutoUpdateEnabled(enabled: Boolean) {
+        settingsDataStore.setAutoUpdateEnabled(enabled)
     }
 
     suspend fun resetToDefaults() {

@@ -12,11 +12,15 @@ import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.QueueRepository
+import com.sonicmusic.app.domain.repository.UserTasteRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -46,6 +50,7 @@ import javax.inject.Singleton
 @Singleton
 class QueueRepositoryImpl @Inject constructor(
     private val youTubeiService: YouTubeiService,
+    private val userTasteRepository: UserTasteRepository,
     @ApplicationContext private val context: Context
 ) : QueueRepository {
 
@@ -65,6 +70,9 @@ class QueueRepositoryImpl @Inject constructor(
         private const val RECOMMENDATION_DEBOUNCE_MS = 2000L // Same-seed debounce
         private const val DIFFERENT_SONG_GUARD_MS = 350L // Avoid rapid bursts across songs
         private const val MIN_PRIMARY_RECOMMENDATIONS = 6
+        private const val PRIMARY_FETCH_TIMEOUT_MS = 3000L
+        private const val RECOMMENDATION_CACHE_TTL_MS = 90_000L
+        private const val RECOMMENDATION_CACHE_MAX_ENTRIES = 40
         
         // JSON configuration for safe serialization
         private val json = Json {
@@ -85,6 +93,9 @@ class QueueRepositoryImpl @Inject constructor(
     private val _infiniteModeEnabled = MutableStateFlow(true)
     override val infiniteModeEnabled: StateFlow<Boolean> = _infiniteModeEnabled.asStateFlow()
 
+    // Lock for thread-safe access to tracking sets
+    private val trackingLock = Any()
+
     // Track queued song IDs to prevent duplicates
     private val queuedSongIds = LinkedHashSet<String>()
     
@@ -101,6 +112,12 @@ class QueueRepositoryImpl @Inject constructor(
     
     // Cache last song details to avoid redundant API calls
     private var cachedSongDetails: Song? = null
+    private val recommendationCache = LinkedHashMap<String, RecommendationCacheEntry>()
+
+    private data class RecommendationCacheEntry(
+        val timestampMs: Long,
+        val songs: List<Song>
+    )
 
     // ═══════════════════════════════════════════════════════════════
     // RECOMMENDATION FETCHING - Enhanced Quality
@@ -108,6 +125,11 @@ class QueueRepositoryImpl @Inject constructor(
 
     override suspend fun getRelatedSongs(songId: String, limit: Int): Result<List<Song>> {
         val targetLimit = limit.coerceAtLeast(1)
+        val cachedRecommendations = getCachedRecommendations(songId, targetLimit)
+        if (cachedRecommendations.isNotEmpty()) {
+            Log.d(TAG, "⚡ Serving ${cachedRecommendations.size} cached recommendations for: $songId")
+            return Result.success(cachedRecommendations)
+        }
 
         // Debounce: prevent rapid recommendation fetches
         val now = System.currentTimeMillis()
@@ -130,9 +152,21 @@ class QueueRepositoryImpl @Inject constructor(
         Log.d(TAG, "🎵 Getting related songs for: $songId")
         
         return try {
-            val seedSong = getSongDetailsForId(songId)
-            val upNextSongs = youTubeiService.getUpNext(songId).getOrNull().orEmpty()
-            val radioSongs = fetchRadioMix(songId, targetLimit * 2)
+            val (seedSong, upNextSongs, radioSongs) = coroutineScope {
+                val seedDeferred = async { getSongDetailsForId(songId) }
+                val upNextDeferred = async {
+                    withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
+                        youTubeiService.getUpNext(songId).getOrNull().orEmpty()
+                    } ?: emptyList()
+                }
+                val radioDeferred = async {
+                    withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
+                        fetchRadioMix(songId, targetLimit * 2)
+                    } ?: emptyList()
+                }
+                Triple(seedDeferred.await(), upNextDeferred.await(), radioDeferred.await())
+            }
+
             val blendedCandidates = interleaveRecommendations(
                 primary = upNextSongs,
                 secondary = radioSongs,
@@ -146,6 +180,7 @@ class QueueRepositoryImpl @Inject constructor(
                     TAG,
                     "✅ Used blended Up Next + Radio: ${primaryNewSongs.size} songs (upNext=${upNextSongs.size}, radio=${radioSongs.size})"
                 )
+                cacheRecommendations(songId, primaryNewSongs)
                 return Result.success(primaryNewSongs.take(targetLimit))
             }
 
@@ -171,12 +206,16 @@ class QueueRepositoryImpl @Inject constructor(
                 collect(fetchDiscoveryRecommendations(songId, targetLimit * 2))
             }
             if (collected.size < targetLimit) {
+                collect(fetchTasteBasedRecommendations(songId, targetLimit * 2))
+            }
+            if (collected.size < targetLimit) {
                 val broadQuery = seedSong?.let { "${it.artist} radio songs mix" } ?: "trending songs now"
                 val broadFallback = youTubeiService.searchSongs(broadQuery, targetLimit * 2).getOrNull().orEmpty()
                 collect(broadFallback)
             }
 
             val resultSongs = collected.values.take(targetLimit)
+            cacheRecommendations(songId, collected.values.toList())
             Log.d(TAG, "✅ Final related songs: ${resultSongs.size} (target=$targetLimit)")
             Result.success(resultSongs)
             
@@ -206,12 +245,15 @@ class QueueRepositoryImpl @Inject constructor(
      * ViTune-style: Only keep actual songs
      */
     private fun filterNewSongs(songs: List<Song>, excludeSongId: String): List<Song> {
+        val (queued, played) = synchronized(trackingLock) {
+            queuedSongIds.toHashSet() to playedSongIds.toHashSet()
+        }
         val filtered = songs
             .asSequence()
             .filter { song ->
                 song.id != excludeSongId &&
-                    !queuedSongIds.contains(song.id) &&
-                    !playedSongIds.contains(song.id) &&
+                    !queued.contains(song.id) &&
+                    !played.contains(song.id) &&
                     song.isStrictQueueSong() // Only songs, not videos/podcasts/live streams
             }
             .distinctBy { it.id }
@@ -448,15 +490,54 @@ class QueueRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Strategy 6: User taste-biased recommendations
+     * Uses the user's accumulated listening preferences (top artists, genres)
+     * to generate highly personalized queue candidates.
+     */
+    private suspend fun fetchTasteBasedRecommendations(songId: String, limit: Int): List<Song> {
+        Log.d(TAG, "🧠 Trying taste-based recommendations...")
+        return try {
+            val tasteProfile = userTasteRepository.getUserTasteProfile()
+            
+            if (tasteProfile.topArtists.isEmpty()) {
+                Log.d(TAG, "⚠️ No taste data yet, skipping taste-based recs")
+                return emptyList()
+            }
+            
+            // Build query combining top artist + genre for high relevance
+            val artist = tasteProfile.topArtists.random()
+            val genre = tasteProfile.topGenres.firstOrNull() ?: ""
+            val query = if (genre.isNotEmpty()) {
+                "$artist $genre songs"
+            } else {
+                "$artist best songs mix"
+            }
+            
+            Log.d(TAG, "🧠 Taste query: $query")
+            
+            youTubeiService.searchSongs(query, limit * 2)
+                .getOrNull()
+                ?.filter { it.id != songId }
+                ?.take(limit)
+                ?: emptyList()
+        } catch (e: Exception) {
+            Log.e(TAG, "Taste-based recommendations failed", e)
+            emptyList()
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // QUEUE MANAGEMENT - ViTune Style
     // ═══════════════════════════════════════════════════════════════
 
     override suspend fun addToQueue(songs: List<Song>) {
         // Filter out any duplicates AND non-music content (ViTune-style)
-        val newSongs = songs
-            .filter { !queuedSongIds.contains(it.id) }
-            .filter { it.isStrictQueueSong() } // Only add songs, not videos/podcasts/etc.
+        val newSongs = synchronized(trackingLock) {
+            songs
+                .filter { !queuedSongIds.contains(it.id) }
+                .filter { it.isStrictQueueSong() } // Only add songs, not videos/podcasts/etc.
+        }
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add (all duplicates or non-music content)")
@@ -470,10 +551,10 @@ class QueueRepositoryImpl @Inject constructor(
         }
 
         // Add to tracking set
-        newSongs.forEach { queuedSongIds.add(it.id) }
-
-        // Limit the size of tracking sets to prevent memory issues
-        trimTrackingSets()
+        synchronized(trackingLock) {
+            newSongs.forEach { queuedSongIds.add(it.id) }
+            trimTrackingSets()
+        }
 
         // Update queue
         _queue.value = _queue.value + newSongs
@@ -483,7 +564,12 @@ class QueueRepositoryImpl @Inject constructor(
     override suspend fun clearQueue() {
         _queue.value = emptyList()
         _currentIndex.value = 0
-        queuedSongIds.clear()
+        synchronized(trackingLock) {
+            queuedSongIds.clear()
+        }
+        synchronized(recommendationCache) {
+            recommendationCache.clear()
+        }
         lastQueryType = 0
         isFetchingRecommendations = false
         Log.d(TAG, "🗑️ Queue cleared, tracking reset")
@@ -541,7 +627,9 @@ class QueueRepositoryImpl @Inject constructor(
      * Mark a song as queued (prevent duplicates)
      */
     fun markSongAsQueued(songId: String) {
-        queuedSongIds.add(songId)
+        synchronized(trackingLock) {
+            queuedSongIds.add(songId)
+        }
     }
 
     /**
@@ -549,24 +637,30 @@ class QueueRepositoryImpl @Inject constructor(
      * ViTune-style: Keeps recommendations fresh
      */
     fun markSongAsPlayed(songId: String) {
-        playedSongIds.add(songId)
-        // Also remove from queued since it's now played
-        queuedSongIds.remove(songId)
-        trimTrackingSets()
+        synchronized(trackingLock) {
+            playedSongIds.add(songId)
+            // Also remove from queued since it's now played
+            queuedSongIds.remove(songId)
+            trimTrackingSets()
+        }
     }
 
     /**
      * Check if a song is already queued
      */
     fun isSongQueued(songId: String): Boolean {
-        return queuedSongIds.contains(songId)
+        return synchronized(trackingLock) {
+            queuedSongIds.contains(songId)
+        }
     }
 
     /**
      * Check if a song has been played
      */
     fun isSongPlayed(songId: String): Boolean {
-        return playedSongIds.contains(songId)
+        return synchronized(trackingLock) {
+            playedSongIds.contains(songId)
+        }
     }
 
     /**
@@ -582,39 +676,40 @@ class QueueRepositoryImpl @Inject constructor(
      * ViTune-style: Filter to only music songs
      */
     fun syncQueueState(songs: List<Song>, currentIndex: Int) {
-        // Filter to only valid music content
-        val filteredSongs = songs.filter { it.isStrictQueueSong() }
-
-        if (filteredSongs.size < songs.size) {
-            Log.d(TAG, "🎬 Filtered ${songs.size - filteredSongs.size} non-music items from queue sync")
-        }
-
-        _queue.value = filteredSongs
-        _currentIndex.value = if (filteredSongs.isEmpty()) {
+        // Bug 2 fix: Do NOT filter during sync — the repository must track exactly
+        // what the player has. Content filtering happens at ingestion time only.
+        _queue.value = songs
+        _currentIndex.value = if (songs.isEmpty()) {
             -1
         } else {
-            currentIndex.coerceIn(0, filteredSongs.size - 1)
+            currentIndex.coerceIn(0, songs.size - 1)
         }
 
         // Update tracking set to match actual queue
-        queuedSongIds.clear()
-        filteredSongs.forEach { queuedSongIds.add(it.id) }
+        synchronized(trackingLock) {
+            queuedSongIds.clear()
+            songs.forEach { queuedSongIds.add(it.id) }
+        }
 
-        Log.d(TAG, "🔄 Queue synced: ${filteredSongs.size} songs, index: $currentIndex")
+        Log.d(TAG, "🔄 Queue synced: ${songs.size} songs, index: $currentIndex")
     }
 
     /**
      * Remove a song from tracking when it's removed from queue
      */
     fun removeFromTracking(songId: String) {
-        queuedSongIds.remove(songId)
+        synchronized(trackingLock) {
+            queuedSongIds.remove(songId)
+        }
     }
 
     /**
      * Clear played history (if user wants fresh recommendations)
      */
     fun clearPlayedHistory() {
-        playedSongIds.clear()
+        synchronized(trackingLock) {
+            playedSongIds.clear()
+        }
         Log.d(TAG, "🗑️ Played history cleared")
     }
 
@@ -622,7 +717,9 @@ class QueueRepositoryImpl @Inject constructor(
      * Get tracking stats for debugging
      */
     fun getTrackingStats(): Triple<Int, Int, Int> {
-        return Triple(queuedSongIds.size, playedSongIds.size, _queue.value.size)
+        return synchronized(trackingLock) {
+            Triple(queuedSongIds.size, playedSongIds.size, _queue.value.size)
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -664,8 +761,10 @@ class QueueRepositoryImpl @Inject constructor(
                     _infiniteModeEnabled.value = infiniteMode
 
                     // Restore tracking
-                    queuedSongIds.clear()
-                    songs.forEach { queuedSongIds.add(it.id) }
+                    synchronized(trackingLock) {
+                        queuedSongIds.clear()
+                        songs.forEach { queuedSongIds.add(it.id) }
+                    }
 
                     Log.d(TAG, "📂 Queue restored: ${songs.size} songs, index: $currentIndex")
                     true
@@ -724,9 +823,11 @@ class QueueRepositoryImpl @Inject constructor(
         if (songs.isEmpty()) return
 
         // Filter out duplicates AND non-music content
-        val newSongs = songs
-            .filter { !queuedSongIds.contains(it.id) }
-            .filter { it.isStrictQueueSong() } // Only songs, not videos/podcasts
+        val newSongs = synchronized(trackingLock) {
+            songs
+                .filter { !queuedSongIds.contains(it.id) }
+                .filter { it.isStrictQueueSong() } // Only songs, not videos/podcasts
+        }
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add to play next (all duplicates or non-music)")
@@ -741,8 +842,10 @@ class QueueRepositoryImpl @Inject constructor(
         currentQueue.addAll(insertIndex, newSongs)
 
         // Update tracking
-        newSongs.forEach { queuedSongIds.add(it.id) }
-        trimTrackingSets()
+        synchronized(trackingLock) {
+            newSongs.forEach { queuedSongIds.add(it.id) }
+            trimTrackingSets()
+        }
 
         // Update queue
         _queue.value = currentQueue.toList()
@@ -783,7 +886,9 @@ class QueueRepositoryImpl @Inject constructor(
         val removedSong = currentQueue.removeAt(index)
 
         // Update tracking
-        queuedSongIds.remove(removedSong.id)
+        synchronized(trackingLock) {
+            queuedSongIds.remove(removedSong.id)
+        }
 
         // Update queue
         _queue.value = currentQueue.toList()
@@ -904,8 +1009,42 @@ class QueueRepositoryImpl @Inject constructor(
     private fun Song.isStrictQueueSong(): Boolean {
         return when (contentType) {
             ContentType.SONG -> true
-            ContentType.UNKNOWN -> duration == 0 || duration in 60..600
+            ContentType.UNKNOWN -> duration == 0 || duration in 30..900
             else -> false
+        }
+    }
+
+    private fun getCachedRecommendations(songId: String, limit: Int): List<Song> {
+        val now = System.currentTimeMillis()
+        val cached = synchronized(recommendationCache) {
+            recommendationCache.entries.removeAll { (_, value) ->
+                now - value.timestampMs > RECOMMENDATION_CACHE_TTL_MS
+            }
+            recommendationCache[songId]
+        } ?: return emptyList()
+
+        return filterNewSongs(cached.songs, songId).take(limit)
+    }
+
+    private fun cacheRecommendations(songId: String, songs: List<Song>) {
+        if (songId.isBlank() || songs.isEmpty()) return
+        val now = System.currentTimeMillis()
+        synchronized(recommendationCache) {
+            recommendationCache[songId] = RecommendationCacheEntry(
+                timestampMs = now,
+                songs = songs
+            )
+            trimRecommendationCacheLocked(now)
+        }
+    }
+
+    private fun trimRecommendationCacheLocked(nowMs: Long) {
+        recommendationCache.entries.removeAll { (_, value) ->
+            nowMs - value.timestampMs > RECOMMENDATION_CACHE_TTL_MS
+        }
+        while (recommendationCache.size > RECOMMENDATION_CACHE_MAX_ENTRIES) {
+            val firstKey = recommendationCache.keys.firstOrNull() ?: break
+            recommendationCache.remove(firstKey)
         }
     }
 }

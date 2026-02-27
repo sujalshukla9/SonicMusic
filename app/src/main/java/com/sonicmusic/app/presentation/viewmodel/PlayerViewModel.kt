@@ -28,7 +28,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.currentCoroutineContext
@@ -61,13 +64,13 @@ class PlayerViewModel @Inject constructor(
 ) : ViewModel() {
 
     companion object {
-        private const val TAG = "PlayerViewModel"
+        private const val TAG = "SonicPlayer"
         private const val MAX_URL_RETRY_ATTEMPTS = 3
         private const val URL_RETRY_DELAY_MS = 1500L
         private const val RECOMMENDATION_BATCH_SIZE = 5 // Increased for faster population
         private const val RECOMMENDATION_FETCH_LIMIT = 15
         private const val SAME_SONG_RETRY_COOLDOWN_MS = 12000L
-        private const val HISTORY_DUPLICATE_WINDOW_MS = 2500L
+        // History dedup by song ID only (StateFlow emits same song twice per transition)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -104,23 +107,36 @@ class PlayerViewModel @Inject constructor(
     private val _infiniteModeEnabled = MutableStateFlow(true)
     val infiniteModeEnabled: StateFlow<Boolean> = _infiniteModeEnabled.asStateFlow()
 
+    private val _isCurrentSongDownloaded = MutableStateFlow(false)
+    val isCurrentSongDownloaded: StateFlow<Boolean> = _isCurrentSongDownloaded.asStateFlow()
+
+    /** Download progress for the currently playing song (null = not downloading) */
+    val currentSongDownloadProgress: StateFlow<com.sonicmusic.app.data.downloadmanager.DownloadProgress?> =
+        songDownloadManager.activeDownloads
+            .combine(currentSong) { downloads, song ->
+                song?.let { downloads[it.id] }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private var downloadCheckJob: Job? = null
+
     val fullPlayerStyle: StateFlow<FullPlayerStyle> = settingsRepository.fullPlayerStyle
-        .stateIn(viewModelScope, SharingStarted.Eagerly, FullPlayerStyle.NORMAL)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FullPlayerStyle.NORMAL)
 
     val dynamicColorsEnabled: StateFlow<Boolean> = settingsRepository.dynamicColors
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     val dynamicColorIntensity: StateFlow<Int> = settingsRepository.dynamicColorIntensity
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 85)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 85)
 
     val albumArtBlurEnabled: StateFlow<Boolean> = settingsRepository.albumArtBlur
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val blacklistedSongIds: StateFlow<Set<String>> = settingsRepository.blacklistedSongIds
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
 
     // Track active recommendation fetch to prevent duplicates
     private var recommendationJob: Job? = null
@@ -128,7 +144,11 @@ class PlayerViewModel @Inject constructor(
     private var lastRecommendationSongId: String? = null
     private var lastRecommendationRequestAt: Long = 0L
     private var lastHistorySongId: String? = null
-    private var lastHistoryRecordedAt: Long = 0L
+    /** Timestamp (System.currentTimeMillis) when the current song started playing. */
+    private var currentSongStartTimeMs: Long = 0L
+
+    /** Limits concurrent stream URL fetch requests to avoid socket exhaustion. */
+    private val urlFetchSemaphore = Semaphore(3)
 
     // ═══════════════════════════════════════════════════════════════
     // INITIALIZATION - ViTune Style
@@ -149,13 +169,12 @@ class PlayerViewModel @Inject constructor(
         
         // Set up callback for infinite queue (ViTune-style)
         playerServiceConnection.setOnQueueNeedsMoreSongs { songId ->
-            Log.d(TAG, "📥 Queue callback triggered for: $songId")
-            Log.d(TAG, "   Infinite mode: ${_infiniteModeEnabled.value}, Is fetching: $isRecommendationFetching")
+
             if (_infiniteModeEnabled.value && !isRecommendationFetching) {
-                Log.d(TAG, "🎵 Queue requested more songs for: $songId")
+
                 fetchAndAddRecommendations(songId)
             } else {
-                Log.d(TAG, "⚠️ Skipping recommendation fetch - infinite mode: ${_infiniteModeEnabled.value}, fetching: $isRecommendationFetching")
+
             }
         }
         
@@ -166,29 +185,58 @@ class PlayerViewModel @Inject constructor(
         }
         
         // Observe current song for like status and played tracking
+        var likeObserverJob: Job? = null
         viewModelScope.launch {
             currentSong.collect { song ->
                 song?.let {
                     try {
-                        val now = System.currentTimeMillis()
-                        val shouldRecordHistory = lastHistorySongId != it.id ||
-                            (now - lastHistoryRecordedAt) > HISTORY_DUPLICATE_WINDOW_MS
-                        if (shouldRecordHistory) {
-                            historyRepository.recordPlayback(it)
+                        if (lastHistorySongId != it.id) {
+                            // Record history for the PREVIOUS song with actual play duration
+                            val previousSongId = lastHistorySongId
+                            if (previousSongId != null && currentSongStartTimeMs > 0L) {
+                                val elapsedMs = System.currentTimeMillis() - currentSongStartTimeMs
+                                val playDurationSecs = (elapsedMs / 1000).toInt().coerceAtLeast(0)
+                                // Find the previous song in the queue for metadata
+                                val prevSong = queue.value.find { q -> q.id == previousSongId }
+                                if (prevSong != null) {
+                                    val totalDurationSecs = prevSong.duration
+                                    val completed = totalDurationSecs > 0 &&
+                                            playDurationSecs.toFloat() / totalDurationSecs >= 0.8f
+                                    historyRepository.recordPlayback(
+                                        prevSong,
+                                        playDuration = playDurationSecs,
+                                        completed = completed,
+                                        totalDuration = totalDurationSecs
+                                    )
+                                }
+                            }
+
+                            // Start tracking the NEW song
                             lastHistorySongId = it.id
-                            lastHistoryRecordedAt = now
-                            Log.d(TAG, "📝 Recorded playback history: ${it.title}")
+                            currentSongStartTimeMs = System.currentTimeMillis()
                         }
 
-                        // Update like status
-                        _isLiked.value = songRepository.isLiked(it.id)
+                        // Cancel previous observer and start a new one for the current song
+                        likeObserverJob?.cancel()
+                        likeObserverJob = launch {
+                            songRepository.observeIsLiked(it.id).collect { isLiked ->
+                                _isLiked.value = isLiked
+                            }
+                        }
+
+                        // Check download state for current song
+                        downloadCheckJob?.cancel()
+                        downloadCheckJob = launch {
+                            _isCurrentSongDownloaded.value = songDownloadManager.isDownloaded(it.id)
+                        }
                         
-                        // Mark previous songs as played (ViTune-style)
-                        // This prevents them from being recommended again
+                        // Mark only the IMMEDIATELY preceding song as played (O(1)).
+                        // Previous approach iterated entire queue prefix which was O(n).
                         val currentIndex = currentQueueIndex.value
                         val currentQueue = queue.value
                         if (currentIndex > 0 && currentIndex <= currentQueue.size) {
-                            currentQueue.take(currentIndex).forEach { playedSong ->
+                            val previouslyPlayedSong = currentQueue.getOrNull(currentIndex - 1)
+                            previouslyPlayedSong?.let { playedSong ->
                                 try {
                                     queueRepository.markSongAsPlayed(playedSong.id)
                                 } catch (e: Exception) {
@@ -203,27 +251,16 @@ class PlayerViewModel @Inject constructor(
             }
         }
         
-        // Sync queue state with repository
+        // Sync queue state + current index with repository (single combined collector)
         viewModelScope.launch {
-            queue.collect { songs ->
-                try {
-                    val index = currentQueueIndex.value
-                    queueRepository.syncQueueState(songs, index)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error syncing queue state", e)
+            combine(queue, currentQueueIndex) { songs, index -> songs to index }
+                .collect { (songs, index) ->
+                    try {
+                        queueRepository.syncQueueState(songs, index)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error syncing queue state", e)
+                    }
                 }
-            }
-        }
-        
-        // Sync current index with repository
-        viewModelScope.launch {
-            currentQueueIndex.collect { index ->
-                try {
-                    queueRepository.updateCurrentIndex(index)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error updating current index", e)
-                }
-            }
         }
     }
     
@@ -297,15 +334,15 @@ class PlayerViewModel @Inject constructor(
             // Immediate UI feedback
             playerServiceConnection.preparePlayback(song)
 
+            // Clear and reset queue state ONCE before retry loop
+            queueRepository.clearQueue()
+            lastRecommendationSongId = null
+            lastRecommendationRequestAt = 0L
+
             // Retry loop for initial playback
             repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
                 try {
                     Log.d(TAG, "▶️ Loading stream for: ${song.title} (attempt ${attempt + 1})")
-                    
-                    // Clear and reset queue state
-                    queueRepository.clearQueue()
-                    lastRecommendationSongId = null
-                    lastRecommendationRequestAt = 0L
 
                     // Fetch stream URL
                     val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
@@ -315,9 +352,6 @@ class PlayerViewModel @Inject constructor(
 
                         // Start playback
                         playerServiceConnection.playSong(song, streamUrl)
-
-                        // Update like status
-                        _isLiked.value = songRepository.isLiked(song.id)
                         
                         // ViTune Logic: Instant Radio - fetch recommendations immediately
                         if (_infiniteModeEnabled.value) {
@@ -365,7 +399,6 @@ class PlayerViewModel @Inject constructor(
                 Log.d(TAG, "▶️ Playing queue: ${songs.size} songs, starting at $startIndex")
 
                 val safeStartIndex = startIndex.coerceIn(0, songs.lastIndex)
-                val targetSong = songs[safeStartIndex]
 
                 // Reset queue tracking before starting a new playback context.
                 queueRepository.clearQueue()
@@ -379,7 +412,6 @@ class PlayerViewModel @Inject constructor(
                     songRepository = songRepository
                 )
 
-                _isLiked.value = songRepository.isLiked(targetSong.id)
                 _isLoading.value = false
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error playing queue", e)
@@ -479,9 +511,10 @@ class PlayerViewModel @Inject constructor(
     }
     
     fun clearQueue() {
-        playerServiceConnection.clearQueue()
         viewModelScope.launch {
+            // Clear repository first to prevent stale sync from queue collector
             queueRepository.clearQueue()
+            playerServiceConnection.clearQueue()
         }
     }
     
@@ -584,11 +617,9 @@ class PlayerViewModel @Inject constructor(
                 try {
                     if (_isLiked.value) {
                         songRepository.unlikeSong(song.id)
-                        _isLiked.value = false
                         Log.d(TAG, "💔 Unliked: ${song.title}")
                     } else {
                         songRepository.likeSong(song) // Pass full song object
-                        _isLiked.value = true
                         Log.d(TAG, "❤️ Liked: ${song.title}")
                     }
                 } catch (e: Exception) {
@@ -606,12 +637,13 @@ class PlayerViewModel @Inject constructor(
      * Toggle infinite queue mode
      */
     fun toggleInfiniteMode() {
-        _infiniteModeEnabled.value = !_infiniteModeEnabled.value
+        val newValue = !_infiniteModeEnabled.value
         viewModelScope.launch {
-            settingsRepository.setAutoQueueSimilar(_infiniteModeEnabled.value)
-            queueRepository.setInfiniteMode(_infiniteModeEnabled.value)
+            settingsRepository.setAutoQueueSimilar(newValue)
+            _infiniteModeEnabled.value = newValue
+            queueRepository.setInfiniteMode(newValue)
         }
-        Log.d(TAG, "♾️ Infinite mode: ${_infiniteModeEnabled.value}")
+        Log.d(TAG, "♾️ Infinite mode: $newValue")
     }
     
     /**
@@ -632,15 +664,14 @@ class PlayerViewModel @Inject constructor(
      * Prevents duplicate fetches and handles edge cases
      */
     private fun fetchAndAddRecommendations(currentSongId: String) {
-        Log.d(TAG, "🔍 fetchAndAddRecommendations called for: $currentSongId")
-        Log.d(TAG, "   Last song ID: $lastRecommendationSongId, Is fetching: $isRecommendationFetching")
+
 
         val now = System.currentTimeMillis()
         // Prevent immediate duplicate fetches for same seed song, but allow periodic refill.
         if (currentSongId == lastRecommendationSongId &&
             (now - lastRecommendationRequestAt) < SAME_SONG_RETRY_COOLDOWN_MS
         ) {
-            Log.d(TAG, "⚠️ Same-song recommendation cooldown active for: $currentSongId")
+
             return
         }
         
@@ -649,7 +680,7 @@ class PlayerViewModel @Inject constructor(
         
         recommendationJob = viewModelScope.launch {
             if (isRecommendationFetching) {
-                Log.d(TAG, "⚠️ Recommendation fetch already in progress")
+
                 return@launch
             }
             
@@ -692,7 +723,7 @@ class PlayerViewModel @Inject constructor(
                 filteredCandidates.chunked(RECOMMENDATION_BATCH_SIZE).forEachIndexed { index, batch ->
                     if (!currentCoroutineContext().isActive) return@forEachIndexed
 
-                    Log.d(TAG, "📦 Processing batch ${index + 1} (${batch.size} songs)")
+
 
                     val streamUrls = fetchStreamUrlsBatch(batch)
                     if (streamUrls.isEmpty()) return@forEachIndexed
@@ -742,13 +773,15 @@ class PlayerViewModel @Inject constructor(
             
             val jobs = songs.map { song ->
                 async {
-                    try {
-                        songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                            .getOrNull()
-                            ?.let { url -> song.id to url }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to get URL for ${song.id}", e)
-                        null
+                    urlFetchSemaphore.withPermit {
+                        try {
+                            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+                                .getOrNull()
+                                ?.let { url -> song.id to url }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to get URL for ${song.id}", e)
+                            null
+                        }
                     }
                 }
             }
@@ -793,11 +826,24 @@ class PlayerViewModel @Inject constructor(
                 val downloadQuality = settingsRepository.downloadQuality.first()
                 songDownloadManager.downloadSong(song, downloadQuality).getOrThrow()
             }.onSuccess {
+                _isCurrentSongDownloaded.value = true
                 _error.value = "Downloaded for offline"
                 Log.d(TAG, "⬇️ Downloaded for offline: ${song.title}")
             }.onFailure { exception ->
                 _error.value = "Download failed: ${exception.message}"
                 Log.e(TAG, "Failed downloading song for offline", exception)
+            }
+        }
+    }
+
+    fun deleteCurrentSongDownload() {
+        viewModelScope.launch {
+            val song = currentSong.value ?: return@launch
+            val deleted = songDownloadManager.deleteDownload(song.id)
+            if (deleted) {
+                _isCurrentSongDownloaded.value = false
+                _error.value = "Download removed"
+                Log.d(TAG, "🗑️ Removed download: ${song.title}")
             }
         }
     }
@@ -884,11 +930,15 @@ class PlayerViewModel @Inject constructor(
                     .onSuccess { streamUrl ->
                         val insertIndex = (currentQueueIndex.value + 1).coerceAtLeast(0)
 
+                        // Capture queue size BEFORE adding so we know the appended index.
+                        val queueSizeBefore = queue.value.size
+
                         // Add then move right after current song.
                         playerServiceConnection.addToQueue(song, streamUrl)
                         queueRepository.markSongAsQueued(song.id)
 
-                        val appendedIndex = queue.value.lastIndex
+                        // The new song was appended at queueSizeBefore (0-indexed).
+                        val appendedIndex = queueSizeBefore
                         if (appendedIndex > insertIndex) {
                             playerServiceConnection.reorderQueue(appendedIndex, insertIndex)
                             queueRepository.moveSong(appendedIndex, insertIndex)
@@ -962,8 +1012,13 @@ class PlayerViewModel @Inject constructor(
                 val songs = queueRepository.queue.value
                 val index = queueRepository.currentIndex.value
                 if (songs.isNotEmpty()) {
-                    // TODO: Need to re-fetch stream URLs for restored songs
-                    Log.d(TAG, "Restored ${songs.size} songs at index $index")
+                    Log.d(TAG, "📂 Restoring ${songs.size} songs at index $index to player")
+                    // Re-feed songs to the player via lazy loading (URLs fetched on demand)
+                    playerServiceConnection.playSongsLazy(
+                        songs = songs,
+                        startIndex = index.coerceIn(0, songs.lastIndex),
+                        songRepository = songRepository
+                    )
                 }
             }
             restored
