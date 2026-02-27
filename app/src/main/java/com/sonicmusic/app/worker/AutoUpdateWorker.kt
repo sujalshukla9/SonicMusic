@@ -18,6 +18,7 @@ import androidx.work.WorkerParameters
 import com.sonicmusic.app.BuildConfig
 import com.sonicmusic.app.R
 import com.sonicmusic.app.core.updater.GitHubUpdater
+import com.sonicmusic.app.core.updater.UpdateDownloader
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.assisted.Assisted
@@ -52,8 +53,17 @@ class AutoUpdateWorker @AssistedInject constructor(
             val updater = GitHubUpdater(context)
             val updateInfo = updater.checkForUpdates(BuildConfig.APP_VERSION)
             
-            if (updateInfo?.hasUpdate == true) {
-                Log.d(TAG, "Update available: ${updateInfo.latestVersion}. Showing notification.")
+            if (updateInfo?.hasUpdate == true && updateInfo.downloadUrl.isNotBlank()) {
+                Log.d(TAG, "Update available: ${updateInfo.latestVersion}. Downloading APK...")
+                
+                // Download the APK directly — AppUpdateReceiver will handle installation
+                val downloader = UpdateDownloader(context)
+                downloader.downloadApk(
+                    url = updateInfo.downloadUrl,
+                    fileName = "SonicMusic-${updateInfo.latestVersion}.apk"
+                )
+                
+                // Also show a notification so the user knows
                 showUpdateNotification(updateInfo.latestVersion)
             } else {
                 Log.d(TAG, "App is up to date.")
@@ -90,16 +100,14 @@ class AutoUpdateWorker @AssistedInject constructor(
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
         val pendingIntent = PendingIntent.getActivity(
-            context,
-            0, // Unique request code
-            intent,
+            context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Update Available")
-            .setContentText("Version $version is ready to download. Tap to update.")
+            .setContentTitle("Updating SonicMusic")
+            .setContentText("Version $version is downloading. Tap to open app.")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)

@@ -4,18 +4,42 @@ import android.app.DownloadManager
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
+import android.util.Log
 
 class UpdateDownloader(private val context: Context) {
 
+    companion object {
+        private const val TAG = "UpdateDownloader"
+    }
+
+    /**
+     * Downloads the APK to the app-private external files directory.
+     * This path is served by our FileProvider so AppUpdateReceiver
+     * can hand a content:// URI to the package installer.
+     */
     fun downloadApk(url: String, fileName: String = "SonicMusic-Update.apk"): Long {
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+
+        // Clean up old APK files to prevent accumulation
+        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        dir?.listFiles()?.forEach { file ->
+            if (file.name.startsWith("SonicMusic") && file.name.endsWith(".apk")) {
+                file.delete()
+                Log.d(TAG, "Cleaned up old APK: ${file.name}")
+            }
+        }
+
         val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle("Downloading Sonic Music Update")
+            .setTitle("Downloading SonicMusic Update")
             .setDescription("Please wait while the update downloads...")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
             .setMimeType("application/vnd.android.package-archive")
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
 
-        return downloadManager.enqueue(request)
+        val downloadId = downloadManager.enqueue(request)
+        Log.d(TAG, "Download enqueued (id=$downloadId) for $fileName")
+        return downloadId
     }
 }
