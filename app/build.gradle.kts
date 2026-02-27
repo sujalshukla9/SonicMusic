@@ -17,15 +17,15 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0-Beta"
+        versionCode = 5
+        versionName = "1.1-Beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.0-Beta\"")
+        buildConfigField("String", "APP_VERSION", "\"1.1-Beta\"")
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
@@ -39,12 +39,22 @@ android {
         
         signingConfigs {
             create("release") {
-                val keystoreFile = rootProject.file("keystore/sonicmusic.jks")
-                if (keystoreFile.exists()) {
-                    storeFile = keystoreFile
-                    storePassword = "sonicmusic"
-                    keyAlias = "sonicmusic"
-                    keyPassword = "sonicmusic"
+                // CI: keystore decoded from secret into env var path
+                val ciKeystorePath = System.getenv("KEYSTORE_FILE")
+                if (ciKeystorePath != null && file(ciKeystorePath).exists()) {
+                    storeFile = file(ciKeystorePath)
+                    storePassword = System.getenv("KEYSTORE_PASSWORD")
+                    keyAlias = System.getenv("KEY_ALIAS")
+                    keyPassword = System.getenv("KEY_PASSWORD")
+                } else {
+                    // Local: use checked-in keystore
+                    val keystoreFile = rootProject.file("keystore/sonicmusic.jks")
+                    if (keystoreFile.exists()) {
+                        storeFile = keystoreFile
+                        storePassword = "sonicmusic"
+                        keyAlias = "sonicmusic"
+                        keyPassword = "sonicmusic"
+                    }
                 }
             }
         }
