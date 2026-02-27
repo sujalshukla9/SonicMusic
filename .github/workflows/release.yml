@@ -40,6 +40,12 @@ jobs:
       - name: Decode keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/release.jks
+          # Verify the keystore was decoded properly
+          if [ ! -s "$GITHUB_WORKSPACE/release.jks" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is empty or not set. Please add it in repo Settings → Secrets → Actions."
+            echo "::error::Generate it with: base64 -w 0 keystore/sonicmusic.jks"
+            exit 1
+          fi
 
       - name: Build signed release APK
         env:
