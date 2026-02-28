@@ -134,7 +134,7 @@ fun FullPlayerScreen(
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
 
     if (currentSong == null) {
-        onDismiss()
+        LaunchedEffect(Unit) { onDismiss() }
         return
     }
 

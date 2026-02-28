@@ -14,7 +14,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.graphics.lerp
+
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -173,7 +173,20 @@ fun SonicMusicTheme(
             ThemeMode.MATERIAL_YOU -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     val systemScheme = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-                    if (isPureBlack) systemScheme.copy(background = androidx.compose.ui.graphics.Color.Black, surface = androidx.compose.ui.graphics.Color.Black) else systemScheme
+                    if (isPureBlack) {
+                        systemScheme.copy(
+                            background = androidx.compose.ui.graphics.Color.Black,
+                            surface = androidx.compose.ui.graphics.Color.Black,
+                            surfaceDim = androidx.compose.ui.graphics.Color.Black,
+                            surfaceContainerLowest = androidx.compose.ui.graphics.Color.Black,
+                            surfaceContainerLow = androidx.compose.ui.graphics.Color(0xFF0A0A0A),
+                            surfaceContainer = androidx.compose.ui.graphics.Color(0xFF111111),
+                            surfaceContainerHigh = androidx.compose.ui.graphics.Color(0xFF1A1A1A),
+                            surfaceContainerHighest = androidx.compose.ui.graphics.Color(0xFF222222),
+                        )
+                    } else {
+                        systemScheme
+                    }
                 } else {
                     baseScheme
                 }
@@ -229,51 +242,4 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-private fun blendColorScheme(
-    from: ColorScheme,
-    to: ColorScheme,
-    fraction: Float
-): ColorScheme {
-    val t = fraction.coerceIn(0f, 1f)
-    fun c(start: androidx.compose.ui.graphics.Color, end: androidx.compose.ui.graphics.Color) =
-        lerp(start, end, t)
-
-    return from.copy(
-        primary = c(from.primary, to.primary),
-        onPrimary = c(from.onPrimary, to.onPrimary),
-        primaryContainer = c(from.primaryContainer, to.primaryContainer),
-        onPrimaryContainer = c(from.onPrimaryContainer, to.onPrimaryContainer),
-        inversePrimary = c(from.inversePrimary, to.inversePrimary),
-        secondary = c(from.secondary, to.secondary),
-        onSecondary = c(from.onSecondary, to.onSecondary),
-        secondaryContainer = c(from.secondaryContainer, to.secondaryContainer),
-        onSecondaryContainer = c(from.onSecondaryContainer, to.onSecondaryContainer),
-        tertiary = c(from.tertiary, to.tertiary),
-        onTertiary = c(from.onTertiary, to.onTertiary),
-        tertiaryContainer = c(from.tertiaryContainer, to.tertiaryContainer),
-        onTertiaryContainer = c(from.onTertiaryContainer, to.onTertiaryContainer),
-        background = c(from.background, to.background),
-        onBackground = c(from.onBackground, to.onBackground),
-        surface = c(from.surface, to.surface),
-        onSurface = c(from.onSurface, to.onSurface),
-        surfaceVariant = c(from.surfaceVariant, to.surfaceVariant),
-        onSurfaceVariant = c(from.onSurfaceVariant, to.onSurfaceVariant),
-        surfaceTint = c(from.surfaceTint, to.surfaceTint),
-        inverseSurface = c(from.inverseSurface, to.inverseSurface),
-        inverseOnSurface = c(from.inverseOnSurface, to.inverseOnSurface),
-        error = c(from.error, to.error),
-        onError = c(from.onError, to.onError),
-        errorContainer = c(from.errorContainer, to.errorContainer),
-        onErrorContainer = c(from.onErrorContainer, to.onErrorContainer),
-        outline = c(from.outline, to.outline),
-        outlineVariant = c(from.outlineVariant, to.outlineVariant),
-        scrim = c(from.scrim, to.scrim),
-        surfaceBright = c(from.surfaceBright, to.surfaceBright),
-        surfaceDim = c(from.surfaceDim, to.surfaceDim),
-        surfaceContainer = c(from.surfaceContainer, to.surfaceContainer),
-        surfaceContainerHigh = c(from.surfaceContainerHigh, to.surfaceContainerHigh),
-        surfaceContainerHighest = c(from.surfaceContainerHighest, to.surfaceContainerHighest),
-        surfaceContainerLow = c(from.surfaceContainerLow, to.surfaceContainerLow),
-        surfaceContainerLowest = c(from.surfaceContainerLowest, to.surfaceContainerLowest)
-    )
-}
+// blendColorScheme is now in ColorSchemeUtils.kt

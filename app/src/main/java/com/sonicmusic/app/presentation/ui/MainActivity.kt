@@ -10,8 +10,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Home
@@ -40,6 +45,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.material3.PermanentNavigationDrawer
+import androidx.compose.material3.PermanentDrawerSheet
+import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -101,7 +116,9 @@ class MainActivity : ComponentActivity() {
         // Permission result - notification will work if granted
     }
     
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         
         // Initialize region detection
@@ -123,6 +140,7 @@ class MainActivity : ComponentActivity() {
             val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
 
             val isOnline by networkStatusMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
+            val windowSizeClass = calculateWindowSizeClass(this)
 
             SonicMusicTheme(
                 artworkUrl = currentSong?.thumbnailUrl
@@ -130,7 +148,7 @@ class MainActivity : ComponentActivity() {
                 androidx.compose.runtime.CompositionLocalProvider(
                     com.sonicmusic.app.presentation.ui.components.LocalIsOnline provides isOnline
                 ) {
-                    SonicMusicApp()
+                    SonicMusicApp(windowSizeClass)
                 }
             }
         }
@@ -200,7 +218,7 @@ val bottomNavItems = listOf(
 )
 
 @Composable
-fun SonicMusicApp() {
+fun SonicMusicApp(windowSizeClass: WindowSizeClass) {
     val navController = rememberNavController()
     var showFullPlayer by remember { mutableStateOf(false) }
     
@@ -247,19 +265,115 @@ fun SonicMusicApp() {
     
     // Show bottom nav on main screens only
     val showBottomNav = bottomNavItems.any { it.route == currentDestination?.route }
-    
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
-        contentWindowInsets = WindowInsets(0),
-        bottomBar = {
-            // Stack MiniPlayer + BottomNavigation together
-            Column {
-                // MiniPlayer sits above the navigation bar
-                MiniPlayer(
-                    backgroundColorOverride = navBarContainer,
-                    onExpand = { showFullPlayer = true }
-                )
+    val isCompact = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Compact
+    val isMedium = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
+    val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
+
+    if (isExpanded) {
+        // Tablet / Foldable open landscape
+        PermanentNavigationDrawer(
+            drawerContent = {
+                PermanentDrawerSheet(
+                    drawerContainerColor = navBarContainer,
+                    drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Spacer(Modifier.height(12.dp))
+                    bottomNavItems.forEach { screen ->
+                        val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                        androidx.compose.material3.NavigationDrawerItem(
+                            icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
+                            label = { Text(screen.title) },
+                            selected = selected,
+                            onClick = {
+                                navController.navigate(screen.route) {
+                                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            colors = androidx.compose.material3.NavigationDrawerItemDefaults.colors(
+                                selectedContainerColor = navBarIndicator,
+                                unselectedContainerColor = Color.Transparent,
+                                selectedIconColor = MaterialTheme.colorScheme.primary,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    // Could place MiniPlayer here or outside
+                }
+            }
+        ) {
+            MainScaffoldContent(
+                navController = navController,
+                showFullPlayer = { showFullPlayer = true },
+                snackbarHostState = snackbarHostState,
+                backgroundTop = backgroundTop,
+                backgroundMid = backgroundMid,
+                navBarContainer = navBarContainer,
+                isCompact = false
+            )
+        }
+    } else if (isMedium) {
+        // Landscape phone / Foldable half open
+        Row(Modifier.fillMaxSize()) {
+            NavigationRail(
+                containerColor = navBarContainer,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                header = {
+                    val fallbackTitle = bottomNavItems.firstOrNull { it.route == currentDestination?.route }?.title
+                    if (fallbackTitle != null) Spacer(Modifier.height(8.dp))
+                }
+            ) {
+                Spacer(Modifier.height(8.dp))
+                bottomNavItems.forEach { screen ->
+                    val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                    NavigationRailItem(
+                        icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
+                        label = { Text(screen.title) },
+                        selected = selected,
+                        onClick = {
+                            navController.navigate(screen.route) {
+                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                        colors = NavigationRailItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            indicatorColor = navBarIndicator,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+            }
+            MainScaffoldContent(
+                navController = navController,
+                showFullPlayer = { showFullPlayer = true },
+                snackbarHostState = snackbarHostState,
+                backgroundTop = backgroundTop,
+                backgroundMid = backgroundMid,
+                navBarContainer = navBarContainer,
+                isCompact = false
+            )
+        }
+    } else {
+        // Compact: Traditional Phone Layout
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets(0),
+            bottomBar = {
+                // Stack MiniPlayer + BottomNavigation together
+                Column {
+                    // MiniPlayer sits above the navigation bar
+                    MiniPlayer(
+                        backgroundColorOverride = navBarContainer,
+                        onExpand = { showFullPlayer = true }
+                    )
                     
                 AnimatedVisibility(visible = showBottomNav) {
                     // ViTune-style Bottom Navigation Bar
@@ -310,225 +424,17 @@ fun SonicMusicApp() {
         },
         snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            backgroundTop,
-                            backgroundMid,
-                            MaterialTheme.colorScheme.background
-                        )
-                    )
-                )
-        ) {
-            val bottomPadding = paddingValues.calculateBottomPadding()
-            
-            NavHost(
-                navController = navController,
-                startDestination = Screen.Home.route
-            ) {
-                // Main screens
-                composable(Screen.Home.route) {
-                    HomeScreen(
-                        bottomPadding = bottomPadding,
-                        onNavigateToSearch = { 
-                            navController.navigate(Screen.Search.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        onNavigateToHomeSection = { sectionKey ->
-                            navController.navigate(SubScreens.homeSection(sectionKey))
-                        },
-                        onNavigateToLikedSongs = {
-                            navController.navigate(SubScreens.LIKED_SONGS)
-                        },
-                        onNavigateToDownloads = {
-                            navController.navigate(SubScreens.DOWNLOADS)
-                        },
-                        onNavigateToPlaylists = {
-                            navController.navigate(SubScreens.PLAYLISTS)
-                        },
-                        onNavigateToRecentlyPlayed = {
-                            navController.navigate(SubScreens.RECENTLY_PLAYED)
-                        },
-                        onNavigateToSettings = { 
-                            navController.navigate(Screen.Settings.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        onShowFullPlayer = { showFullPlayer = true }
-                    )
-                }
-                composable(Screen.Search.route) {
-                    SearchScreen(
-                        bottomPadding = bottomPadding,
-                        onShowFullPlayer = { showFullPlayer = true },
-                        onNavigateToArtist = { artistName, browseId ->
-                            navController.navigate(SubScreens.artistDetail(artistName, browseId))
-                        }
-                    )
-                }
-                composable(Screen.Library.route) {
-                    LibraryScreen(
-                        bottomPadding = bottomPadding,
-                        onNavigateToLikedSongs = { 
-                            navController.navigate(SubScreens.LIKED_SONGS)
-                        },
-                        onNavigateToPlaylists = {
-                            navController.navigate(SubScreens.PLAYLISTS)
-                        },
-                        onNavigateToRecentlyPlayed = {
-                            navController.navigate(SubScreens.RECENTLY_PLAYED)
-                        },
-                        onNavigateToLocalSongs = {
-                            navController.navigate(SubScreens.LOCAL_SONGS)
-                        },
-                        onNavigateToDownloads = {
-                            navController.navigate(SubScreens.DOWNLOADS)
-                        },
-                        onNavigateToPlaylistDetail = { playlistId ->
-                            navController.navigate(SubScreens.playlistDetail(playlistId))
-                        },
-                        onNavigateToArtistDetail = { artistName ->
-                            navController.navigate(SubScreens.artistDetail(artistName))
-                        },
-                        onNavigateToArtists = {
-                            navController.navigate(SubScreens.ARTISTS)
-                        },
-                        onShowFullPlayer = { showFullPlayer = true }
-                    )
-                }
-                composable(Screen.Settings.route) {
-                    SettingsScreen(
-                        bottomPadding = bottomPadding
-                    )
-                }
-                
-                // Library sub-screens
-                composable(SubScreens.HOME_SECTION) { backStackEntry ->
-                    val sectionKey = backStackEntry.arguments
-                        ?.getString("sectionKey")
-                        ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-                        .orEmpty()
-
-                    val homeEntry = remember(backStackEntry) {
-                        navController.getBackStackEntry(Screen.Home.route)
-                    }
-                    val homeViewModel: HomeViewModel = hiltViewModel(homeEntry)
-
-                    HomeSectionDetailScreen(
-                        sectionKey = sectionKey,
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        bottomPadding = bottomPadding,
-                        viewModel = homeViewModel
-                    )
-                }
-                composable(SubScreens.LIKED_SONGS) {
-                    LikedSongsScreen(
-                        // Sub-screens don't show bottom nav, but MiniPlayer might be there?
-                        // If bottom nav is hidden, bottomPadding is 0. 
-                        // But MiniPlayer is stacked in bottomBar slot.
-                        // If showBottomNav is false, bottomBar is empty?
-                        // Anyhow, LIKED_SONGS doesn't take bottomPadding argument in the current file?
-                        // I should verify SubScreens signature if I want to be perfect, 
-                        // but sticking to main screens first.
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                composable(SubScreens.PLAYLISTS) {
-                    PlaylistsScreen(
-                        onNavigateBack = { navController.popBackStack() },
-                        onPlaylistClick = { playlistId ->
-                            navController.navigate(SubScreens.playlistDetail(playlistId))
-                        },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                composable(SubScreens.RECENTLY_PLAYED) {
-                    RecentlyPlayedScreen(
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                composable(SubScreens.LOCAL_SONGS) {
-                    LocalSongsScreen(
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                composable(SubScreens.DOWNLOADS) {
-                    DownloadedSongsScreen(
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                composable(SubScreens.PLAYLIST_DETAIL) { backStackEntry ->
-                    val playlistId = backStackEntry.arguments?.getString("playlistId")?.toLongOrNull()
-                    if (playlistId != null) {
-                        PlaylistDetailScreen(
-                            playlistId = playlistId,
-                            onNavigateBack = { navController.popBackStack() },
-                            onShowFullPlayer = { showFullPlayer = true },
-                            bottomPadding = bottomPadding
-                        )
-                    }
-                }
-                composable(
-                    route = SubScreens.ARTIST_DETAIL,
-                    arguments = listOf(
-                        navArgument("artistName") { type = NavType.StringType },
-                        navArgument("browseId") {
-                            type = NavType.StringType
-                            nullable = true
-                            defaultValue = null
-                        }
-                    )
-                ) { backStackEntry ->
-                    val artistName = backStackEntry.arguments?.getString("artistName")?.let {
-                        java.net.URLDecoder.decode(it, "UTF-8")
-                    } ?: ""
-                    val browseId = backStackEntry.arguments?.getString("browseId")?.let {
-                        java.net.URLDecoder.decode(it, "UTF-8")
-                    }
-                    ArtistDetailScreen(
-                        artistName = artistName,
-                        browseId = browseId,
-                        onNavigateBack = { navController.popBackStack() },
-                        onShowFullPlayer = { showFullPlayer = true },
-                        onNavigateToArtist = { relatedArtist, relatedBrowseId ->
-                            navController.navigate(SubScreens.artistDetail(relatedArtist, relatedBrowseId))
-                        },
-                        bottomPadding = bottomPadding
-                    )
-                }
-                
-                composable(SubScreens.ARTISTS) {
-                    com.sonicmusic.app.presentation.ui.library.ArtistsScreen(
-                        onNavigateBack = { navController.popBackStack() },
-                        onArtistClick = { artistName, browseId ->
-                            navController.navigate(SubScreens.artistDetail(artistName, browseId))
-                        },
-                        bottomPadding = bottomPadding
-                    )
-                }
-            }
-        }
+        MainScaffoldContent(
+            navController = navController,
+            showFullPlayer = { showFullPlayer = true },
+            snackbarHostState = snackbarHostState,
+            backgroundTop = backgroundTop,
+            backgroundMid = backgroundMid,
+            navBarContainer = navBarContainer,
+            isCompact = true,
+            paddingValues = paddingValues
+        )
+    }
     }
     
     // Full Player - modal overlay
@@ -540,5 +446,231 @@ fun SonicMusicApp() {
                 navController.navigate(SubScreens.artistDetail(artistName, browseId))
             }
         )
+    }
+}
+
+@Composable
+fun MainScaffoldContent(
+    navController: androidx.navigation.NavHostController,
+    showFullPlayer: () -> Unit,
+    snackbarHostState: androidx.compose.material3.SnackbarHostState,
+    backgroundTop: Color,
+    backgroundMid: Color,
+    navBarContainer: Color,
+    isCompact: Boolean,
+    paddingValues: androidx.compose.foundation.layout.PaddingValues = androidx.compose.foundation.layout.PaddingValues(0.dp)
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        backgroundTop,
+                        backgroundMid,
+                        MaterialTheme.colorScheme.background
+                    )
+                )
+            )
+            .padding(if (!isCompact) androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues() else androidx.compose.foundation.layout.PaddingValues(0.dp))
+    ) {
+        val bottomPadding = paddingValues.calculateBottomPadding()
+        
+        NavHost(
+            navController = navController,
+            startDestination = Screen.Home.route
+        ) {
+            // Main screens
+            composable(Screen.Home.route) {
+                HomeScreen(
+                    bottomPadding = bottomPadding,
+                    onNavigateToSearch = { 
+                        navController.navigate(Screen.Search.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onNavigateToHomeSection = { sectionKey ->
+                        navController.navigate(SubScreens.homeSection(sectionKey))
+                    },
+                    onNavigateToLikedSongs = {
+                        navController.navigate(SubScreens.LIKED_SONGS)
+                    },
+                    onNavigateToDownloads = {
+                        navController.navigate(SubScreens.DOWNLOADS)
+                    },
+                    onNavigateToPlaylists = {
+                        navController.navigate(SubScreens.PLAYLISTS)
+                    },
+                    onNavigateToRecentlyPlayed = {
+                        navController.navigate(SubScreens.RECENTLY_PLAYED)
+                    },
+                    onNavigateToSettings = { 
+                        navController.navigate(Screen.Settings.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onShowFullPlayer = showFullPlayer
+                )
+            }
+            composable(Screen.Search.route) {
+                SearchScreen(
+                    bottomPadding = bottomPadding,
+                    onShowFullPlayer = showFullPlayer,
+                    onNavigateToArtist = { artistName, browseId ->
+                        navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                    }
+                )
+            }
+            composable(Screen.Library.route) {
+                LibraryScreen(
+                    bottomPadding = bottomPadding,
+                    onNavigateToLikedSongs = { 
+                        navController.navigate(SubScreens.LIKED_SONGS)
+                    },
+                    onNavigateToPlaylists = {
+                        navController.navigate(SubScreens.PLAYLISTS)
+                    },
+                    onNavigateToRecentlyPlayed = {
+                        navController.navigate(SubScreens.RECENTLY_PLAYED)
+                    },
+                    onNavigateToLocalSongs = {
+                        navController.navigate(SubScreens.LOCAL_SONGS)
+                    },
+                    onNavigateToDownloads = {
+                        navController.navigate(SubScreens.DOWNLOADS)
+                    },
+                    onNavigateToPlaylistDetail = { playlistId ->
+                        navController.navigate(SubScreens.playlistDetail(playlistId))
+                    },
+                    onNavigateToArtistDetail = { artistName ->
+                        navController.navigate(SubScreens.artistDetail(artistName))
+                    },
+                    onNavigateToArtists = {
+                        navController.navigate(SubScreens.ARTISTS)
+                    },
+                    onShowFullPlayer = showFullPlayer
+                )
+            }
+            composable(Screen.Settings.route) {
+                SettingsScreen(
+                    bottomPadding = bottomPadding
+                )
+            }
+            
+            // Library sub-screens
+            composable(SubScreens.HOME_SECTION) { backStackEntry ->
+                val sectionKey = backStackEntry.arguments
+                    ?.getString("sectionKey")
+                    ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                    .orEmpty()
+
+                val homeEntry = remember(backStackEntry) {
+                    navController.getBackStackEntry(Screen.Home.route)
+                }
+                val homeViewModel: HomeViewModel = hiltViewModel(homeEntry)
+
+                HomeSectionDetailScreen(
+                    sectionKey = sectionKey,
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding,
+                    viewModel = homeViewModel
+                )
+            }
+            composable(SubScreens.LIKED_SONGS) {
+                LikedSongsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(SubScreens.PLAYLISTS) {
+                PlaylistsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onPlaylistClick = { playlistId ->
+                        navController.navigate(SubScreens.playlistDetail(playlistId))
+                    },
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(SubScreens.RECENTLY_PLAYED) {
+                RecentlyPlayedScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(SubScreens.LOCAL_SONGS) {
+                LocalSongsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(SubScreens.DOWNLOADS) {
+                DownloadedSongsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(SubScreens.PLAYLIST_DETAIL) { backStackEntry ->
+                val playlistId = backStackEntry.arguments?.getString("playlistId")?.toLongOrNull()
+                if (playlistId != null) {
+                    PlaylistDetailScreen(
+                        playlistId = playlistId,
+                        onNavigateBack = { navController.popBackStack() },
+                        onShowFullPlayer = showFullPlayer,
+                        bottomPadding = bottomPadding
+                    )
+                }
+            }
+            composable(
+                route = SubScreens.ARTIST_DETAIL,
+                arguments = listOf(
+                    navArgument("artistName") { type = NavType.StringType },
+                    navArgument("browseId") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { backStackEntry ->
+                val artistName = backStackEntry.arguments?.getString("artistName")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                } ?: ""
+                val browseId = backStackEntry.arguments?.getString("browseId")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }
+                ArtistDetailScreen(
+                    artistName = artistName,
+                    browseId = browseId,
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    onNavigateToArtist = { relatedArtist, relatedBrowseId ->
+                        navController.navigate(SubScreens.artistDetail(relatedArtist, relatedBrowseId))
+                    },
+                    bottomPadding = bottomPadding
+                )
+            }
+            
+            composable(SubScreens.ARTISTS) {
+                com.sonicmusic.app.presentation.ui.library.ArtistsScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onArtistClick = { artistName, browseId ->
+                        navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                    },
+                    bottomPadding = bottomPadding
+                )
+            }
+        }
     }
 }

@@ -56,7 +56,7 @@ class PlayerServiceConnection @Inject constructor(
         private const val QUEUE_LOW_THRESHOLD = 2 // Trigger fetch when this many songs left
         private const val QUEUE_CHECK_COOLDOWN_MS = 5000L // 5 seconds between checks
         private const val PRELOAD_THRESHOLD = 5 // Start preloading when 5 songs left
-        private const val POSITION_UPDATE_INTERVAL_MS = 100L // Smooth 10fps position updates
+        private const val POSITION_UPDATE_INTERVAL_MS = 250L // ~4fps — visually smooth for a progress bar, 3x fewer recompositions
     }
 
     // MediaController for communication with PlaybackService
@@ -122,9 +122,10 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     // Cache of stream URLs by song ID
-    private val streamUrlCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+    // Keep cache small — YouTube URLs expire after ~6h, no point hoarding stale ones.
+    private val streamUrlCache = object : LinkedHashMap<String, String>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
-            return size > 200
+            return size > 50
         }
     }
     
@@ -1038,11 +1039,15 @@ class PlayerServiceConnection @Inject constructor(
                         val pos = controller.currentPosition
                         val dur = controller.duration
                         
-                        // Only update if we're not currently seeking
-                        _currentPosition.value = pos
+                        // Guard: only emit when values actually changed to avoid
+                        // unnecessary recompositions downstream.
+                        if (pos != _currentPosition.value) {
+                            _currentPosition.value = pos
+                        }
                         if (dur > 0) {
-                            _duration.value = dur
-                            _progress.value = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                            if (dur != _duration.value) _duration.value = dur
+                            val newProgress = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                            if (newProgress != _progress.value) _progress.value = newProgress
                         }
                     }
                 }

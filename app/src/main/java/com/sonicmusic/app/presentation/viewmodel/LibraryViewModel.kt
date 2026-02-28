@@ -44,7 +44,7 @@ class LibraryViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection
 ) : ViewModel() {
     companion object {
-        private const val RECENTLY_PLAYED_LIMIT = 1000
+        private const val RECENTLY_PLAYED_LIMIT = 10 // Preview only; full list loaded in RecentlyPlayedScreen
     }
 
     private val _likedSongs = MutableStateFlow<List<Song>>(emptyList())

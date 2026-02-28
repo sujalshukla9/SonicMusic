@@ -7,7 +7,7 @@ import android.util.Log
 import android.util.LruCache
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.domain.model.DarkMode
@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -30,7 +31,9 @@ class ThemeViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    private val imageLoader = ImageLoader(context)
+    // Use the Coil singleton configured in SonicMusicApplication.newImageLoader()
+    // so we benefit from the tuned memory/disk caches and respectCacheHeaders(false).
+    private val imageLoader get() = context.imageLoader
 
     // User Preferences
     val themeMode: StateFlow<ThemeMode> = settingsDataStore.themeMode
@@ -61,12 +64,11 @@ class ThemeViewModel @Inject constructor(
     private val colorCache = LruCache<String, Int>(50)
 
     init {
-        // Load initial seed color from DataStore if available
+        // Load initial seed color from DataStore (one-shot read)
         viewModelScope.launch {
-            settingsDataStore.lastSeedColor.collect { lastSeed ->
-                if (_seedColor.value == null && lastSeed != null) {
-                    _seedColor.value = lastSeed
-                }
+            val lastSeed = settingsDataStore.lastSeedColor.first()
+            if (_seedColor.value == null && lastSeed != null) {
+                _seedColor.value = lastSeed
             }
         }
     }

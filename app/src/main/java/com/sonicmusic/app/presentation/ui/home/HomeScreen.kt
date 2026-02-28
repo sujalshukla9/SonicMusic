@@ -1,6 +1,8 @@
 package com.sonicmusic.app.presentation.ui.home
 
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -135,8 +137,6 @@ fun HomeScreen(
         }
     }
 
-    }
-
     val settingsViewModel: com.sonicmusic.app.presentation.viewmodel.SettingsViewModel = hiltViewModel()
     val appUpdateState by settingsViewModel.appUpdateState.collectAsStateWithLifecycle()
 
@@ -146,7 +146,7 @@ fun HomeScreen(
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
         val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
-        var showUpdateDialog by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(true) }
+        var showUpdateDialog by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
 
         if (appUpdateState.isUpdateAvailable && !appUpdateState.isDownloading && showUpdateDialog) {
             AlertDialog(
@@ -257,7 +257,7 @@ fun HomeScreen(
                     // Shows history for existing users,
                     // shows trending with proper title for new users
                     // ═══════════════════════════════════════════
-                    val hasHistory = homeContent.listenAgain.isNotEmpty()
+                    val hasHistory = homeContent.listenAgain.isNotEmpty() 
                     val listenAgainGridSongs = if (hasHistory) {
                         homeContent.listenAgain.take(27)
                     } else {
@@ -797,8 +797,17 @@ private fun ListenAgainGrid(
     title: String = "Listen Again",
     onSeeAllClick: () -> Unit
 ) {
-    // 3x3 grid = 9 songs per page, 3 pages = 27 songs total
-    val songsPerPage = 9
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp
+    
+    // Dynamically calculate columns based on screen width
+    val columns = when {
+        screenWidth >= 840 -> 5 // Expanded (Tablet Landscape)
+        screenWidth >= 600 -> 4 // Medium (Tablet Portrait / Foldable)
+        else -> 3               // Compact (Phone)
+    }
+    val rowsCount = if (screenWidth >= 600) 2 else 3
+    val songsPerPage = columns * rowsCount
     val pageCount = ((songs.size + songsPerPage - 1) / songsPerPage).coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
@@ -880,7 +889,7 @@ private fun ListenAgainGrid(
             }
         }
         
-        // Swipeable pages with 3x3 grids
+        // Swipeable pages with grids
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxWidth(),
@@ -890,8 +899,8 @@ private fun ListenAgainGrid(
             val startIndex = page * songsPerPage
             val pageSongs = songs.drop(startIndex).take(songsPerPage)
             
-            // 3x3 Grid layout
-            val rows = pageSongs.chunked(3)
+            // Dynamic Grid layout chunks
+            val rows = pageSongs.chunked(columns)
             
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -910,19 +919,19 @@ private fun ListenAgainGrid(
                             )
                         }
                         // Fill remaining space if row is incomplete
-                        repeat(3 - rowSongs.size) {
+                        repeat(columns - rowSongs.size) {
                             Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
                 
-                // Fill empty rows if page has less than 3 rows
-                repeat(3 - rows.size) {
+                // Fill empty rows if page has less than required rows
+                repeat(rowsCount - rows.size) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        repeat(3) {
+                        repeat(columns) {
                             Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
                         }
                     }

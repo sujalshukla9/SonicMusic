@@ -140,3 +140,25 @@
 # ═══════════════════════════════════════════════════════════════
 -keep class androidx.datastore.** { *; }
 -dontwarn androidx.datastore.**
+
+# ═══════════════════════════════════════════════════════════════
+# R8 — aggressive optimizations
+# ═══════════════════════════════════════════════════════════════
+# Allow R8 to inline private/package-private methods and repackage classes
+# for smaller DEX output and better method inlining.
+-allowaccessmodification
+-repackageclasses ''
+
+# ═══════════════════════════════════════════════════════════════
+# Kotlin — strip null-check intrinsics in release
+# Safe because Kotlin's type system already enforces nullability;
+# these runtime checks are redundant and waste branch instructions.
+# ═══════════════════════════════════════════════════════════════
+-assumenosideeffects class kotlin.jvm.internal.Intrinsics {
+    public static void checkNotNullParameter(...);
+    public static void checkNotNullExpressionValue(...);
+    public static void checkNotNull(...);
+    public static void checkParameterIsNotNull(...);
+    public static void checkExpressionValueIsNotNull(...);
+    public static void checkReturnedValueIsNotNull(...);
+}

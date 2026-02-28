@@ -198,15 +198,18 @@ fun LibraryScreen(
                 )
             )
         } else {
-            LazyColumn(
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 340.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     top = paddingValues.calculateTopPadding() + 16.dp, 
                     bottom = bottomPadding + 16.dp
-                )
+                ),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                             // Quick Access / Hero Cards
-                            item {
+                            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -236,7 +239,7 @@ fun LibraryScreen(
                 
                 // Play All / Shuffle buttons for Liked Songs
                 if (likedSongs.isNotEmpty()) {
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -269,10 +272,10 @@ fun LibraryScreen(
                     }
                 }
                 
-                item { Spacer(modifier = Modifier.height(16.dp)) }
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(16.dp)) }
 
                 // Standard List Items
-                item {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -301,10 +304,10 @@ fun LibraryScreen(
                     }
                 }
 
-                item { Spacer(modifier = Modifier.height(24.dp)) }
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Playlists Section
-                item {
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                     Row(
                          modifier = Modifier
                              .fillMaxWidth()
@@ -323,7 +326,7 @@ fun LibraryScreen(
                 }
 
                 if (playlists.isNotEmpty()) {
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         LazyRow(
                             contentPadding = PaddingValues(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -333,7 +336,11 @@ fun LibraryScreen(
                                 AddPlaylistCard(onClick = { showCreatePlaylistDialog = true })
                             }
                             
-                            items(playlists.take(10)) { playlist ->
+                            items(
+                                items = playlists.take(10),
+                                key = { it.id },
+                                contentType = { "playlist" }
+                            ) { playlist ->
                                 PlaylistGridItem(
                                     playlist = playlist,
                                     onClick = { onNavigateToPlaylistDetail(playlist.id) }
@@ -342,7 +349,7 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Box(
                              modifier = Modifier
                                  .fillMaxWidth()
@@ -358,11 +365,11 @@ fun LibraryScreen(
                     }
                 }
 
-                item { Spacer(modifier = Modifier.height(24.dp)) }
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Recently Played List
                 if (recentlyPlayed.isNotEmpty()) {
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -380,7 +387,11 @@ fun LibraryScreen(
                         }
                     }
                     
-                    items(recentlyPlayed.take(5)) { history ->
+                    items(
+                        items = recentlyPlayed.take(5),
+                        key = { it.id },
+                        contentType = { "history" }
+                    ) { history ->
                         RecentlyPlayedItem(
                             history = history,
                             onClick = {
@@ -391,7 +402,7 @@ fun LibraryScreen(
                     }
                 } else {
                     // Empty state for Recently Played
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -419,11 +430,11 @@ fun LibraryScreen(
                     }
                 }
 
-                item { Spacer(modifier = Modifier.height(24.dp)) }
+                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Artists Section
                 if (artists.isNotEmpty()) {
-                    item {
+                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -441,7 +452,11 @@ fun LibraryScreen(
                         }
                     }
 
-                    items(artists) { artist ->
+                    items(
+                        items = artists,
+                        key = { it.artistName },
+                        contentType = { "artist" }
+                    ) { artist ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()

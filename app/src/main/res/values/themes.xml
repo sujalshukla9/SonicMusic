@@ -8,4 +8,13 @@
         <!-- Ensure content draws behind system bars -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
     </style>
+
+    <style name="Theme.Splash" parent="Theme.SplashScreen">
+        <!-- Set the splash screen background -->
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+        <!-- Use the app icon as the center animation/image -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <!-- Set the app theme to apply after the splash screen finishes -->
+        <item name="postSplashScreenTheme">@style/Theme.SonicMusic</item>
+    </style>
 </resources>

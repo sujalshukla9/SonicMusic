@@ -14,14 +14,23 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.sonicmusic.app.worker.AutoUpdateWorker
+import com.sonicmusic.app.worker.TelemetryUploadWorker
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 @HiltAndroidApp
 class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.Provider {
     
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
+
+    // Application-scoped coroutine scope — lives as long as the process.
+    // Uses SupervisorJob so child failures don't cancel the whole scope.
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -31,13 +40,41 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
     override fun onCreate() {
         super.onCreate()
         
-        scheduleAutoUpdate()
+        // Offload WorkManager scheduling to prevent blocking the UI thread.
+        applicationScope.launch {
+            scheduleAutoUpdate()
+            scheduleTelemetryUpload()
+        }
 
         if (BuildConfig.DEBUG) {
             setupStrictMode()
             setupJankDetector()
             System.setProperty("kotlinx.coroutines.debug", "on")
             System.setProperty("kotlinx.coroutines.stacktrace.recovery", "true")
+        }
+    }
+
+    private fun scheduleTelemetryUpload() {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .setRequiresBatteryNotLow(true)
+            .build()
+            
+        val telemetryWorkRequest = PeriodicWorkRequestBuilder<TelemetryUploadWorker>(
+            6, TimeUnit.HOURS,
+            30, TimeUnit.MINUTES // Flex interval
+        )
+            .setConstraints(constraints)
+            .build()
+            
+        try {
+            WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                "TelemetryUploadWorker",
+                ExistingPeriodicWorkPolicy.KEEP,
+                telemetryWorkRequest
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("Telemetry", "Failed to enqueue WorkManager during startup: ${e.message}")
         }
     }
 
@@ -53,11 +90,16 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
             .setConstraints(constraints)
             .build()
             
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "AutoUpdateWorker",
-            ExistingPeriodicWorkPolicy.KEEP,
-            autoUpdateWorkRequest
-        )
+        // Use try-catch here as WorkManager SQLite writes can throw on slow disk API 26 devices
+        try {
+            WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                "AutoUpdateWorker",
+                ExistingPeriodicWorkPolicy.KEEP,
+                autoUpdateWorkRequest
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("Memory", "Failed to enqueue WorkManager during startup: ${e.message}")
+        }
     }
 
     private fun setupStrictMode() {
@@ -115,16 +157,9 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         android.util.Log.w("Memory", "onTrimMemory: $levelName")
 
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
-            try {
-                // To access the image loader memory cache directly:
-                // We don't have a direct reference to the memory cache here without creating a new instance
-                // We'll let Coil handle its internal cache clearing which it hooks into naturally via ComponentCallbacks2.
-                // Log only that we expect Coil to clear its cache.
-                android.util.Log.w("Memory", "Mem pressure high — Coil natural cache clearing expected.")
-                android.util.Log.w("Memory", "Cleared Coil memory cache")
-            } catch (e: Exception) {
-                // Ignore
-            }
+            // Coil registers its own ComponentCallbacks2 and will trim
+            // its memory cache automatically. No manual intervention needed.
+            android.util.Log.w("Memory", "Mem pressure high — Coil will auto-trim memory cache.")
         }
     }
 
@@ -157,8 +192,8 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                     .build()
             }
             .crossfade(true)
-            // RGB565 uses 50% less memory than ARGB8888 for thumbnails (no alpha needed)
-            .allowRgb565(true)
+            // Note: RGB565 removed — causes visible banding on album art gradients.
+            // Memory is already controlled by the 25% memoryCache limit above.
             // YouTube sends aggressive no-cache headers; ignore them to use our local cache
             .respectCacheHeaders(false)
             .build()

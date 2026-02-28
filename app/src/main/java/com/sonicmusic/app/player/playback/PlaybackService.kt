@@ -83,6 +83,9 @@ class PlaybackService : MediaSessionService() {
     @Inject
     lateinit var songRepository: SongRepository
 
+    @Inject
+    lateinit var historyRepository: com.sonicmusic.app.domain.repository.HistoryRepository
+
     companion object {
         private const val TAG = "SonicPlayback"
         private const val CHANNEL_ID = "sonic_music_playback"
@@ -128,6 +131,11 @@ class PlaybackService : MediaSessionService() {
     private var crossfadeDurationMs: Long = 0L
     private var isCrossfadeTransitionRunning: Boolean = false
     
+    // Telemetry tracking state
+    private var lastHistoryMediaItem: MediaItem? = null
+    private var currentPlaySessionStartTimeMs: Long = 0L
+    private var accumulatedPlayDurationMs: Long = 0L
+    
     // Bug 1 fix: Removed custom onBind/Binder that was intercepting Media3's
     // MediaController IPC channel. Let MediaSessionService.onBind() handle everything.
 
@@ -138,6 +146,7 @@ class PlaybackService : MediaSessionService() {
         observePlaybackSettings()
         setupNotificationProvider()
     }
+
     
     private fun initializePlayer() {
         // Build ExoPlayer with proper audio configuration and buffer settings
@@ -339,9 +348,15 @@ class PlaybackService : MediaSessionService() {
     
     private fun createPlayerListener() = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            val now = System.currentTimeMillis()
             if (isPlaying) {
+                currentPlaySessionStartTimeMs = now
                 startCrossfadeMonitor()
             } else {
+                if (currentPlaySessionStartTimeMs > 0) {
+                    accumulatedPlayDurationMs += (now - currentPlaySessionStartTimeMs)
+                    currentPlaySessionStartTimeMs = 0
+                }
                 stopCrossfadeMonitor()
             }
         }
@@ -352,6 +367,63 @@ class PlaybackService : MediaSessionService() {
                 player?.volume = 1f
             }
             
+            // ════════ TELEMETRY COLLECTION ════════
+            val now = System.currentTimeMillis()
+            if (player?.isPlaying == true && currentPlaySessionStartTimeMs > 0) {
+                accumulatedPlayDurationMs += (now - currentPlaySessionStartTimeMs)
+                currentPlaySessionStartTimeMs = now
+            }
+
+            lastHistoryMediaItem?.let { prevItem ->
+                val prevSongId = prevItem.mediaId
+                if (prevSongId.isNotBlank() && accumulatedPlayDurationMs > 0) {
+                    val playDurationSecs = (accumulatedPlayDurationMs / 1000).toInt().coerceAtLeast(0)
+                    
+                    // We need the total duration of the previous item.
+                    // If the user skipped, we might not have it in the ExoPlayer state accurately right now,
+                    // but we can extract it from the queue/metadata if available.
+                    val durationMs = prevItem.mediaMetadata.extras?.getLong("duration_ms") ?: 0L
+                    val totalDurationSecs = (durationMs / 1000).toInt()
+                    
+                    val completed = totalDurationSecs > 0 && 
+                            playDurationSecs.toFloat() / totalDurationSecs >= 0.8f
+                    
+                    // Construct song object from MediaItem for history
+                    val song = Song(
+                        id = prevSongId,
+                        title = prevItem.mediaMetadata.title?.toString() ?: "Unknown",
+                        artist = prevItem.mediaMetadata.artist?.toString() ?: "Unknown",
+                        album = prevItem.mediaMetadata.albumTitle?.toString(),
+                        duration = totalDurationSecs,
+                        thumbnailUrl = prevItem.mediaMetadata.artworkUri?.toString() ?: ""
+                    )
+
+                    serviceScope.launch {
+                        try {
+                            historyRepository.recordPlayback(
+                                song,
+                                playDuration = playDurationSecs,
+                                completed = completed,
+                                totalDuration = totalDurationSecs
+                            )
+                            Log.d(TAG, "📊 Telemetry recorded: ${song.title} | Dur: ${playDurationSecs}s | Completed: $completed")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "❌ Failed to record telemetry", e)
+                        }
+                    }
+                }
+            }
+
+            // Reset for the new track
+            lastHistoryMediaItem = mediaItem
+            accumulatedPlayDurationMs = 0L
+            if (player?.isPlaying == true) {
+                currentPlaySessionStartTimeMs = System.currentTimeMillis()
+            } else {
+                currentPlaySessionStartTimeMs = 0L
+            }
+            // ══════════════════════════════════════
+
             // Update custom layout for the new track
             mediaItem?.mediaId?.let { songId ->
                 serviceScope.launch {
@@ -669,10 +741,12 @@ class PlaybackService : MediaSessionService() {
 
             val saveResult = withContext(Dispatchers.IO) {
                 runCatching {
-                    if (shouldLike) {
-                        songRepository.likeSong(song)
-                    } else {
-                        songRepository.unlikeSong(songId)
+                    kotlinx.coroutines.withTimeout(2000L) {
+                        if (shouldLike) {
+                            songRepository.likeSong(song)
+                        } else {
+                            songRepository.unlikeSong(songId)
+                        }
                     }
                 }
             }

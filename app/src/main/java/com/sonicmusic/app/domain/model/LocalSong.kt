@@ -1,5 +1,8 @@
 package com.sonicmusic.app.domain.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class LocalSong(
     val id: Long,
     val title: String,

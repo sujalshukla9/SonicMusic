@@ -17,15 +17,15 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.2.1-Beta"
+        versionCode = 2
+        versionName = "1.3.0-Beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.2.1-Beta\"")
+        buildConfigField("String", "APP_VERSION", "\"1.3.0-Beta\"")
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
@@ -127,6 +127,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
+    implementation(libs.androidx.material3.windowsizeclass)
+    implementation(libs.androidx.core.splashscreen)
     
     // Navigation
     implementation(libs.androidx.navigation.compose)

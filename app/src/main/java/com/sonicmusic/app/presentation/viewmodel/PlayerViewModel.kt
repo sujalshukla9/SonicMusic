@@ -190,31 +190,8 @@ class PlayerViewModel @Inject constructor(
             currentSong.collect { song ->
                 song?.let {
                     try {
-                        if (lastHistorySongId != it.id) {
-                            // Record history for the PREVIOUS song with actual play duration
-                            val previousSongId = lastHistorySongId
-                            if (previousSongId != null && currentSongStartTimeMs > 0L) {
-                                val elapsedMs = System.currentTimeMillis() - currentSongStartTimeMs
-                                val playDurationSecs = (elapsedMs / 1000).toInt().coerceAtLeast(0)
-                                // Find the previous song in the queue for metadata
-                                val prevSong = queue.value.find { q -> q.id == previousSongId }
-                                if (prevSong != null) {
-                                    val totalDurationSecs = prevSong.duration
-                                    val completed = totalDurationSecs > 0 &&
-                                            playDurationSecs.toFloat() / totalDurationSecs >= 0.8f
-                                    historyRepository.recordPlayback(
-                                        prevSong,
-                                        playDuration = playDurationSecs,
-                                        completed = completed,
-                                        totalDuration = totalDurationSecs
-                                    )
-                                }
-                            }
+                        // History tracking moved to PlaybackService AnalyticsListener
 
-                            // Start tracking the NEW song
-                            lastHistorySongId = it.id
-                            currentSongStartTimeMs = System.currentTimeMillis()
-                        }
 
                         // Cancel previous observer and start a new one for the current song
                         likeObserverJob?.cancel()
@@ -1052,8 +1029,15 @@ class PlayerViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         recommendationJob?.cancel()
-        // Save queue state before clearing
-        saveQueueState()
+        // Use NonCancellable so the save completes even though viewModelScope
+        // is about to be cancelled when onCleared finishes.
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) {
+            try {
+                queueRepository.saveQueueState()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save queue on clear", e)
+            }
+        }
         // Don't disconnect - service should persist
     }
 }
