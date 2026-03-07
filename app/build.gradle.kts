@@ -19,15 +19,15 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.2"
+        versionCode = 5
+        versionName = "1.3.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.3.2\"")
+        buildConfigField("String", "APP_VERSION", "\"1.3.3\"")
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
