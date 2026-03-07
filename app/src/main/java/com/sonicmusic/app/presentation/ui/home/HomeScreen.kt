@@ -79,6 +79,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.sonicmusic.app.presentation.ui.theme.ResponsiveDimensions
+import com.sonicmusic.app.presentation.ui.theme.rememberScreenDimensions
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.Song
@@ -447,7 +449,8 @@ fun HomeScreen(
                     // ═══════════════════════════════════════════
                     items(
                         items = homeContent.artists,
-                        key = { artistSection -> artistSection.artist.id }
+                        key = { artistSection -> artistSection.artist.id },
+                        contentType = { "artist_section" }
                     ) { artistSection ->
                         val artistSectionKey = HomeViewModel.artistSectionKey(artistSection.artist.id)
                         SongSection(
@@ -560,7 +563,7 @@ private fun HomeQuickActions(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        items(actions, key = { it.title }) { action ->
+        items(actions, key = { it.title }, contentType = { "action" }) { action ->
             Surface(
                 modifier = Modifier.clickable(onClick = action.onClick),
                 shape = RoundedCornerShape(50),
@@ -693,7 +696,7 @@ private fun ForYouSection(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(songs.take(10), key = { it.id }) { song ->
+            items(songs.take(10), key = { it.id }, contentType = { "song" }) { song ->
                 QuickPickCard(
                     song = song,
                     onClick = { onSongClick(song) }
@@ -711,11 +714,14 @@ private fun ContinueListeningCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val screenDims = rememberScreenDimensions()
+    val cardHeight = ResponsiveDimensions.continueListeningCardHeight(screenDims.widthDp)
+    val thumbSize = ResponsiveDimensions.continueListeningThumbSize(screenDims.widthDp)
     Card(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(100.dp),
+            .height(cardHeight),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -732,7 +738,7 @@ private fun ContinueListeningCard(
             // Album art thumbnail
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(thumbSize)
                     .clip(RoundedCornerShape(12.dp))
             ) {
                 SongThumbnail(
@@ -1073,7 +1079,7 @@ private fun QuickPicksSection(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(songs.take(15), key = { it.id }) { song ->
+            items(songs.take(15), key = { it.id }, contentType = { "song" }) { song ->
                 QuickPickCard(
                     song = song,
                     onClick = { onSongClick(song) }
@@ -1090,9 +1096,11 @@ private fun QuickPickCard(
     song: Song,
     onClick: () -> Unit
 ) {
+    val screenDims = rememberScreenDimensions()
+    val cw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
     Card(
         onClick = onClick,
-        modifier = Modifier.width(140.dp),
+        modifier = Modifier.width(cw),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -1104,7 +1112,7 @@ private fun QuickPickCard(
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier
-                    .size(140.dp)
+                    .size(cw)
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
                 contentDescription = song.title
             )
@@ -1233,7 +1241,7 @@ private fun SongSection(
                     contentPadding = PaddingValues(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    items(songs.take(10), key = { it.id }) { song ->
+                    items(songs.take(10), key = { it.id }, contentType = { "song" }) { song ->
                         LargeSongCard(song = song, onClick = { onSongClick(song) })
                     }
                 }
@@ -1244,7 +1252,7 @@ private fun SongSection(
                     contentPadding = PaddingValues(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(songs.take(12), key = { it.id }) { song ->
+                    items(songs.take(12), key = { it.id }, contentType = { "song" }) { song ->
                         MediumSongCard(song = song, onClick = { onSongClick(song) })
                     }
                 }
@@ -1278,15 +1286,17 @@ private fun LargeSongCard(
     song: Song,
     onClick: () -> Unit
 ) {
+    val screenDims = rememberScreenDimensions()
+    val lcw = ResponsiveDimensions.largeCardWidth(screenDims.widthDp)
     Column(
         modifier = Modifier
-            .width(160.dp)
+            .width(lcw)
             .clickable(onClick = onClick)
     ) {
         // Album art with play button overlay
         Box(
             modifier = Modifier
-                .size(160.dp)
+                .size(lcw)
                 .clip(RoundedCornerShape(16.dp))
         ) {
             SongThumbnail(
@@ -1359,14 +1369,16 @@ private fun MediumSongCard(
     song: Song,
     onClick: () -> Unit
 ) {
+    val screenDims = rememberScreenDimensions()
+    val mcw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
     Column(
         modifier = Modifier
-            .width(140.dp)
+            .width(mcw)
             .clickable(onClick = onClick)
     ) {
         // Album art
         ElevatedCard(
-            modifier = Modifier.size(140.dp),
+            modifier = Modifier.size(mcw),
             shape = RoundedCornerShape(16.dp),
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
         ) {
@@ -1539,7 +1551,7 @@ private fun ShimmerSongSection() {
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(5) {
+            items(5, contentType = { "shimmer" }) {
                 ShimmerSongCard(brush)
             }
         }
@@ -1548,13 +1560,15 @@ private fun ShimmerSongSection() {
 
 @Composable
 private fun ShimmerSongCard(brush: Brush) {
+    val screenDims = rememberScreenDimensions()
+    val cw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
     Column(
-        modifier = Modifier.width(140.dp)
+        modifier = Modifier.width(cw)
     ) {
         // Thumbnail placeholder
         Box(
             modifier = Modifier
-                .size(140.dp)
+                .size(cw)
                 .clip(RoundedCornerShape(16.dp))
                 .background(brush)
         )

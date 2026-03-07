@@ -78,6 +78,8 @@ class SettingsViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
 
+
+
     val crossfadeDuration = audioEngine.audioEngineState
         .map { state ->
             if (state.crossfadeEnabled) {
@@ -249,6 +251,8 @@ class SettingsViewModel @Inject constructor(
     fun setSongBassStrength(percent: Int) {
         audioEngine.setSimpleBassStrength(percent)
     }
+
+
 
     fun setGaplessPlayback(enabled: Boolean) {
         viewModelScope.launch {

@@ -12,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.drawBehind
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -128,7 +130,10 @@ class MainActivity : ComponentActivity() {
 
         // enableEdgeToEdge() // Replaced by WindowCompat for explicit control as requested
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
+        // statusBarColor/navigationBarColor deprecated on API 35+ but needed for API 26-34
+        @Suppress("DEPRECATION")
         window.statusBarColor = android.graphics.Color.TRANSPARENT
+        @Suppress("DEPRECATION")
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
         
         // Request notification permission for Android 13+ (API 33+)
@@ -418,7 +423,12 @@ fun SonicMusicApp(windowSizeClass: WindowSizeClass) {
                 
                 // If bottom nav is hidden, we need to handle system nav bar insets
                 if (!showBottomNav) {
-                    Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+                    Spacer(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                            .background(navBarContainer)
+                    )
                 }
             }
         },
@@ -463,15 +473,16 @@ fun MainScaffoldContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
+            .drawBehind {
+                val brush = androidx.compose.ui.graphics.Brush.verticalGradient(
                     colors = listOf(
                         backgroundTop,
                         backgroundMid,
-                        MaterialTheme.colorScheme.background
+                        navBarContainer // Use a fallback or appropriate color here depending on theme
                     )
                 )
-            )
+                drawRect(brush = brush)
+            }
             .padding(if (!isCompact) androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues() else androidx.compose.foundation.layout.PaddingValues(0.dp))
     ) {
         val bottomPadding = paddingValues.calculateBottomPadding()

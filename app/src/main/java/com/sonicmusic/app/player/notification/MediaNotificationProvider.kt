@@ -92,23 +92,22 @@ class MediaNotificationProvider(
     }
     
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Music Playback",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shows currently playing music"
-                setShowBadge(false)
-                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                setSound(null, null)
-                enableVibration(false)
-                enableLights(false)
-            }
-            
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+        // minSdk 26 — NotificationChannel is always available
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Music Playback",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Shows currently playing music"
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            setSound(null, null)
+            enableVibration(false)
+            enableLights(false)
         }
+        
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
     }
     
     override fun createNotification(

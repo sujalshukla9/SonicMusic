@@ -210,7 +210,11 @@ fun SonicMusicTheme(
         SideEffect {
             val window = context.findActivity()?.window
             if (window != null) {
+                // statusBarColor/navigationBarColor are deprecated on API 35+,
+                // but still needed for API 26-34 backward compatibility.
+                @Suppress("DEPRECATION")
                 window.statusBarColor = android.graphics.Color.TRANSPARENT
+                @Suppress("DEPRECATION")
                 window.navigationBarColor = android.graphics.Color.TRANSPARENT
                 
                 val insetsController = WindowCompat.getInsetsController(window, view)

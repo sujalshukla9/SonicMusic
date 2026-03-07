@@ -23,6 +23,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
+
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
@@ -119,6 +120,7 @@ class PlaybackService : MediaSessionService() {
     
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentArtwork: Bitmap? = null
     private var mediaNotificationProvider: MediaNotificationProvider? = null
@@ -165,8 +167,21 @@ class PlaybackService : MediaSessionService() {
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setRenderersFactory(
-                    DefaultRenderersFactory(this)
-                        .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                    object : DefaultRenderersFactory(this@PlaybackService) {
+                        init {
+                            setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+                            setEnableAudioFloatOutput(true)
+                        }
+                        override fun buildAudioSink(
+                            context: Context,
+                            enableFloatOutput: Boolean,
+                            enableAudioTrackPlaybackParams: Boolean
+                        ): androidx.media3.exoplayer.audio.AudioSink {
+                            return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                                .setEnableFloatOutput(enableFloatOutput)
+                                .build()
+                        }
+                    }
                 )
             .setLoadControl(
                 androidx.media3.exoplayer.DefaultLoadControl.Builder()
@@ -270,12 +285,14 @@ class PlaybackService : MediaSessionService() {
                 )
             }
         }
+
+        // (Native Engine logic removed)
     }
 
     private fun startCrossfadeMonitor() {
         if (crossfadeMonitorJob?.isActive == true) return
 
-        crossfadeMonitorJob = serviceScope.launch {
+        crossfadeMonitorJob = serviceScope.launch(Dispatchers.Main) {
             while (isActive) {
                 val currentPlayer = player
                 if (
@@ -314,6 +331,7 @@ class PlaybackService : MediaSessionService() {
         if (isCrossfadeTransitionRunning) return
 
         crossfadeTransitionJob?.cancel()
+        // Default inheritable dispatcher is Main from serviceScope
         crossfadeTransitionJob = serviceScope.launch {
             isCrossfadeTransitionRunning = true
             val halfDuration = (durationMs / 2L).coerceAtLeast(240L)
@@ -398,7 +416,7 @@ class PlaybackService : MediaSessionService() {
                         thumbnailUrl = prevItem.mediaMetadata.artworkUri?.toString() ?: ""
                     )
 
-                    serviceScope.launch {
+                    serviceScope.launch(Dispatchers.IO) {
                         try {
                             historyRepository.recordPlayback(
                                 song,

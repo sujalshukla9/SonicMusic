@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.audiofx.AudioEffect
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -19,6 +20,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -91,6 +93,7 @@ import androidx.media3.common.Player
 import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
+import com.sonicmusic.app.presentation.viewmodel.LyricsUiState
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
 import java.net.URLEncoder
 import kotlin.math.PI
@@ -133,18 +136,23 @@ fun FullPlayerScreen(
     var showMoreSheet by remember { mutableStateOf(false) }
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
 
+    // Lyrics overlay state
+    var showLyricsOverlay by remember { mutableStateOf(false) }
+    val lyricsState by viewModel.lyricsState.collectAsStateWithLifecycle()
+
     if (currentSong == null) {
         LaunchedEffect(Unit) { onDismiss() }
         return
     }
 
+    // Handle system back button to dismiss full player instead of closing app
+    BackHandler {
+        onDismiss()
+    }
+
     // Swipe to dismiss
-    var offsetY by remember { mutableFloatStateOf(0f) }
-    val animatedOffset by animateFloatAsState(
-        targetValue = offsetY,
-        animationSpec = tween(durationMillis = 100),
-        label = "offset"
-    )
+    val offsetYAnim = remember { Animatable(0f) }
+    val dismissScope = rememberCoroutineScope()
 
     val baseColorScheme = MaterialTheme.colorScheme
     val artworkPalette = rememberPlayerArtworkPalette(
@@ -184,16 +192,22 @@ fun FullPlayerScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { translationY = animatedOffset }
+                    .graphicsLayer { translationY = offsetYAnim.value }
                     .pointerInput(Unit) {
                         detectVerticalDragGestures(
                             onVerticalDrag = { change, dragAmount ->
                                 change.consume()
-                                if (dragAmount > 0f) offsetY += dragAmount
+                                if (dragAmount > 0f) {
+                                    dismissScope.launch {
+                                        offsetYAnim.snapTo(offsetYAnim.value + dragAmount)
+                                    }
+                                }
                             },
                             onDragEnd = {
-                                if (offsetY > 200f) onDismiss()
-                                offsetY = 0f
+                                if (offsetYAnim.value > 200f) onDismiss()
+                                dismissScope.launch {
+                                    offsetYAnim.animateTo(0f, tween(durationMillis = 100))
+                                }
                             }
                         )
                     }
@@ -265,6 +279,9 @@ fun FullPlayerScreen(
                             )
                             lastSongIdForSwipe = newId
                             lastQueueIndexForSwipe = newIndex
+                            // Hide lyrics when song changes
+                            showLyricsOverlay = false
+                            viewModel.clearLyricsState()
                         } else {
                             displayedSong = newSong
                             lastQueueIndexForSwipe = newIndex
@@ -350,6 +367,17 @@ fun FullPlayerScreen(
                                             }
                                         }
                                     )
+                                }
+                                .pointerInput(Unit) {
+                                    detectTapGestures {
+                                        // Toggle lyrics overlay on tap
+                                        if (showLyricsOverlay) {
+                                            showLyricsOverlay = false
+                                        } else {
+                                            showLyricsOverlay = true
+                                            viewModel.fetchLyrics()
+                                        }
+                                    }
                                 },
                             shape = RoundedCornerShape(12.dp),
                             shadowElevation = 12.dp,
@@ -357,15 +385,26 @@ fun FullPlayerScreen(
                             color = colorScheme.surfaceContainerHigh
                         ) {
                             androidx.compose.runtime.key(displayedSong?.id) {
-                                SongThumbnail(
-                                    artworkUrl = displayedSong?.thumbnailUrl,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentDescription = "Album Art",
-                                    contentScale = ContentScale.Crop,
-                                    crossfade = true,
-                                    highQuality = true,
-                                    targetSizePx = 1080
-                                )
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    SongThumbnail(
+                                        artworkUrl = displayedSong?.thumbnailUrl,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentDescription = "Album Art",
+                                        contentScale = ContentScale.Crop,
+                                        crossfade = true,
+                                        highQuality = true,
+                                        targetSizePx = 1080
+                                    )
+
+                                    LyricsOverlay(
+                                        lyricsState = lyricsState,
+                                        currentPositionFlow = viewModel.currentPosition,
+                                        visible = showLyricsOverlay,
+                                        onDismiss = { showLyricsOverlay = false },
+                                        viewModel = viewModel,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
                             }
                         }
                     }
@@ -474,7 +513,8 @@ fun FullPlayerScreen(
                     if (sleepTimerActive) {
                         SleepTimerIndicator(
                             remainingTime = sleepTimerRemaining,
-                            onClick = { showSleepTimerSheet = true }
+                            onClick = { showSleepTimerSheet = true },
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
@@ -736,7 +776,9 @@ private fun FullPlayerBackground(
                     .fillMaxSize()
                     .blur(68.dp),
                 contentDescription = null,
-                contentScale = ContentScale.Crop
+                contentScale = ContentScale.Crop,
+                targetSizePx = 100,
+                highQuality = false
             )
         }
 

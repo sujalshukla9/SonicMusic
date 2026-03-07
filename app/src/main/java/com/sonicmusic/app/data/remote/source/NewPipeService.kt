@@ -186,38 +186,10 @@ class NewPipeService @Inject constructor() {
         val validStreams = streams.filter { it.content.isNotEmpty() }
         if (validStreams.isEmpty()) return null
         
-        return when (quality) {
-            StreamQuality.BEST -> {
-                // Highest real source quality first (bitrate, codec tiebreak).
-                validStreams.maxByOrNull(::bestSourceScore)
-            }
-            
-            StreamQuality.HIGH -> {
-                // Prefer AAC/M4A > 120kbps (itag 140 is 128k, 141 is 256k)
-                validStreams.filter { 
-                    val mime = it.format?.mimeType ?: it.format?.name.orEmpty()
-                    (mime.contains("m4a", true) || 
-                     mime.contains("mp4", true)) &&
-                    it.averageBitrate >= 120
-                }.maxByOrNull { it.averageBitrate }
-                // Fallback to Opus optimized
-                ?: validStreams.filter { it.averageBitrate >= 120 }.maxByOrNull { it.averageBitrate }
-                // Fallback
-                ?: validStreams.maxByOrNull { it.averageBitrate }
-            }
-            
-            StreamQuality.MEDIUM -> {
-                // Target ~128kbps
-                 validStreams.filter { it.averageBitrate in 100..160 }
-                    .maxByOrNull { it.averageBitrate } // Get the highest in this range
-                    ?: validStreams.sortedBy { kotlin.math.abs(it.averageBitrate - 128) }.firstOrNull()
-            }
-            
-            StreamQuality.LOW -> {
-                // Lowest bitrate available
-                validStreams.minByOrNull { it.averageBitrate }
-            }
-        }
+        // USER REQUEST: Always use the highest audio by default, Opus lossy audio from backend.
+        // We override the requested quality and always use the BEST strategy.
+        // Highest real source quality first (bitrate, codec tiebreak).
+        return validStreams.maxByOrNull(::bestSourceScore)
     }
 
     private fun bestSourceScore(stream: AudioStream): Long {

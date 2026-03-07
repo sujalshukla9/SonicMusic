@@ -33,6 +33,9 @@ interface PlaylistDao {
     @Insert
     suspend fun addSongToPlaylist(crossRef: PlaylistSongCrossRef)
 
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun insertPlaylistSongs(crossRefs: List<PlaylistSongCrossRef>)
+
     @Query("SELECT EXISTS(SELECT 1 FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId LIMIT 1)")
     suspend fun hasSongInPlaylist(playlistId: Long, songId: String): Boolean
 
@@ -57,16 +60,15 @@ interface PlaylistDao {
     @Transaction
     suspend fun updatePlaylistOrder(playlistId: Long, songIds: List<String>) {
         clearPlaylistSongs(playlistId)
-        songIds.forEachIndexed { index, songId ->
-            addSongToPlaylist(
-                PlaylistSongCrossRef(
-                    playlistId = playlistId,
-                    songId = songId,
-                    position = index,
-                    addedAt = System.currentTimeMillis()
-                )
+        val crossRefs = songIds.mapIndexed { index, songId ->
+            PlaylistSongCrossRef(
+                playlistId = playlistId,
+                songId = songId,
+                position = index,
+                addedAt = System.currentTimeMillis()
             )
         }
+        insertPlaylistSongs(crossRefs)
     }
 }
 

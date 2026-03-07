@@ -12,20 +12,22 @@ plugins {
 android {
     namespace = "com.sonicmusic.app"
     compileSdk = 35
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
+
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.3.2-Beta"
+        versionCode = 4
+        versionName = "1.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.3.2-Beta\"")
+        buildConfigField("String", "APP_VERSION", "\"1.3.2\"")
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
@@ -35,7 +37,9 @@ android {
         
         buildConfigField("String", "INNERTUBE_API_KEY", "\"${localProperties.getProperty("INNERTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
         buildConfigField("String", "YOUTUBE_API_KEY", "\"${localProperties.getProperty("YOUTUBE_API_KEY", "YOUR_API_KEY_HERE")}\"")
-        }
+    }
+
+
         
         signingConfigs {
             create("release") {

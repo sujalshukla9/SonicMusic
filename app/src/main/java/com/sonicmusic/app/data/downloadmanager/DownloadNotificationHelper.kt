@@ -5,10 +5,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.sonicmusic.app.R
+import com.sonicmusic.app.core.util.hasNotificationPermission
 import com.sonicmusic.app.presentation.ui.MainActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -35,31 +35,21 @@ class DownloadNotificationHelper @Inject constructor(
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                CHANNEL_NAME,
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shows download progress"
-                setShowBadge(false)
-            }
-            // Use system service directly for channel creation
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+        // minSdk 26 — NotificationChannel is always available
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Shows download progress"
+            setShowBadge(false)
         }
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(channel)
     }
 
     fun showProgress(songId: String, title: String, progress: Int) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (androidx.core.content.ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-        }
+        if (!context.hasNotificationPermission()) return
 
         val notificationId = songId.hashCode()
 
@@ -77,15 +67,7 @@ class DownloadNotificationHelper @Inject constructor(
     }
 
     fun showIndeterminate(songId: String, title: String) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-             if (androidx.core.content.ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-        }
+        if (!context.hasNotificationPermission()) return
         
         val notificationId = songId.hashCode()
 
@@ -103,15 +85,7 @@ class DownloadNotificationHelper @Inject constructor(
     }
 
     fun showComplete(songId: String, title: String) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-             if (androidx.core.content.ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-        }
+        if (!context.hasNotificationPermission()) return
 
         val notificationId = songId.hashCode()
         
@@ -138,15 +112,7 @@ class DownloadNotificationHelper @Inject constructor(
     }
 
     fun showError(songId: String, title: String, error: String?) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-             if (androidx.core.content.ContextCompat.checkSelfPermission(
-                    context,
-                    android.Manifest.permission.POST_NOTIFICATIONS
-                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
-                return
-            }
-        }
+        if (!context.hasNotificationPermission()) return
 
         val notificationId = songId.hashCode()
 

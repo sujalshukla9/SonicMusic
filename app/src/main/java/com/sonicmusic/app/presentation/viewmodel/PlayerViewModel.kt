@@ -10,7 +10,9 @@ import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.LyricsResult
 import com.sonicmusic.app.domain.repository.HistoryRepository
+import com.sonicmusic.app.domain.repository.LyricsRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 
@@ -50,7 +52,33 @@ import kotlin.time.Duration
  * - Sleep timer
  * - Error handling
  * - Queue state synchronization
+ * - Lyrics fetching
  */
+
+/**
+ * UI state for lyrics display on the full player.
+ */
+sealed interface LyricsUiState {
+    /** Lyrics haven't been requested yet. */
+    data object Idle : LyricsUiState
+    /** Lyrics are being fetched. */
+    data object Loading : LyricsUiState
+    /** Plain text lyrics loaded successfully. */
+    data class LoadedPlain(
+        val text: String,
+        val originalText: String? = null,
+        val source: String? = null
+    ) : LyricsUiState
+    /** Synchronized lyrics loaded successfully. */
+    data class LoadedSynced(
+        val lines: List<com.sonicmusic.app.domain.model.LyricLine>,
+        val source: String? = null
+    ) : LyricsUiState
+    /** No lyrics available for this song. */
+    data object Unavailable : LyricsUiState
+    /** Error fetching lyrics. */
+    data class Error(val message: String) : LyricsUiState
+}
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection,
@@ -60,6 +88,7 @@ class PlayerViewModel @Inject constructor(
     private val playlistRepository: PlaylistRepository,
     private val queueRepository: QueueRepositoryImpl,
     private val settingsRepository: SettingsRepository,
+    private val lyricsRepository: LyricsRepository,
     val sleepTimerManager: SleepTimerManager
 ) : ViewModel() {
 
@@ -67,9 +96,9 @@ class PlayerViewModel @Inject constructor(
         private const val TAG = "SonicPlayer"
         private const val MAX_URL_RETRY_ATTEMPTS = 3
         private const val URL_RETRY_DELAY_MS = 1500L
-        private const val RECOMMENDATION_BATCH_SIZE = 5 // Increased for faster population
+        private const val RECOMMENDATION_BATCH_SIZE = 8 // Larger batches = fewer round-trips
         private const val RECOMMENDATION_FETCH_LIMIT = 15
-        private const val SAME_SONG_RETRY_COOLDOWN_MS = 12000L
+        private const val SAME_SONG_RETRY_COOLDOWN_MS = 5000L // Faster retry for same song
         // History dedup by song ID only (StateFlow emits same song twice per transition)
     }
 
@@ -147,6 +176,18 @@ class PlayerViewModel @Inject constructor(
     /** Timestamp (System.currentTimeMillis) when the current song started playing. */
     private var currentSongStartTimeMs: Long = 0L
 
+    // ═══════════════════════════════════════════════════════════════
+    // LYRICS STATE
+    // ═══════════════════════════════════════════════════════════════
+
+    private val _lyricsState = MutableStateFlow<LyricsUiState>(LyricsUiState.Idle)
+    val lyricsState: StateFlow<LyricsUiState> = _lyricsState.asStateFlow()
+
+    private val _showOriginalScript = MutableStateFlow(false)
+    val showOriginalScript: StateFlow<Boolean> = _showOriginalScript.asStateFlow()
+
+    private var lyricsFetchJob: Job? = null
+
     /** Limits concurrent stream URL fetch requests to avoid socket exhaustion. */
     private val urlFetchSemaphore = Semaphore(3)
 
@@ -188,7 +229,7 @@ class PlayerViewModel @Inject constructor(
         var likeObserverJob: Job? = null
         viewModelScope.launch {
             currentSong.collect { song ->
-                song?.let {
+                if (song != null) {
                     try {
                         // History tracking moved to PlaybackService AnalyticsListener
 
@@ -196,7 +237,7 @@ class PlayerViewModel @Inject constructor(
                         // Cancel previous observer and start a new one for the current song
                         likeObserverJob?.cancel()
                         likeObserverJob = launch {
-                            songRepository.observeIsLiked(it.id).collect { isLiked ->
+                            songRepository.observeIsLiked(song.id).collect { isLiked ->
                                 _isLiked.value = isLiked
                             }
                         }
@@ -204,7 +245,7 @@ class PlayerViewModel @Inject constructor(
                         // Check download state for current song
                         downloadCheckJob?.cancel()
                         downloadCheckJob = launch {
-                            _isCurrentSongDownloaded.value = songDownloadManager.isDownloaded(it.id)
+                            _isCurrentSongDownloaded.value = songDownloadManager.isDownloaded(song.id)
                         }
                         
                         // Mark only the IMMEDIATELY preceding song as played (O(1)).
@@ -224,6 +265,10 @@ class PlayerViewModel @Inject constructor(
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in current song observer", e)
                     }
+                } else {
+                    // Song cleared — reset lyrics
+                    _lyricsState.value = LyricsUiState.Idle
+                    lyricsFetchJob?.cancel()
                 }
             }
         }
@@ -330,9 +375,8 @@ class PlayerViewModel @Inject constructor(
                         // Start playback
                         playerServiceConnection.playSong(song, streamUrl)
                         
-                        // ViTune Logic: Instant Radio - fetch recommendations immediately
+                        // ViTune Logic: Instant Radio — fire recommendations immediately (no delay)
                         if (_infiniteModeEnabled.value) {
-                            delay(500) // Small delay to let playback start first
                             fetchAndAddRecommendations(song.id)
                         }
 
@@ -700,21 +744,19 @@ class PlayerViewModel @Inject constructor(
                 filteredCandidates.chunked(RECOMMENDATION_BATCH_SIZE).forEachIndexed { index, batch ->
                     if (!currentCoroutineContext().isActive) return@forEachIndexed
 
-
-
-                    val streamUrls = fetchStreamUrlsBatch(batch)
-                    if (streamUrls.isEmpty()) return@forEachIndexed
-
-                    val validSongs = batch.filter { streamUrls.containsKey(it.id) }
-                    if (validSongs.isEmpty()) return@forEachIndexed
-
-                    playerServiceConnection.addToQueue(validSongs, streamUrls)
-                    queueRepository.addToQueue(validSongs)
-                    totalAdded += validSongs.size
+                    // ViTune-style lazy hydration: Push songs to playerServiceConnection immediately so UI updates 
+                    // without waiting for stream extraction. Stream extraction runs in background.
+                    playerServiceConnection.addSongsToQueueLazy(
+                        songs = batch,
+                        songRepository = songRepository,
+                        isQueueAlreadyPopulated = false
+                    )
+                    queueRepository.addToQueue(batch)
+                    totalAdded += batch.size
 
                     Log.d(
                         TAG,
-                        "➕ Added batch of ${validSongs.size} (total added: $totalAdded, player queue: ${playerServiceConnection.queue.value.size})"
+                        "➕ Enqueued background fetch for batch of ${batch.size} (total enqueued: $totalAdded)"
                     )
 
                     if (index < filteredCandidates.size / RECOMMENDATION_BATCH_SIZE - 1) {
@@ -740,35 +782,6 @@ class PlayerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     // UTILITY METHODS
     // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * Fetch stream URLs for multiple songs in parallel
-     */
-    private suspend fun fetchStreamUrlsBatch(songs: List<Song>): Map<String, String> = 
-        withContext(Dispatchers.IO) {
-            val urlMap = mutableMapOf<String, String>()
-            
-            val jobs = songs.map { song ->
-                async {
-                    urlFetchSemaphore.withPermit {
-                        try {
-                            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                                .getOrNull()
-                                ?.let { url -> song.id to url }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to get URL for ${song.id}", e)
-                            null
-                        }
-                    }
-                }
-            }
-            
-            jobs.awaitAll().filterNotNull().forEach { (id, url) ->
-                urlMap[id] = url
-            }
-            
-            urlMap
-        }
 
     /**
      * Clear error message
@@ -787,6 +800,62 @@ class PlayerViewModel @Inject constructor(
             lastRecommendationRequestAt = 0L
             fetchAndAddRecommendations(song.id)
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // LYRICS
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Fetch lyrics for the currently playing song.
+     */
+    fun fetchLyrics() {
+        // Toggle off if already fetching or done
+        if (_lyricsState.value is LyricsUiState.Loading ||
+            _lyricsState.value is LyricsUiState.LoadedPlain ||
+            _lyricsState.value is LyricsUiState.LoadedSynced
+        ) return
+
+        val song = currentSong.value
+        if (song == null) {
+            _lyricsState.value = LyricsUiState.Unavailable
+            return
+        }
+
+        _lyricsState.value = LyricsUiState.Loading
+
+        lyricsFetchJob?.cancel()
+        lyricsFetchJob = viewModelScope.launch {
+            try {
+                val result = lyricsRepository.getLyrics(song)
+                
+                _lyricsState.value = when (result) {
+                    is LyricsResult.FoundSynced -> LyricsUiState.LoadedSynced(result.lines, result.source)
+                    is LyricsResult.Found -> LyricsUiState.LoadedPlain(result.text, result.originalText, result.source)
+                    is LyricsResult.NotFound -> LyricsUiState.Unavailable
+                    is LyricsResult.Error -> LyricsUiState.Error(result.message)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching lyrics", e)
+                _lyricsState.value = LyricsUiState.Error("An error occurred")
+            }
+        }
+    }
+
+    /**
+     * Reset lyrics state (e.g. when hiding overlay or song changes).
+     */
+    fun clearLyricsState() {
+        _lyricsState.value = LyricsUiState.Idle
+        _showOriginalScript.value = false
+        lyricsFetchJob?.cancel()
+    }
+
+    /**
+     * Toggle between transliterated (Hinglish) and original script (Devanagari) display.
+     */
+    fun toggleLyricsLanguage() {
+        _showOriginalScript.value = !_showOriginalScript.value
     }
 
     fun downloadCurrentSongOffline() {

@@ -51,6 +51,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.sonicmusic.app.presentation.ui.theme.ResponsiveDimensions
+import com.sonicmusic.app.presentation.ui.theme.rememberScreenDimensions
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
@@ -82,6 +84,10 @@ fun MiniPlayer(
     val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
 
     if (currentSong == null) return
+
+    val screenDims = rememberScreenDimensions()
+    val miniHeight = ResponsiveDimensions.miniPlayerHeight(screenDims.heightDp)
+    val artSize = ResponsiveDimensions.miniPlayerArtSize(screenDims.widthDp)
 
     var offsetX by remember { mutableFloatStateOf(0f) }
     val animatedOffsetX by animateFloatAsState(
@@ -121,7 +127,7 @@ fun MiniPlayer(
         Surface(
             modifier = modifier
                 .fillMaxWidth()
-                .height(76.dp)
+                .height(miniHeight)
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
@@ -161,7 +167,7 @@ fun MiniPlayer(
                         SongThumbnail(
                             artworkUrl = currentSong?.thumbnailUrl,
                             modifier = Modifier
-                                .size(52.dp)
+                                .size(artSize)
                                 .shadow(8.dp, RoundedCornerShape(8.dp))
                                 .clip(RoundedCornerShape(8.dp))
                         )

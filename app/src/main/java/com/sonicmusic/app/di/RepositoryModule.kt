@@ -13,6 +13,7 @@ import com.sonicmusic.app.data.repository.RecommendationRepositoryImpl
 import com.sonicmusic.app.data.repository.SearchRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
 import com.sonicmusic.app.data.repository.ArtistRepositoryImpl
+import com.sonicmusic.app.data.repository.LyricsRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.ListenAgainRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
@@ -23,6 +24,7 @@ import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SearchRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.repository.ArtistRepository
+import com.sonicmusic.app.domain.repository.LyricsRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -105,6 +107,12 @@ abstract class RepositoryModule {
     abstract fun bindQuickPicksRepository(
         impl: com.sonicmusic.app.data.repository.QuickPicksRepositoryImpl
     ): com.sonicmusic.app.domain.repository.QuickPicksRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindLyricsRepository(
+        impl: LyricsRepositoryImpl
+    ): LyricsRepository
 
     companion object {
         @Provides

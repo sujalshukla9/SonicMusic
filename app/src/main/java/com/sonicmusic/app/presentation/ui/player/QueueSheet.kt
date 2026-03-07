@@ -425,7 +425,7 @@ fun QueueSheet(
                         if (showHistory) {
                             itemsIndexed(
                                 items = historySongs,
-                                key = { idx, song -> "hist_${song.id}_$idx" }
+                                key = { _, song -> "hist_${song.id}" }
                             ) { index, song ->
                                 TrackItem(
                                     song = song,

@@ -1,6 +1,8 @@
 package com.sonicmusic.app
 
+import android.app.ActivityManager
 import android.app.Application
+import android.os.Build
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -145,6 +147,9 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         })
     }
 
+    // onTrimMemory is deprecated in API 34 in favour of ComponentCallbacks2,
+    // but we still need it for API 26-33. Suppress until minSdk is raised.
+    @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         val levelName = when (level) {
@@ -179,10 +184,16 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         // Allocate 25% of total cache budget to image cache, clamped to [50 MB, 512 MB]
         val imageCacheMb = (totalCacheLimitMb / 4).coerceIn(50L, 512L)
 
+        // Detect low-RAM devices to reduce memory pressure
+        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val isLowRam = activityManager.isLowRamDevice
+        val memoryCachePercent = if (
+            isLowRam) 0.10 else 0.20
+
         return ImageLoader.Builder(this)
             .memoryCache {
                 MemoryCache.Builder(this)
-                    .maxSizePercent(0.25)
+                    .maxSizePercent(memoryCachePercent)
                     .build()
             }
             .diskCache {
@@ -192,8 +203,10 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                     .build()
             }
             .crossfade(true)
+            // Disable hardware bitmaps on API 26-27 (known rendering bugs on early Oreo)
+            .allowHardware(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
             // Note: RGB565 removed — causes visible banding on album art gradients.
-            // Memory is already controlled by the 25% memoryCache limit above.
+            // Memory is already controlled by the memoryCachePercent limit above.
             // YouTube sends aggressive no-cache headers; ignore them to use our local cache
             .respectCacheHeaders(false)
             .build()

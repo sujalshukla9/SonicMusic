@@ -213,37 +213,15 @@ class AudioStreamExtractor @Inject constructor(
         if (formats.isEmpty()) return null
         val validFormats = formats.filter { it.bitrateKbps > 0 }.ifEmpty { formats }
 
-        return when (requestedQuality) {
-            StreamQuality.BEST -> {
-                val opusFormats = validFormats.filter { it.isOpus() }
-                opusFormats.maxWithOrNull(
-                    compareBy<AudioFormat> { it.bitrateKbps }
-                        .thenBy { it.sampleRate }
-                        .thenBy { it.channelCount },
-                ) ?: validFormats.maxByOrNull(::bestSourceScore)
-            }
-
-            StreamQuality.HIGH -> {
-                validFormats
-                    .filter { it.isAac() && it.bitrateKbps >= 120 }
-                    .maxByOrNull(::bestSourceScore)
-                    ?: validFormats
-                        .filter { it.bitrateKbps >= 120 }
-                        .maxByOrNull(::bestSourceScore)
-                    ?: validFormats.maxByOrNull(::bestSourceScore)
-            }
-
-            StreamQuality.MEDIUM -> {
-                validFormats
-                    .filter { it.bitrateKbps in 100..160 }
-                    .maxByOrNull(::bestSourceScore)
-                    ?: validFormats.minByOrNull { kotlin.math.abs(it.bitrateKbps - 128) }
-            }
-
-            StreamQuality.LOW -> {
-                validFormats.minByOrNull { it.bitrateKbps }
-            }
-        }
+        // USER REQUEST: Always use the highest audio by default, Opus lossy audio from backend.
+        // We override the requested quality and always use the BEST strategy.
+        val opusFormats = validFormats.filter { it.isOpus() }
+        
+        return opusFormats.maxWithOrNull(
+            compareBy<AudioFormat> { it.bitrateKbps }
+                .thenBy { it.sampleRate }
+                .thenBy { it.channelCount },
+        ) ?: validFormats.maxByOrNull(::bestSourceScore)
     }
 
     private fun bestSourceScore(format: AudioFormat): Long {

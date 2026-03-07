@@ -103,9 +103,12 @@ class AudioEngine @Inject constructor(
         private val KEY_LOCAL_MASTERING = booleanPreferencesKey("local_mastering_enabled")
         private val KEY_AI_MASTERING = booleanPreferencesKey("ai_mastering_enabled")
         
+        // Native HiFi Engine key
+        private val KEY_NATIVE_ENGINE_ENABLED = booleanPreferencesKey("native_engine_enabled")
+        
         // Default Values
         const val DEFAULT_CROSSFADE_DURATION = 3000
-        const val DEFAULT_LOUDNESS_TARGET = -14f
+        const val DEFAULT_LOUDNESS_TARGET = -16f  // Apple Music standard (-16 LUFS)
         const val DEFAULT_BASS_BOOST_STRENGTH = 600
         const val MAX_BASS_BOOST_STRENGTH = 1000
         const val MAX_VIRTUALIZER_STRENGTH = 1000
@@ -320,6 +323,7 @@ class AudioEngine @Inject constructor(
             enhancedAudioEnabled = prefs[KEY_ENHANCED_AUDIO] ?: false,
             localMasteringEnabled = prefs[KEY_LOCAL_MASTERING] ?: false,
             aiMasteringEnabled = prefs[KEY_AI_MASTERING] ?: false,
+            nativeEngineEnabled = prefs[KEY_NATIVE_ENGINE_ENABLED] ?: true,
         )
         
         _audioEngineState.value = state
@@ -415,6 +419,22 @@ class AudioEngine @Inject constructor(
     }
 
     fun isAiMasteringEnabled(): Boolean = _audioEngineState.value.aiMasteringEnabled
+    
+    /**
+     * Enable/disable the high-performance C++ Native HiFi Audio Engine
+     */
+    fun setNativeEngineEnabled(enabled: Boolean) {
+        _audioEngineState.value = _audioEngineState.value.copy(nativeEngineEnabled = enabled)
+        scope.launch {
+            context.audioPrefs.edit { it[KEY_NATIVE_ENGINE_ENABLED] = enabled }
+        }
+        Log.d(TAG, if (enabled) "🚀 Native HiFi Engine ON" else "🚀 Native HiFi Engine OFF")
+    }
+    
+    /**
+     * Check if the Native HiFi Engine is enabled
+     */
+    fun isNativeEngineEnabled(): Boolean = _audioEngineState.value.nativeEngineEnabled
     
     /**
      * Get the optimal quality tier based on current conditions.
@@ -957,7 +977,7 @@ class AudioEngine @Inject constructor(
         setEqBandLevel(1, 800.toShort())
         setEqBandLevel(2, 500.toShort())
         setBassBoost(true, 600)
-        setSoundCheck(true, -14f)
+        setSoundCheck(true, DEFAULT_LOUDNESS_TARGET)
         Log.d(TAG, "🎚️ Mastering DSP preset applied")
     }
 
@@ -965,7 +985,7 @@ class AudioEngine @Inject constructor(
      * Apply studio quality preset (recommended for best experience)
      */
     fun applyStudioPreset() {
-        setSoundCheck(true, -14f)
+        setSoundCheck(true, DEFAULT_LOUDNESS_TARGET)
         setWifiQualityTier(StreamQuality.BEST)
         setEqualizer(true, "flat")
         setSpatialAudio(false)
@@ -991,7 +1011,7 @@ class AudioEngine @Inject constructor(
      * Apply vocal clarity preset for podcasts/acoustic
      */
     fun applyVocalPreset() {
-        setSoundCheck(true, -14f)
+        setSoundCheck(true, DEFAULT_LOUDNESS_TARGET)
         setWifiQualityTier(StreamQuality.BEST)
         setEqualizer(true, "vocal_boost")
         setBassBoost(false)
@@ -1017,7 +1037,7 @@ class AudioEngine @Inject constructor(
      * Reset all effects to default
      */
     fun resetToDefault() {
-        setSoundCheck(true, -14f)
+        setSoundCheck(true, DEFAULT_LOUDNESS_TARGET)
         setWifiQualityTier(StreamQuality.BEST)
         setCellularQualityTier(StreamQuality.HIGH)
         setDownloadQualityTier(StreamQuality.BEST)
@@ -1143,4 +1163,6 @@ data class AudioEngineState(
     val enhancedAudioEnabled: Boolean = false,
     val localMasteringEnabled: Boolean = false,
     val aiMasteringEnabled: Boolean = false,
+    // Native C++ Audio Engine
+    val nativeEngineEnabled: Boolean = true,
 )

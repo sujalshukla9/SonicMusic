@@ -53,9 +53,9 @@ class PlayerServiceConnection @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SonicConnection"
-        private const val QUEUE_LOW_THRESHOLD = 2 // Trigger fetch when this many songs left
-        private const val QUEUE_CHECK_COOLDOWN_MS = 5000L // 5 seconds between checks
-        private const val PRELOAD_THRESHOLD = 5 // Start preloading when 5 songs left
+        private const val QUEUE_LOW_THRESHOLD = 3 // Trigger fetch earlier for seamless playback
+        private const val QUEUE_CHECK_COOLDOWN_MS = 2500L // Check more frequently
+        private const val PRELOAD_THRESHOLD = 7 // Start preloading earlier
         private const val POSITION_UPDATE_INTERVAL_MS = 250L // ~4fps — visually smooth for a progress bar, 3x fewer recompositions
     }
 
@@ -629,7 +629,7 @@ class PlayerServiceConnection @Inject constructor(
                         }
                     }
                     
-                    delay(100)
+                    delay(50) // Reduced for faster hydration
                 }
                  Log.d(TAG, "✅ Finished background URL fetching")
             } catch (e: Exception) {

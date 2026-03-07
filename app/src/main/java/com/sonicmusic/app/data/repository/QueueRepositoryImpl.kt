@@ -14,12 +14,17 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.QueueRepository
 import com.sonicmusic.app.domain.repository.UserTasteRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -66,13 +71,13 @@ class QueueRepositoryImpl @Inject constructor(
         private const val TAG = "QueueRepository"
         private const val MIN_QUEUE_SIZE = 3
         private const val RECOMMENDATION_BATCH_SIZE = 20
-        private const val MAX_HISTORY_SIZE = 100 // Prevent memory bloat
-        private const val RECOMMENDATION_DEBOUNCE_MS = 2000L // Same-seed debounce
-        private const val DIFFERENT_SONG_GUARD_MS = 350L // Avoid rapid bursts across songs
+        private const val MAX_PLAYED_HISTORY_SIZE = 100 // Prevent memory bloat
+        private const val RECOMMENDATION_DEBOUNCE_MS = 800L // Same-seed debounce (YTMusic-fast)
         private const val MIN_PRIMARY_RECOMMENDATIONS = 6
-        private const val PRIMARY_FETCH_TIMEOUT_MS = 3000L
-        private const val RECOMMENDATION_CACHE_TTL_MS = 90_000L
-        private const val RECOMMENDATION_CACHE_MAX_ENTRIES = 40
+        private const val PRIMARY_FETCH_TIMEOUT_MS = 2500L // Faster timeout → faster fallback
+        private const val RECOMMENDATION_CACHE_TTL_MS = 180_000L // 3min cache (warm longer)
+        private const val RECOMMENDATION_CACHE_MAX_ENTRIES = 80 // Larger cache for better locality
+        private const val RECENT_FETCH_TRACKING_MAX_ENTRIES = 48
         
         // JSON configuration for safe serialization
         private val json = Json {
@@ -104,15 +109,18 @@ class QueueRepositoryImpl @Inject constructor(
     
     // Vary recommendation queries for variety
     private var lastQueryType = 0
-    
-    // Prevent duplicate recommendation fetches
-    private var isFetchingRecommendations = false
-    private var lastFetchTime = 0L
-    private var lastFetchSongId: String? = null
-    
+
+    // Coalesce duplicate recommendation fetches per seed song.
+    private val recommendationRequestLock = Any()
+    private val inFlightRecommendationRequests = LinkedHashMap<String, Deferred<Result<List<Song>>>>()
+    private val recentFetchBySongId = LinkedHashMap<String, Long>()
+
     // Cache last song details to avoid redundant API calls
     private var cachedSongDetails: Song? = null
     private val recommendationCache = LinkedHashMap<String, RecommendationCacheEntry>()
+
+    // Background scope for speculative prefetch (fire-and-forget)
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private data class RecommendationCacheEntry(
         val timestampMs: Long,
@@ -124,68 +132,90 @@ class QueueRepositoryImpl @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
 
     override suspend fun getRelatedSongs(songId: String, limit: Int): Result<List<Song>> {
+        val normalizedSongId = songId.trim()
         val targetLimit = limit.coerceAtLeast(1)
-        val cachedRecommendations = getCachedRecommendations(songId, targetLimit)
+        if (normalizedSongId.isEmpty()) {
+            return Result.success(emptyList())
+        }
+
+        val cachedRecommendations = getCachedRecommendations(normalizedSongId, targetLimit)
         if (cachedRecommendations.isNotEmpty()) {
-            Log.d(TAG, "⚡ Serving ${cachedRecommendations.size} cached recommendations for: $songId")
+            Log.d(TAG, "⚡ Serving ${cachedRecommendations.size} cached recommendations for: $normalizedSongId")
             return Result.success(cachedRecommendations)
         }
 
-        // Debounce: prevent rapid recommendation fetches
         val now = System.currentTimeMillis()
-        val minGap = if (lastFetchSongId == songId) RECOMMENDATION_DEBOUNCE_MS else DIFFERENT_SONG_GUARD_MS
-        if (now - lastFetchTime < minGap) {
-            Log.d(TAG, "⚠️ Debouncing recommendation fetch (too soon, seed=$songId)")
-            return Result.success(emptyList())
-        }
-        
-        // Prevent concurrent fetches (but allow re-fetch for same song after debounce)
-        if (isFetchingRecommendations) {
-            Log.d(TAG, "⚠️ Already fetching recommendations, skipping")
-            return Result.success(emptyList())
-        }
-        
-        isFetchingRecommendations = true
-        lastFetchTime = now
-        lastFetchSongId = songId
-        
-        Log.d(TAG, "🎵 Getting related songs for: $songId")
-        
-        return try {
-            val (seedSong, upNextSongs, radioSongs) = coroutineScope {
-                val seedDeferred = async { getSongDetailsForId(songId) }
-                val upNextDeferred = async {
-                    withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
-                        youTubeiService.getUpNext(songId).getOrNull().orEmpty()
-                    } ?: emptyList()
-                }
-                val radioDeferred = async {
-                    withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
-                        fetchRadioMix(songId, targetLimit * 2)
-                    } ?: emptyList()
-                }
-                Triple(seedDeferred.await(), upNextDeferred.await(), radioDeferred.await())
+        var debounced = false
+        var joinedExistingRequest = false
+        val warmLimit = targetLimit.coerceAtLeast(RECOMMENDATION_BATCH_SIZE)
+
+        val request = synchronized(recommendationRequestLock) {
+            inFlightRecommendationRequests[normalizedSongId]?.also {
+                joinedExistingRequest = true
+                return@synchronized it
             }
 
-            val blendedCandidates = interleaveRecommendations(
-                primary = upNextSongs,
-                secondary = radioSongs,
-                maxSize = targetLimit * 4
-            )
+            if (shouldDebounceFetchLocked(normalizedSongId, now)) {
+                debounced = true
+                return@synchronized null
+            }
 
-            val rankedCandidates = rankCandidates(seedSong, blendedCandidates)
-            val primaryNewSongs = filterNewSongs(rankedCandidates, songId)
+            recentFetchBySongId[normalizedSongId] = now
+            trimRecentFetchesLocked()
+
+            prefetchScope.async {
+                fetchRelatedSongsInternal(normalizedSongId, warmLimit)
+            }.also { deferred ->
+                inFlightRecommendationRequests[normalizedSongId] = deferred
+            }
+        }
+
+        if (debounced) {
+            Log.d(TAG, "⚠️ Debouncing recommendation fetch (too soon, seed=$normalizedSongId)")
+            return Result.success(emptyList())
+        }
+
+        if (joinedExistingRequest) {
+            Log.d(TAG, "⏳ Joining in-flight recommendation fetch for: $normalizedSongId")
+        }
+
+        val activeRequest = request ?: return Result.success(emptyList())
+        return try {
+            trimRecommendationResult(activeRequest.await(), targetLimit)
+        } finally {
+            synchronized(recommendationRequestLock) {
+                if (inFlightRecommendationRequests[normalizedSongId] === activeRequest) {
+                    inFlightRecommendationRequests.remove(normalizedSongId)
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchRelatedSongsInternal(songId: String, targetLimit: Int): Result<List<Song>> {
+        Log.d(TAG, "🎵 Getting related songs for: $songId (Prioritizing Radio Mix)")
+
+        return try {
+            val seedDeferred = coroutineScope { async { getSongDetailsForId(songId) } }
+            
+            // 1. YouTube Music Radio Mix gives the best and fastest continuous queue
+            val radioMixSongs = fetchRadioMix(songId, targetLimit * 3)
+            val seedSong = seedDeferred.await()
+            val primaryNewSongs = filterNewSongs(rankCandidates(seedSong, radioMixSongs), songId)
+            
             if (primaryNewSongs.size >= minOf(targetLimit, MIN_PRIMARY_RECOMMENDATIONS)) {
-                Log.d(
-                    TAG,
-                    "✅ Used blended Up Next + Radio: ${primaryNewSongs.size} songs (upNext=${upNextSongs.size}, radio=${radioSongs.size})"
-                )
+                Log.d(TAG, "✅ Used Radio Mix recommendations: ${primaryNewSongs.size} songs")
                 cacheRecommendations(songId, primaryNewSongs)
                 return Result.success(primaryNewSongs.take(targetLimit))
             }
 
-            Log.d(TAG, "⚠️ Up Next + Radio insufficient (${primaryNewSongs.size}), enriching with fallbacks...")
+            Log.d(TAG, "⚠️ Radio Mix insufficient (${primaryNewSongs.size}), trying UpNext + WatchNext...")
 
+            // 2. Fallback to full up-next + watch-next parsing
+            val fallbackRecommendations = youTubeiService
+                .getSongRecommendationsFromInnertube(songId, targetLimit * 2)
+                .getOrNull()
+                .orEmpty()
+            
             val collected = LinkedHashMap<String, Song>()
             fun collect(candidates: List<Song>) {
                 filterNewSongs(rankCandidates(seedSong, candidates), songId).forEach { candidate ->
@@ -196,12 +226,26 @@ class QueueRepositoryImpl @Inject constructor(
             }
 
             collect(primaryNewSongs)
+            collect(fallbackRecommendations)
+
             if (collected.size < targetLimit) {
-                collect(fetchSongMix(songId, targetLimit * 2))
+                val (songMixResults, artistResults) = coroutineScope {
+                    val mixDeferred = async {
+                        withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
+                            fetchSongMix(songId, targetLimit * 2)
+                        } ?: emptyList()
+                    }
+                    val artistDeferred = async {
+                        withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
+                            fetchArtistSongs(songId, targetLimit * 2)
+                        } ?: emptyList()
+                    }
+                    mixDeferred.await() to artistDeferred.await()
+                }
+                collect(songMixResults)
+                collect(artistResults)
             }
-            if (collected.size < targetLimit) {
-                collect(fetchArtistSongs(songId, targetLimit * 2))
-            }
+
             if (collected.size < targetLimit) {
                 collect(fetchDiscoveryRecommendations(songId, targetLimit * 2))
             }
@@ -218,12 +262,9 @@ class QueueRepositoryImpl @Inject constructor(
             cacheRecommendations(songId, collected.values.toList())
             Log.d(TAG, "✅ Final related songs: ${resultSongs.size} (target=$targetLimit)")
             Result.success(resultSongs)
-            
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to get related songs", e)
             Result.failure(e)
-        } finally {
-            isFetchingRecommendations = false
         }
     }
 
@@ -532,12 +573,7 @@ class QueueRepositoryImpl @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
 
     override suspend fun addToQueue(songs: List<Song>) {
-        // Filter out any duplicates AND non-music content (ViTune-style)
-        val newSongs = synchronized(trackingLock) {
-            songs
-                .filter { !queuedSongIds.contains(it.id) }
-                .filter { it.isStrictQueueSong() } // Only add songs, not videos/podcasts/etc.
-        }
+        val newSongs = selectQueueInsertions(songs)
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add (all duplicates or non-music content)")
@@ -563,15 +599,21 @@ class QueueRepositoryImpl @Inject constructor(
 
     override suspend fun clearQueue() {
         _queue.value = emptyList()
-        _currentIndex.value = 0
+        _currentIndex.value = -1
         synchronized(trackingLock) {
             queuedSongIds.clear()
         }
         synchronized(recommendationCache) {
             recommendationCache.clear()
         }
+        val requestsToCancel = synchronized(recommendationRequestLock) {
+            recentFetchBySongId.clear()
+            inFlightRecommendationRequests.values.toList().also {
+                inFlightRecommendationRequests.clear()
+            }
+        }
+        requestsToCancel.forEach { it.cancel() }
         lastQueryType = 0
-        isFetchingRecommendations = false
         Log.d(TAG, "🗑️ Queue cleared, tracking reset")
     }
 
@@ -607,6 +649,20 @@ class QueueRepositoryImpl @Inject constructor(
                 if (songs.isNotEmpty()) {
                     addToQueue(songs)
                     Log.d(TAG, "✅ Added ${songs.size} songs to prevent queue empty")
+
+                    // Speculative prefetch: warm cache for the NEXT song the user will hear
+                    val nextSongId = songs.firstOrNull()?.id
+                    if (nextSongId != null && getCachedRecommendations(nextSongId, 1).isEmpty()) {
+                        prefetchScope.launch {
+                            try {
+                                getRelatedSongs(nextSongId, RECOMMENDATION_BATCH_SIZE)
+                                Log.d(TAG, "🔮 Prefetch complete for next song: $nextSongId")
+                            } catch (e: Exception) {
+                                Log.d(TAG, "⚠️ Prefetch failed (non-critical): ${e.message}")
+                            }
+                        }
+                    }
+
                     return true
                 } else {
                     Log.d(TAG, "⚠️ No new recommendations available")
@@ -822,12 +878,7 @@ class QueueRepositoryImpl @Inject constructor(
     suspend fun addToPlayNext(songs: List<Song>) {
         if (songs.isEmpty()) return
 
-        // Filter out duplicates AND non-music content
-        val newSongs = synchronized(trackingLock) {
-            songs
-                .filter { !queuedSongIds.contains(it.id) }
-                .filter { it.isStrictQueueSong() } // Only songs, not videos/podcasts
-        }
+        val newSongs = selectQueueInsertions(songs)
 
         if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No new songs to add to play next (all duplicates or non-music)")
@@ -969,6 +1020,10 @@ class QueueRepositoryImpl @Inject constructor(
 
         if (removedCount > 0) {
             _queue.value = filteredQueue
+            synchronized(trackingLock) {
+                queuedSongIds.clear()
+                filteredQueue.forEach { queuedSongIds.add(it.id) }
+            }
             // Adjust current index
             if (_currentIndex.value >= filteredQueue.size) {
                 _currentIndex.value = filteredQueue.size - 1
@@ -984,21 +1039,10 @@ class QueueRepositoryImpl @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
 
     private fun trimTrackingSets() {
-        // Keep only the most recent items to prevent memory bloat
-        if (queuedSongIds.size > MAX_HISTORY_SIZE) {
-            val iterator = queuedSongIds.iterator()
-            var count = 0
-            while (iterator.hasNext() && count < queuedSongIds.size - MAX_HISTORY_SIZE) {
-                iterator.next()
-                iterator.remove()
-                count++
-            }
-        }
-
-        if (playedSongIds.size > MAX_HISTORY_SIZE) {
+        if (playedSongIds.size > MAX_PLAYED_HISTORY_SIZE) {
             val iterator = playedSongIds.iterator()
             var count = 0
-            while (iterator.hasNext() && count < playedSongIds.size - MAX_HISTORY_SIZE) {
+            while (iterator.hasNext() && count < playedSongIds.size - MAX_PLAYED_HISTORY_SIZE) {
                 iterator.next()
                 iterator.remove()
                 count++
@@ -1011,6 +1055,22 @@ class QueueRepositoryImpl @Inject constructor(
             ContentType.SONG -> true
             ContentType.UNKNOWN -> duration == 0 || duration in 30..900
             else -> false
+        }
+    }
+
+    private fun selectQueueInsertions(songs: List<Song>): List<Song> {
+        if (songs.isEmpty()) return emptyList()
+
+        return synchronized(trackingLock) {
+            val incomingIds = HashSet<String>(songs.size)
+            buildList(songs.size) {
+                songs.forEach { song ->
+                    if (!song.isStrictQueueSong()) return@forEach
+                    if (!incomingIds.add(song.id)) return@forEach
+                    if (queuedSongIds.contains(song.id)) return@forEach
+                    add(song)
+                }
+            }
         }
     }
 
@@ -1046,5 +1106,24 @@ class QueueRepositoryImpl @Inject constructor(
             val firstKey = recommendationCache.keys.firstOrNull() ?: break
             recommendationCache.remove(firstKey)
         }
+    }
+
+    private fun shouldDebounceFetchLocked(songId: String, nowMs: Long): Boolean {
+        val previousFetchMs = recentFetchBySongId[songId] ?: return false
+        return nowMs - previousFetchMs < RECOMMENDATION_DEBOUNCE_MS
+    }
+
+    private fun trimRecentFetchesLocked() {
+        while (recentFetchBySongId.size > RECENT_FETCH_TRACKING_MAX_ENTRIES) {
+            val oldestSongId = recentFetchBySongId.keys.firstOrNull() ?: break
+            recentFetchBySongId.remove(oldestSongId)
+        }
+    }
+
+    private fun trimRecommendationResult(
+        result: Result<List<Song>>,
+        limit: Int
+    ): Result<List<Song>> = result.map { songs ->
+        songs.take(limit)
     }
 }

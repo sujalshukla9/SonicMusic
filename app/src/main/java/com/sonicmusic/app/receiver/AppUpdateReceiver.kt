@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.sonicmusic.app.core.updater.UpdateDownloader
@@ -91,15 +90,12 @@ class AppUpdateReceiver : BroadcastReceiver() {
      */
     private fun installApk(context: Context, file: File) {
         try {
-            val contentUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                FileProvider.getUriForFile(
-                    context,
-                    "${context.packageName}.provider",
-                    file
-                )
-            } else {
-                Uri.fromFile(file)
-            }
+            // minSdk 26 (> N/24) — FileProvider is always required
+            val contentUri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.provider",
+                file
+            )
 
             val installIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(contentUri, "application/vnd.android.package-archive")
