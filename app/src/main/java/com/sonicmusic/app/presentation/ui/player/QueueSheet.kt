@@ -106,6 +106,9 @@ fun QueueSheet(
     // Local mutable copy of the up-next list so drag-and-drop reflects instantly
     var localUpNext by remember(upNextSongs) { mutableStateOf(upNextSongs) }
 
+    // Track the original index when drag starts so we commit a single reorder on drop
+    var dragFromRelative by remember { mutableStateOf(-1) }
+
     val lazyListState = rememberLazyListState()
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
         // Reorderable callbacks use absolute LazyColumn indices (including headers).
@@ -115,15 +118,15 @@ fun QueueSheet(
             return@rememberReorderableLazyListState
         }
 
-        // These indices are now relative to localUpNext (0-based)
+        // Record the original position on first move
+        if (dragFromRelative == -1) {
+            dragFromRelative = fromRelative
+        }
+
+        // Update local list instantly for visual feedback (no player IPC here)
         localUpNext = localUpNext.toMutableList().apply {
             add(toRelative, removeAt(fromRelative))
         }
-
-        // Convert to absolute queue indices for the player
-        val absoluteFrom = safeIndex + 1 + fromRelative
-        val absoluteTo = safeIndex + 1 + toRelative
-        onReorder(absoluteFrom, absoluteTo)
     }
 
     val colorScheme = MaterialTheme.colorScheme
@@ -299,14 +302,14 @@ fun QueueSheet(
                 ) {
                     // ── Now Playing ─────────────────────────────────
                     nowPlayingSong?.let { song ->
-                        item(key = "now_playing_header") {
+                        item(key = "now_playing_header", contentType = "header") {
                             SectionHeader(
                                 title = "Now Playing",
                                 color = colorScheme.primary
                             )
                         }
 
-                        item(key = "now_playing_${song.id}") {
+                        item(key = "now_playing_${song.id}", contentType = "now_playing") {
                             NowPlayingCard(
                                 song = song,
                                 onClick = { onPlay(safeIndex) }
@@ -316,7 +319,7 @@ fun QueueSheet(
 
                     // ── Up Next ──────────────────────────────────────
                     if (localUpNext.isNotEmpty()) {
-                        item(key = "up_next_header") {
+                        item(key = "up_next_header", contentType = "header") {
                             SectionHeader(
                                 title = "Up Next",
                                 subtitle = "${localUpNext.size} tracks",
@@ -326,23 +329,24 @@ fun QueueSheet(
 
                         itemsIndexed(
                             items = localUpNext,
-                            key = { _, song -> song.id }
+                            key = { _, song -> song.id },
+                            contentType = { _, _ -> "track" }
                         ) { relativeIndex, song ->
                             val absoluteIndex = safeIndex + 1 + relativeIndex
 
                             ReorderableItem(reorderableState, key = song.id) { isDragging ->
                                 val elevation by animateDpAsState(
-                                    targetValue = if (isDragging) 12.dp else 0.dp,
+                                    targetValue = if (isDragging) 8.dp else 0.dp,
                                     animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessLow
+                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
+                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
                                     ),
                                     label = "DragElevation"
                                 )
                                 val scale by androidx.compose.animation.core.animateFloatAsState(
-                                    targetValue = if (isDragging) 1.03f else 1f,
+                                    targetValue = if (isDragging) 1.02f else 1f,
                                     animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
                                         stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
                                     ),
                                     label = "DragScale"
@@ -356,10 +360,10 @@ fun QueueSheet(
                                             scaleY = scale
                                         }
                                         .animateItem(
-                                            fadeInSpec = androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
-                                            fadeOutSpec = androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+                                            fadeInSpec = null,
+                                            fadeOutSpec = null,
                                             placementSpec = androidx.compose.animation.core.spring(
-                                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                                                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
                                                 stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
                                             )
                                         ),
@@ -376,7 +380,20 @@ fun QueueSheet(
                                             onRemove(absoluteIndex)
                                             localUpNext = localUpNext.filterNot { it.id == song.id }
                                         },
-                                        dragModifier = Modifier.draggableHandle()
+                                        dragModifier = Modifier.draggableHandle(
+                                            onDragStopped = {
+                                                // Commit reorder to player only on drop
+                                                if (dragFromRelative != -1) {
+                                                    val finalIndex = localUpNext.indexOfFirst { it.id == song.id }
+                                                    if (finalIndex != -1 && finalIndex != dragFromRelative) {
+                                                        val absoluteFrom = safeIndex + 1 + dragFromRelative
+                                                        val absoluteTo = safeIndex + 1 + finalIndex
+                                                        onReorder(absoluteFrom, absoluteTo)
+                                                    }
+                                                    dragFromRelative = -1
+                                                }
+                                            }
+                                        )
                                     )
                                 }
                             }
@@ -385,7 +402,7 @@ fun QueueSheet(
 
                     // ── History (previously played) ─────────────────
                     if (historySongs.isNotEmpty()) {
-                        item(key = "history_header") {
+                        item(key = "history_header", contentType = "header") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -425,7 +442,8 @@ fun QueueSheet(
                         if (showHistory) {
                             itemsIndexed(
                                 items = historySongs,
-                                key = { _, song -> "hist_${song.id}" }
+                                key = { _, song -> "hist_${song.id}" },
+                                contentType = { _, _ -> "history_track" }
                             ) { index, song ->
                                 TrackItem(
                                     song = song,

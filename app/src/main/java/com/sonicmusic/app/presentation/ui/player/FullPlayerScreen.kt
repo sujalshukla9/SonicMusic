@@ -622,13 +622,12 @@ fun FullPlayerScreen(
                         Toast.makeText(context, "Unable to open album", Toast.LENGTH_SHORT).show()
                     }
                 },
-                onMoreFromArtist = {
+                onMoreFromArtist = { artistName ->
                     showMoreSheet = false
-                    val artistName = currentSong?.artist.orEmpty()
                     if (artistName.isBlank()) {
                         Toast.makeText(context, "Artist not available", Toast.LENGTH_SHORT).show()
                     } else {
-                        onOpenArtist(artistName, currentSong?.artistId)
+                        onOpenArtist(artistName, null)
                     }
                 },
                 onWatchOnYouTube = {

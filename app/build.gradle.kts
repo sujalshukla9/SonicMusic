@@ -19,15 +19,16 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.3.3"
+        versionCode = 6
+        versionName = "1.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.3.3\"")
+        buildConfigField("String", "APP_VERSION", "\"1.4.0\"")
+
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")
@@ -79,6 +80,8 @@ android {
         }
     }
     compileOptions {
+        // ANDROID 8 FIX: Enable core library desugaring for java.time and other Java 8+ APIs
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -124,6 +127,9 @@ android {
 }
 
 dependencies {
+    // ANDROID 8 FIX: Core library desugaring for java.time and other Java 8+ APIs
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)

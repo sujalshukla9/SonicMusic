@@ -36,6 +36,7 @@ import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.MicExternalOn
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -74,6 +75,7 @@ fun SearchScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     onShowFullPlayer: () -> Unit = {},
     onNavigateToArtist: (String, String?) -> Unit = { _, _ -> },
+    onNavigateToAlbum: (com.sonicmusic.app.domain.model.Song) -> Unit = {},
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
     val searchState by viewModel.searchState.collectAsStateWithLifecycle()
@@ -118,7 +120,7 @@ fun SearchScreen(
                 query = searchQuery,
                 onQueryChange = { viewModel.onAction(SearchAction.QueryChanged(it)) },
                 onClear = { viewModel.onAction(SearchAction.ClearSearch) },
-                onSearch = { 
+                onSearch = {
                     viewModel.onAction(SearchAction.SubmitSearch(searchQuery))
                     focusManager.clearFocus()
                 },
@@ -131,6 +133,7 @@ fun SearchScreen(
                     com.sonicmusic.app.presentation.ui.components.NoInternetBanner(isVisible = !isOnline)
                 AnimatedContent(
                     targetState = searchState,
+                    contentKey = { it::class },
                     transitionSpec = {
                         fadeIn(animationSpec = tween(300)) togetherWith
                         fadeOut(animationSpec = tween(300))
@@ -142,7 +145,7 @@ fun SearchScreen(
                             InitialContent(
                                 recentSearches = recentSearches,
                                 trendingSearches = trendingSearches,
-                                onRecentSearchClick = { 
+                                onRecentSearchClick = {
                                     viewModel.onAction(SearchAction.RecentSearchClicked(it))
                                 },
                                 onDeleteSearch = {
@@ -153,6 +156,12 @@ fun SearchScreen(
                                 },
                                 onQuickSuggestionClick = {
                                     viewModel.onAction(SearchAction.SuggestionClicked(it))
+                                },
+                                onBrowseArtists = {
+                                    viewModel.onAction(SearchAction.BrowseArtists)
+                                },
+                                onBrowseAlbums = {
+                                    viewModel.onAction(SearchAction.BrowseAlbums)
                                 },
                                 bottomPadding = bottomPadding
                             )
@@ -184,8 +193,10 @@ fun SearchScreen(
                             SearchResultsContent(
                                 query = state.query,
                                 songs = state.songs,
+                                videos = state.videos,
                                 totalCount = state.totalCount,
                                 paginationState = state.paginationState,
+                                videoPaginationState = state.videoPaginationState,
                                 onSongClick = {
                                     viewModel.onAction(SearchAction.SongClicked(it))
                                 },
@@ -194,6 +205,9 @@ fun SearchScreen(
                                 },
                                 onLoadMore = {
                                     viewModel.onAction(SearchAction.LoadMore)
+                                },
+                                onLoadMoreVideos = {
+                                    viewModel.onAction(SearchAction.LoadMoreVideos)
                                 },
                                 listState = listState,
                                 bottomPadding = bottomPadding
@@ -215,6 +229,36 @@ fun SearchScreen(
                                 message = state.message,
                                 onRetry = { viewModel.onAction(SearchAction.RetrySearch) },
                                 isRecoverable = state.isRecoverable
+                            )
+                        }
+
+                        is SearchState.BrowseArtists -> {
+                            BrowseArtistsContent(
+                                state = state,
+                                onArtistClick = { name, browseId ->
+                                    onNavigateToArtist(name, browseId)
+                                },
+                                onBack = {
+                                    viewModel.onAction(SearchAction.BackFromBrowse)
+                                },
+                                onLoadMore = {
+                                    viewModel.onAction(SearchAction.LoadMoreArtists)
+                                },
+                                bottomPadding = bottomPadding
+                            )
+                        }
+
+                        is SearchState.BrowseAlbums -> {
+                            BrowseAlbumsContent(
+                                state = state,
+                                onAlbumClick = onNavigateToAlbum,
+                                onLoadMore = {
+                                    viewModel.onAction(SearchAction.LoadMoreAlbums)
+                                },
+                                onBack = {
+                                    viewModel.onAction(SearchAction.BackFromBrowse)
+                                },
+                                bottomPadding = bottomPadding
                             )
                         }
                     }
@@ -305,6 +349,8 @@ private fun InitialContent(
     onDeleteSearch: (String) -> Unit,
     onClearAll: () -> Unit,
     onQuickSuggestionClick: (String) -> Unit,
+    onBrowseArtists: () -> Unit,
+    onBrowseAlbums: () -> Unit,
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
     LazyColumn(
@@ -337,7 +383,13 @@ private fun InitialContent(
         }
 
         // Browse categories
-        item { BrowseCategoriesSection() }
+        item { 
+            BrowseCategoriesSection(
+                onCategoryClick = onQuickSuggestionClick,
+                onBrowseArtists = onBrowseArtists,
+                onBrowseAlbums = onBrowseAlbums
+            ) 
+        }
     }
 }
 
@@ -447,11 +499,14 @@ private fun SuggestionItem(
 private fun SearchResultsContent(
     query: String,
     songs: List<com.sonicmusic.app.domain.model.Song>,
+    videos: List<com.sonicmusic.app.domain.model.Song>,
     totalCount: Int,
     paginationState: PaginationState,
+    videoPaginationState: PaginationState,
     onSongClick: (com.sonicmusic.app.domain.model.Song) -> Unit,
     onArtistClick: (String, String?) -> Unit,
     onLoadMore: () -> Unit,
+    onLoadMoreVideos: () -> Unit,
     listState: androidx.compose.foundation.lazy.LazyListState,
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
@@ -474,6 +529,103 @@ private fun SearchResultsContent(
         state = listState,
         contentPadding = PaddingValues(bottom = bottomPadding + 16.dp),
     ) {
+        // ── Videos Section ──────────────────────────────────
+        if (videos.isNotEmpty()) {
+            item(key = "videos_header") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Rounded.VideoLibrary,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Videos",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                    ) {
+                        Text(
+                            text = "${videos.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            }
+
+            item(key = "videos_row") {
+                val videoRowState = rememberLazyListState()
+
+                // Detect when user scrolls near the end of the video row
+                LaunchedEffect(videos.size, videoPaginationState) {
+                    if (videoPaginationState !is PaginationState.Idle) return@LaunchedEffect
+
+                    snapshotFlow {
+                        val totalItems = videoRowState.layoutInfo.totalItemsCount
+                        val lastVisible = videoRowState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        totalItems > 0 && lastVisible >= totalItems - 3
+                    }
+                        .distinctUntilChanged()
+                        .filter { it }
+                        .collectLatest {
+                            onLoadMoreVideos()
+                        }
+                }
+
+                LazyRow(
+                    state = videoRowState,
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    items(
+                        items = videos,
+                        key = { "video_${it.id}" }
+                    ) { video ->
+                        SearchVideoCard(
+                            song = video,
+                            onClick = { onSongClick(video) }
+                        )
+                    }
+
+                    // Loading indicator at the end of videos row
+                    if (videoPaginationState is PaginationState.Loading) {
+                        item(key = "video_loading") {
+                            Box(
+                                modifier = Modifier
+                                    .width(200.dp)
+                                    .aspectRatio(16f / 9f),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            item(key = "videos_divider") {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                )
+            }
+        }
+
+        // ── Songs Section ──────────────────────────────────
         item {
             ResultsHeader(query = query, count = songs.size, totalCount = totalCount)
         }
@@ -525,6 +677,142 @@ private fun SearchResultsContent(
                 }
             }
         }
+    }
+}
+
+/**
+ * Video card for search results — 16:9 aspect ratio like YT Music
+ */
+@Composable
+private fun SearchVideoCard(
+    song: com.sonicmusic.app.domain.model.Song,
+    onClick: () -> Unit
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    Column(
+        modifier = Modifier
+            .width(200.dp)
+            .clickable(onClick = onClick)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f),
+            shape = RoundedCornerShape(12.dp),
+            color = colorScheme.surfaceContainerHigh,
+            tonalElevation = 2.dp
+        ) {
+            Box {
+                if (song.thumbnailUrl.isNotBlank()) {
+                    SongThumbnail(
+                        artworkUrl = song.thumbnailUrl,
+                        contentDescription = song.title,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.VideoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp),
+                            tint = colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+
+                // Play overlay
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Transparent,
+                                    Color.Black.copy(alpha = 0.4f)
+                                )
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        modifier = Modifier.size(36.dp),
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.5f)
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = "Play",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Duration badge
+                if (song.duration > 0) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(6.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        color = Color.Black.copy(alpha = 0.7f)
+                    ) {
+                        Text(
+                            text = formatDuration(song.duration),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        Text(
+            text = song.title,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Text(
+            text = song.artist,
+            style = MaterialTheme.typography.labelSmall,
+            color = colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        if (song.viewCount != null && song.viewCount > 0) {
+            Text(
+                text = formatSearchViewCount(song.viewCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+private fun formatSearchViewCount(count: Long): String {
+    return when {
+        count >= 1_000_000_000 -> String.format("%.1fB views", count / 1_000_000_000.0)
+        count >= 1_000_000 -> String.format("%.1fM views", count / 1_000_000.0)
+        count >= 1_000 -> String.format("%.1fK views", count / 1_000.0)
+        else -> "$count views"
     }
 }
 
@@ -1046,7 +1334,11 @@ private fun RecentSearchItem(
 }
 
 @Composable
-private fun BrowseCategoriesSection() {
+private fun BrowseCategoriesSection(
+    onCategoryClick: (String) -> Unit,
+    onBrowseArtists: () -> Unit,
+    onBrowseAlbums: () -> Unit
+) {
     Column(modifier = Modifier.padding(vertical = 16.dp)) {
         Text(
             text = "Browse",
@@ -1065,18 +1357,21 @@ private fun BrowseCategoriesSection() {
                 title = "Songs",
                 icon = Icons.Rounded.MusicNote,
                 color = MaterialTheme.colorScheme.primaryContainer,
+                onClick = { onCategoryClick("Songs") },
                 modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Artists",
                 icon = Icons.Rounded.MicExternalOn,
                 color = MaterialTheme.colorScheme.secondaryContainer,
+                onClick = onBrowseArtists,
                 modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
                 title = "Albums",
                 icon = Icons.Rounded.Album,
                 color = MaterialTheme.colorScheme.tertiaryContainer,
+                onClick = onBrowseAlbums,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1088,6 +1383,7 @@ private fun BrowseCategoryCard(
     title: String,
     icon: ImageVector,
     color: Color,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val gradient = Brush.linearGradient(
@@ -1103,6 +1399,7 @@ private fun BrowseCategoryCard(
         modifier = modifier.height(100.dp),
         shape = RoundedCornerShape(24.dp),
         color = Color.Transparent,
+        onClick = onClick
     ) {
         Box(
             modifier = Modifier
@@ -1127,6 +1424,431 @@ private fun BrowseCategoryCard(
                     text = title,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Browse top artists list
+ */
+@Composable
+private fun BrowseArtistsContent(
+    state: SearchState.BrowseArtists,
+    onArtistClick: (String, String?) -> Unit,
+    onLoadMore: () -> Unit,
+    onBack: () -> Unit,
+    bottomPadding: androidx.compose.ui.unit.Dp
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Text(
+                text = "Top Artists",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+        }
+
+        when {
+            state.isLoading && state.artists.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(modifier = Modifier.size(48.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            "Loading top artists...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            state.error != null && state.artists.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            state.error,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = onBack) {
+                            Text("Go Back")
+                        }
+                    }
+                }
+            }
+            else -> {
+                val listState = rememberLazyListState()
+
+                // infinite scroll trigger
+                LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
+                    val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                    val totalItems = listState.layoutInfo.totalItemsCount
+                    
+                    if (lastVisibleItem != null && totalItems > 0 && lastVisibleItem >= totalItems - 2) {
+                        if (!state.isPaginating && !state.continuationToken.isNullOrBlank()) {
+                            onLoadMore()
+                        }
+                    }
+                }
+
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "${state.artists.size} artists in your region",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                    }
+                    itemsIndexed(
+                        items = state.artists,
+                        key = { index, artist -> "${artist.id}_$index" }
+                    ) { index, artist ->
+                        BrowseArtistItem(
+                            artist = artist,
+                            rank = index + 1,
+                            onClick = {
+                                onArtistClick(
+                                    artist.title,
+                                    artist.artistId ?: artist.id.takeIf { it.startsWith("UC") }
+                                )
+                            }
+                        )
+                    }
+
+                    if (state.isPaginating) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowseArtistItem(
+    artist: com.sonicmusic.app.domain.model.Song,
+    rank: Int,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Rank number
+            Text(
+                text = "$rank",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(32.dp),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Circular thumbnail
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+            ) {
+                if (artist.thumbnailUrl.isNotBlank()) {
+                    SongThumbnail(
+                        artworkUrl = artist.thumbnailUrl,
+                        contentDescription = artist.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.MicExternalOn,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = artist.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (artist.artist.isNotBlank() && artist.artist != "Artist") {
+                    Text(
+                        text = artist.artist,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Browse top albums list
+ */
+@Composable
+private fun BrowseAlbumsContent(
+    state: SearchState.BrowseAlbums,
+    onAlbumClick: (com.sonicmusic.app.domain.model.Song) -> Unit,
+    onLoadMore: () -> Unit,
+    onBack: () -> Unit,
+    bottomPadding: androidx.compose.ui.unit.Dp
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Back",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Text(
+                text = "Top Albums",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+        }
+
+        when {
+            state.isLoading && state.albums.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(modifier = Modifier.size(48.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            "Loading top albums...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            state.error != null && state.albums.isEmpty() -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            state.error,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(onClick = onBack) {
+                            Text("Go Back")
+                        }
+                    }
+                }
+            }
+            else -> {
+                val listState = rememberLazyListState()
+
+                // infinite scroll trigger
+                LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
+                    val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                    val totalItems = listState.layoutInfo.totalItemsCount
+                    
+                    if (lastVisibleItem != null && totalItems > 0 && lastVisibleItem >= totalItems - 2) {
+                        if (!state.isPaginating && !state.continuationToken.isNullOrBlank()) {
+                            onLoadMore()
+                        }
+                    }
+                }
+
+                LazyColumn(
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
+                ) {
+                    item {
+                        Text(
+                            text = "${state.albums.size} albums in your region",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                        )
+                    }
+                    itemsIndexed(
+                        items = state.albums,
+                        key = { index, album -> "${album.id}_$index" }
+                    ) { index, album ->
+                        BrowseAlbumItem(
+                            album = album,
+                            rank = index + 1,
+                            onClick = { onAlbumClick(album) }
+                        )
+                    }
+                    
+                    if (state.isPaginating) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowseAlbumItem(
+    album: com.sonicmusic.app.domain.model.Song,
+    rank: Int,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Rank number
+            Text(
+                text = "$rank",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.width(32.dp),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Square thumbnail
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(12.dp))
+            ) {
+                if (album.thumbnailUrl.isNotBlank()) {
+                    SongThumbnail(
+                        artworkUrl = album.thumbnailUrl,
+                        contentDescription = album.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.tertiaryContainer
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Rounded.Album,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = album.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = album.artist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

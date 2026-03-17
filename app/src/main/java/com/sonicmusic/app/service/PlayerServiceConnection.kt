@@ -24,6 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,8 +56,8 @@ class PlayerServiceConnection @Inject constructor(
 ) {
     companion object {
         private const val TAG = "SonicConnection"
-        private const val QUEUE_LOW_THRESHOLD = 3 // Trigger fetch earlier for seamless playback
-        private const val QUEUE_CHECK_COOLDOWN_MS = 2500L // Check more frequently
+        private const val QUEUE_LOW_THRESHOLD = 19 // Trigger fetch earlier to maintain 20 songs
+        private const val QUEUE_CHECK_COOLDOWN_MS = 1000L // Fast queue replenishment
         private const val PRELOAD_THRESHOLD = 7 // Start preloading earlier
         private const val POSITION_UPDATE_INTERVAL_MS = 250L // ~4fps — visually smooth for a progress bar, 3x fewer recompositions
     }
@@ -188,14 +191,20 @@ class PlayerServiceConnection @Inject constructor(
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             mediaItem?.let { item ->
-                // Update current song from our queue
+                // ── OPTIMIZATION 6: Single-pass find + index ────────────
+                // Combined find() + indexOfFirst() into one loop.
                 synchronized(songQueue) {
-                    val song = songQueue.find { it.id == item.mediaId }
-                    _currentSong.value = song ?: item.toSong()
-                    
-                    // Update queue index
-                    val index = songQueue.indexOfFirst { it.id == item.mediaId }
-                    _currentQueueIndex.value = index
+                    var foundSong: Song? = null
+                    var foundIndex = -1
+                    for ((i, s) in songQueue.withIndex()) {
+                        if (s.id == item.mediaId) {
+                            foundSong = s
+                            foundIndex = i
+                            break
+                        }
+                    }
+                    _currentSong.value = foundSong ?: item.toSong()
+                    _currentQueueIndex.value = foundIndex
                 }
                 
                 // Check if we need more songs after transition
@@ -563,7 +572,7 @@ class PlayerServiceConnection @Inject constructor(
             try {
                 Log.d(TAG, "⏳ Background fetching URLs for ${songs.size} songs...")
                 
-                for (batch in songs.chunked(5)) {
+                for (batch in songs.chunked(8)) {
                     if (!isActive) break
                     if (targetSessionId != queueSessionId.get()) {
                         Log.d(TAG, "⏹️ Stopping stale lazy hydration for old session")
@@ -573,17 +582,24 @@ class PlayerServiceConnection @Inject constructor(
                     val urlMap = mutableMapOf<String, String>()
                     val validSongs = mutableListOf<Song>()
                     
-                    batch.forEach { song ->
-                         try {
-                            songRepository.getStreamUrl(song.id, com.sonicmusic.app.domain.model.StreamQuality.BEST)
-                                .getOrNull()
-                                ?.let { url -> 
-                                    urlMap[song.id] = url
-                                    validSongs.add(song)
+                    // Parallel URL fetching within each batch
+                    coroutineScope {
+                        batch.map { song ->
+                            async {
+                                try {
+                                    songRepository.getStreamUrl(song.id, com.sonicmusic.app.domain.model.StreamQuality.BEST)
+                                        .getOrNull()
+                                        ?.let { url ->
+                                            synchronized(urlMap) {
+                                                urlMap[song.id] = url
+                                                validSongs.add(song)
+                                            }
+                                        }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "⚠️ Failed to get URL for ${song.id}")
                                 }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "⚠️ Failed to get URL for ${song.id}")
-                        }
+                            }
+                        }.awaitAll()
                     }
                     
                     if (validSongs.isNotEmpty()) {
@@ -629,7 +645,7 @@ class PlayerServiceConnection @Inject constructor(
                         }
                     }
                     
-                    delay(50) // Reduced for faster hydration
+                    // No inter-batch delay — push songs to player as fast as possible
                 }
                  Log.d(TAG, "✅ Finished background URL fetching")
             } catch (e: Exception) {
@@ -659,7 +675,10 @@ class PlayerServiceConnection @Inject constructor(
         Log.d(TAG, "➕ Adding ${songs.size} songs to queue")
 
         val existingIds = songQueue.asSequence().map { it.id }.toMutableSet()
-        var addedCount = 0
+        val newSongs = mutableListOf<Song>()
+        // ── OPTIMIZATION 7: Batched MediaController IPC ──────────
+        // Build all MediaItems first, then add in one batch call.
+        val newMediaItems = mutableListOf<MediaItem>()
 
         songs.forEach { song ->
             if (existingIds.contains(song.id)) return@forEach
@@ -667,20 +686,24 @@ class PlayerServiceConnection @Inject constructor(
             val streamUrl = streamUrls[song.id] ?: return@forEach
             streamUrlCache[song.id] = streamUrl
             songQueue.add(song)
-            mediaController?.addMediaItem(createMediaItem(song, streamUrl))
+            newSongs.add(song)
+            newMediaItems.add(createMediaItem(song, streamUrl))
             existingIds.add(song.id)
-            addedCount += 1
         }
 
-        if (addedCount == 0) {
+        if (newSongs.isEmpty()) {
             Log.d(TAG, "⚠️ No playable songs were appended to queue")
             return
         }
 
-        _queue.value = songQueue.toList()
+        // Single IPC call instead of N individual addMediaItem() calls
+        mediaController?.addMediaItems(newMediaItems)
+
+        // ── OPTIMIZATION 5: Deduplicated queue emission ───────────
+        emitQueueIfChanged()
         reachedEndOfQueue = false
         
-        Log.d(TAG, "✅ Added $addedCount songs to queue, total: ${songQueue.size}")
+        Log.d(TAG, "✅ Added ${newSongs.size} songs to queue, total: ${songQueue.size}")
     }
 
     /**
@@ -971,6 +994,19 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     // HELPER METHODS
     // ═══════════════════════════════════════════════════════════════
+
+    // ── OPTIMIZATION 5: Only emit queue if content actually changed ──
+    private fun emitQueueIfChanged() {
+        val current = _queue.value
+        val newSize = songQueue.size
+        // Fast-path: if size or boundary elements differ, always emit
+        if (current.size != newSize ||
+            current.firstOrNull()?.id != songQueue.firstOrNull()?.id ||
+            current.lastOrNull()?.id != songQueue.lastOrNull()?.id
+        ) {
+            _queue.value = songQueue.toList()
+        }
+    }
     
     private fun createMediaItem(song: Song, streamUrl: String): MediaItem {
         val sourceUri = normalizeSourceUri(streamUrl)
@@ -991,7 +1027,17 @@ class PlayerServiceConnection @Inject constructor(
     private fun normalizeSourceUri(source: String): Uri {
         val parsed = Uri.parse(source)
         return if (parsed.scheme.isNullOrBlank() && source.startsWith("/")) {
-            Uri.fromFile(File(source))
+            // ANDROID 8 FIX: Use FileProvider content:// URI instead of file:// URI
+            try {
+                androidx.core.content.FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.provider",
+                    File(source)
+                )
+            } catch (e: IllegalArgumentException) {
+                // Fallback for paths outside FileProvider-configured directories
+                Uri.fromFile(File(source))
+            }
         } else {
             parsed
         }

@@ -69,10 +69,10 @@ class QueueRepositoryImpl @Inject constructor(
 
     companion object {
         private const val TAG = "QueueRepository"
-        private const val MIN_QUEUE_SIZE = 3
+        private const val MIN_QUEUE_SIZE = 20
         private const val RECOMMENDATION_BATCH_SIZE = 20
         private const val MAX_PLAYED_HISTORY_SIZE = 100 // Prevent memory bloat
-        private const val RECOMMENDATION_DEBOUNCE_MS = 800L // Same-seed debounce (YTMusic-fast)
+        private const val RECOMMENDATION_DEBOUNCE_MS = 400L // Tight debounce for fast queue fill
         private const val MIN_PRIMARY_RECOMMENDATIONS = 6
         private const val PRIMARY_FETCH_TIMEOUT_MS = 2500L // Faster timeout → faster fallback
         private const val RECOMMENDATION_CACHE_TTL_MS = 180_000L // 3min cache (warm longer)
@@ -117,7 +117,7 @@ class QueueRepositoryImpl @Inject constructor(
 
     // Cache last song details to avoid redundant API calls
     private var cachedSongDetails: Song? = null
-    private val recommendationCache = LinkedHashMap<String, RecommendationCacheEntry>()
+    private val recommendationCache = LinkedHashMap<String, RecommendationCacheEntry>(16, 0.75f, true) // accessOrder=true → LRU eviction
 
     // Background scope for speculative prefetch (fire-and-forget)
     private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -192,31 +192,24 @@ class QueueRepositoryImpl @Inject constructor(
     }
 
     private suspend fun fetchRelatedSongsInternal(songId: String, targetLimit: Int): Result<List<Song>> {
-        Log.d(TAG, "🎵 Getting related songs for: $songId (Prioritizing Radio Mix)")
+        Log.d(TAG, "🎵 Getting related songs for: $songId (Parallel Radio Mix + UpNext)")
 
         return try {
-            val seedDeferred = coroutineScope { async { getSongDetailsForId(songId) } }
-            
-            // 1. YouTube Music Radio Mix gives the best and fastest continuous queue
-            val radioMixSongs = fetchRadioMix(songId, targetLimit * 3)
-            val seedSong = seedDeferred.await()
-            val primaryNewSongs = filterNewSongs(rankCandidates(seedSong, radioMixSongs), songId)
-            
-            if (primaryNewSongs.size >= minOf(targetLimit, MIN_PRIMARY_RECOMMENDATIONS)) {
-                Log.d(TAG, "✅ Used Radio Mix recommendations: ${primaryNewSongs.size} songs")
-                cacheRecommendations(songId, primaryNewSongs)
-                return Result.success(primaryNewSongs.take(targetLimit))
+            // ── OPTIMIZATION 1: Parallel primary fetch ──────────────────
+            // Radio Mix + UpNext/WatchNext fire concurrently instead of sequential waterfall.
+            val (radioMixSongs, fallbackRecommendations, seedSong) = coroutineScope {
+                val seedDeferred = async { getSongDetailsForId(songId) }
+                val radioDeferred = async { fetchRadioMix(songId, targetLimit * 3) }
+                val innertubeDeferred = async {
+                    withTimeoutOrNull(PRIMARY_FETCH_TIMEOUT_MS) {
+                        youTubeiService.getSongRecommendationsFromInnertube(songId, targetLimit * 2)
+                            .getOrNull().orEmpty()
+                    } ?: emptyList()
+                }
+                Triple(radioDeferred.await(), innertubeDeferred.await(), seedDeferred.await())
             }
 
-            Log.d(TAG, "⚠️ Radio Mix insufficient (${primaryNewSongs.size}), trying UpNext + WatchNext...")
-
-            // 2. Fallback to full up-next + watch-next parsing
-            val fallbackRecommendations = youTubeiService
-                .getSongRecommendationsFromInnertube(songId, targetLimit * 2)
-                .getOrNull()
-                .orEmpty()
-            
-            val collected = LinkedHashMap<String, Song>()
+            val collected = LinkedHashMap<String, Song>(targetLimit * 2)
             fun collect(candidates: List<Song>) {
                 filterNewSongs(rankCandidates(seedSong, candidates), songId).forEach { candidate ->
                     if (collected.size < targetLimit) {
@@ -225,9 +218,13 @@ class QueueRepositoryImpl @Inject constructor(
                 }
             }
 
-            collect(primaryNewSongs)
+            // Merge parallel results
+            collect(radioMixSongs)
             collect(fallbackRecommendations)
 
+            Log.d(TAG, "⚡ Parallel primary fetch: ${collected.size}/$targetLimit songs")
+
+            // ── OPTIMIZATION 2: Short-circuit fallback chain ────────────
             if (collected.size < targetLimit) {
                 val (songMixResults, artistResults) = coroutineScope {
                     val mixDeferred = async {
@@ -243,7 +240,7 @@ class QueueRepositoryImpl @Inject constructor(
                     mixDeferred.await() to artistDeferred.await()
                 }
                 collect(songMixResults)
-                collect(artistResults)
+                if (collected.size < targetLimit) collect(artistResults)
             }
 
             if (collected.size < targetLimit) {
@@ -285,27 +282,28 @@ class QueueRepositoryImpl @Inject constructor(
      * 3. Not valid music content (videos, podcasts, etc.)
      * ViTune-style: Only keep actual songs
      */
+    // ── OPTIMIZATION 3: Zero-copy filtering ──────────────────────
+    // Check contains() under lock per-song instead of bulk-copying both HashSets.
     private fun filterNewSongs(songs: List<Song>, excludeSongId: String): List<Song> {
-        val (queued, played) = synchronized(trackingLock) {
-            queuedSongIds.toHashSet() to playedSongIds.toHashSet()
-        }
-        val filtered = songs
-            .asSequence()
-            .filter { song ->
-                song.id != excludeSongId &&
-                    !queued.contains(song.id) &&
-                    !played.contains(song.id) &&
-                    song.isStrictQueueSong() // Only songs, not videos/podcasts/live streams
+        val seen = HashSet<String>(songs.size)
+        val filtered = buildList(songs.size) {
+            for (song in songs) {
+                if (song.id == excludeSongId) continue
+                if (!seen.add(song.id)) continue
+                if (!song.isStrictQueueSong()) continue
+                val isTracked = synchronized(trackingLock) {
+                    queuedSongIds.contains(song.id) || playedSongIds.contains(song.id)
+                }
+                if (isTracked) continue
+                add(song)
             }
-            .distinctBy { it.id }
-            .toList()
-        
+        }
+
         val filteredCount = songs.size - filtered.size
         if (filteredCount > 0) {
-            // Detailed log for debugging radio mix
             Log.d(TAG, "🎬 Filtered out $filteredCount songs. Original: ${songs.size}, New: ${filtered.size}")
         }
-        
+
         return filtered
     }
 

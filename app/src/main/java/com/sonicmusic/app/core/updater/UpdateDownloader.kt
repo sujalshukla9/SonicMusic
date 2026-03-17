@@ -2,9 +2,13 @@ package com.sonicmusic.app.core.updater
 
 import android.app.DownloadManager
 import android.content.Context
+import android.database.Cursor
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 class UpdateDownloader(private val context: Context) {
 
@@ -59,5 +63,47 @@ class UpdateDownloader(private val context: Context) {
             .apply()
         Log.d(TAG, "Download enqueued (id=$downloadId) for $fileName")
         return downloadId
+    }
+
+    fun observeDownloadProgress(downloadId: Long): Flow<Int> = flow {
+        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        var isDownloading = true
+
+        while (isDownloading) {
+            val cursor: Cursor = downloadManager.query(query)
+            if (cursor.moveToFirst()) {
+                val bytesDownloadedIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
+                val bytesTotalIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
+                val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+
+                if (bytesDownloadedIndex >= 0 && bytesTotalIndex >= 0 && statusIndex >= 0) {
+                    val bytesDownloaded = cursor.getInt(bytesDownloadedIndex)
+                    val bytesTotal = cursor.getInt(bytesTotalIndex)
+                    val status = cursor.getInt(statusIndex)
+
+                    val progress = if (bytesTotal > 0) {
+                        (bytesDownloaded * 100L / bytesTotal).toInt()
+                    } else {
+                        0
+                    }
+
+                    emit(progress)
+
+                    if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
+                        isDownloading = false
+                        if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                            emit(100)
+                        }
+                    }
+                }
+            } else {
+                isDownloading = false
+            }
+            cursor.close()
+            if (isDownloading) {
+                delay(500)
+            }
+        }
     }
 }

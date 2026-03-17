@@ -480,7 +480,9 @@ class MediaNotificationProvider(
     ): Boolean {
         return when (action) {
             ACTION_TOGGLE_LIKE -> {
-                context.startService(
+                // ANDROID 8 FIX: Use startForegroundService() instead of startService()
+                androidx.core.content.ContextCompat.startForegroundService(
+                    context,
                     Intent(context, PlaybackService::class.java).apply {
                         this.action = PlaybackService.ACTION_TOGGLE_LIKE
                     }

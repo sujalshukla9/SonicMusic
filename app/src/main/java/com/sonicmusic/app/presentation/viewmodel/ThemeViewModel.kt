@@ -1,5 +1,6 @@
 package com.sonicmusic.app.presentation.viewmodel
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
@@ -28,7 +29,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ThemeViewModel @Inject constructor(
     private val settingsDataStore: SettingsDataStore,
-    @ApplicationContext private val context: Context
+    @SuppressLint("StaticFieldLeak") @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     // Use the Coil singleton configured in SonicMusicApplication.newImageLoader()

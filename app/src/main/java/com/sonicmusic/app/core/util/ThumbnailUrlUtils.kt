@@ -187,6 +187,13 @@ object ThumbnailUrlUtils {
 
     private fun isLowQualityVariant(url: String): Boolean {
         val lower = url.lowercase()
+        
+        // If YouTube explicitly provided a server-side crop/upscale hint,
+        // we should treat it as a high-quality variant, regardless of the base filename.
+        if (lower.contains("sqp=") || lower.contains("w1080") || lower.contains("w544") || lower.contains("w720")) {
+            return false
+        }
+
         return lower.contains("/default.jpg") ||
             lower.contains("/mqdefault.jpg") ||
             lower.contains("/hqdefault.jpg") ||

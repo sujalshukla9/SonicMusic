@@ -242,7 +242,9 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onPlay() {
             Log.d(TAG, "onPlay")
-            startService(
+            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
+            androidx.core.content.ContextCompat.startForegroundService(
+                this@PlayerMediaBrowserService,
                 Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
                     action = PlaybackService.ACTION_PLAY
                 }
@@ -251,7 +253,9 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onPause() {
             Log.d(TAG, "onPause")
-            startService(
+            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
+            androidx.core.content.ContextCompat.startForegroundService(
+                this@PlayerMediaBrowserService,
                 Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
                     action = PlaybackService.ACTION_PAUSE
                 }
@@ -260,7 +264,9 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onSkipToPrevious() {
             Log.d(TAG, "onSkipToPrevious")
-            startService(
+            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
+            androidx.core.content.ContextCompat.startForegroundService(
+                this@PlayerMediaBrowserService,
                 Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
                     action = PlaybackService.ACTION_PREVIOUS
                 }
@@ -269,7 +275,9 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onSkipToNext() {
             Log.d(TAG, "onSkipToNext")
-            startService(
+            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
+            androidx.core.content.ContextCompat.startForegroundService(
+                this@PlayerMediaBrowserService,
                 Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
                     action = PlaybackService.ACTION_NEXT
                 }

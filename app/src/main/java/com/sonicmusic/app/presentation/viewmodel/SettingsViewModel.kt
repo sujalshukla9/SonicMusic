@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import android.annotation.SuppressLint
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.PaletteStyle
 import java.io.File
@@ -36,12 +37,13 @@ class SettingsViewModel @Inject constructor(
     private val audioEngine: AudioEngine,
     private val appUpdateService: AppUpdateService,
     private val recentSearchRepository: RecentSearchRepository,
-    @ApplicationContext private val context: Context
+    @SuppressLint("StaticFieldLeak") @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     data class AppUpdateState(
         val isChecking: Boolean = false,
         val isDownloading: Boolean = false,
+        val downloadProgress: Int = 0,
         val statusText: String = "Check for the latest app release",
         val isUpdateAvailable: Boolean = false,
         val latestVersion: String? = null,
@@ -372,21 +374,22 @@ class SettingsViewModel @Inject constructor(
             _appUpdateState.value = currentState.copy(
                 isChecking = false,
                 isDownloading = true,
+                downloadProgress = 0,
                 statusText = "Downloading v$latestVersion..."
             )
 
             runCatching {
                 val downloader = UpdateDownloader(context)
                 downloader.downloadApk(downloadUrl, "SonicMusic-$latestVersion.apk")
-            }.onSuccess {
-                _appUpdateState.value = AppUpdateState(
-                    isChecking = false,
-                    isDownloading = false,
-                    statusText = "Downloading v$latestVersion in background",
-                    isUpdateAvailable = true,
-                    latestVersion = latestVersion,
-                    downloadUrl = downloadUrl
-                )
+            }.onSuccess { downloadId ->
+                val downloader = UpdateDownloader(context)
+                downloader.observeDownloadProgress(downloadId).collect { progress ->
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isDownloading = progress < 100,
+                        downloadProgress = progress,
+                        statusText = if (progress < 100) "Downloading v$latestVersion... $progress%" else "Download complete."
+                    )
+                }
             }.onFailure { error ->
                 Log.e("SettingsVM", "Failed to start in-app update download", error)
                 _appUpdateState.value = AppUpdateState(

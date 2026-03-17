@@ -17,6 +17,8 @@ import com.sonicmusic.app.data.mapper.toEntity
 import com.sonicmusic.app.presentation.state.ContentTypeFilter
 import com.sonicmusic.app.presentation.state.DurationFilter
 import com.sonicmusic.app.presentation.state.SortOption
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.util.Locale
@@ -93,6 +95,20 @@ class SearchRepositoryImpl @Inject constructor(
 
         return try {
             if (isTokenPagingRequest) {
+                // On first page, fire video search in parallel for the Videos section
+                val videoSearchResult = if (isInitialTokenPage) {
+                    coroutineScope {
+                        async {
+                            youTubeiService.searchVideos(normalizedQuery, 20)
+                                .getOrNull()
+                        }
+                    }.await()
+                } else {
+                    null
+                }
+                val videoResults = videoSearchResult?.songs.orEmpty()
+                val videoContinuation = videoSearchResult?.continuationToken
+
                 val primaryResult = youTubeiService.searchSongsPage(
                     query = normalizedQuery,
                     continuationToken = safeContinuation,
@@ -143,13 +159,19 @@ class SearchRepositoryImpl @Inject constructor(
                             null
                         }
 
+                        // Filter out videos that are already in song results
+                        val songIds = pageSongs.map { it.id }.toHashSet()
+                        val filteredVideos = videoResults.filterNot { songIds.contains(it.id) }
+
                         val searchResult = SearchResult(
                             songs = pageSongs,
+                            videos = filteredVideos,
                             totalCount = safeOffset + pageSongs.size,
                             hasMore = hasMore,
                             query = normalizedQuery,
                             nextOffset = nextOffsetCandidate,
-                            continuationToken = nextContinuation
+                            continuationToken = nextContinuation,
+                            videoContinuationToken = videoContinuation
                         )
 
                         cacheKey?.let { key ->
@@ -301,6 +323,55 @@ class SearchRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Result.success(regionalFallback)
+        }
+    }
+
+    override suspend fun searchVideos(query: String, limit: Int, continuation: String?): Result<SearchResult> {
+        return try {
+            youTubeiService.searchVideos(query, limit, continuation).map { page ->
+                SearchResult(
+                    songs = emptyList(),
+                    videos = page.songs,
+                    totalCount = page.songs.size,
+                    hasMore = !page.continuationToken.isNullOrBlank(),
+                    query = query,
+                    videoContinuationToken = page.continuationToken
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun getTopArtists(limit: Int): Result<List<Song>> {
+        return try {
+            youTubeiService.getTopArtists(limit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun loadMoreArtists(continuationToken: String): Result<com.sonicmusic.app.data.remote.source.YouTubeiService.BrowsePageResult> {
+        return try {
+            youTubeiService.loadMoreArtists(continuationToken)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun getTopAlbums(limit: Int): Result<List<Song>> {
+        return try {
+            youTubeiService.getTopAlbums(limit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun loadMoreAlbums(continuationToken: String): Result<com.sonicmusic.app.data.remote.source.YouTubeiService.BrowsePageResult> {
+        return try {
+            youTubeiService.loadMoreAlbums(continuationToken)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

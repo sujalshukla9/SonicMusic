@@ -62,6 +62,39 @@ interface SearchRepository {
     suspend fun getTrendingSearches(): Result<List<String>>
     
     /**
+     * Search for video content only, with continuation-token pagination.
+     * @param query Search query string
+     * @param limit Maximum number of results per page
+     * @param continuation Continuation token for loading more (null = first page)
+     * @return Result containing SearchResult with videos and continuation token
+     */
+    suspend fun searchVideos(
+        query: String,
+        limit: Int = 20,
+        continuation: String? = null
+    ): Result<SearchResult>
+
+    /**
+     * Get top artists from YTM charts for the user's region.
+     */
+    suspend fun getTopArtists(limit: Int = 50): Result<List<Song>>
+
+    /**
+     * Load more artists using continuation token
+     */
+    suspend fun loadMoreArtists(continuationToken: String): Result<com.sonicmusic.app.data.remote.source.YouTubeiService.BrowsePageResult>
+
+    /**
+     * Get top albums from YTM charts for the user's region.
+     */
+    suspend fun getTopAlbums(limit: Int = 50): Result<List<Song>>
+
+    /**
+     * Load more albums using continuation token
+     */
+    suspend fun loadMoreAlbums(continuationToken: String): Result<com.sonicmusic.app.data.remote.source.YouTubeiService.BrowsePageResult>
+
+    /**
      * Clear search cache
      */
     suspend fun clearCache()
@@ -72,9 +105,11 @@ interface SearchRepository {
  */
 data class SearchResult(
     val songs: List<Song>,
+    val videos: List<Song> = emptyList(),
     val totalCount: Int,
     val hasMore: Boolean,
     val query: String,
     val nextOffset: Int? = null,
-    val continuationToken: String? = null
+    val continuationToken: String? = null,
+    val videoContinuationToken: String? = null
 )

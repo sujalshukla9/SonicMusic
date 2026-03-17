@@ -188,7 +188,7 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
         val isLowRam = activityManager.isLowRamDevice
         val memoryCachePercent = if (
-            isLowRam) 0.10 else 0.20
+             isLowRam) 0.10 else 0.20
 
         return ImageLoader.Builder(this)
             .memoryCache {

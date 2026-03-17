@@ -31,12 +31,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import kotlin.time.Duration
 
@@ -96,9 +99,9 @@ class PlayerViewModel @Inject constructor(
         private const val TAG = "SonicPlayer"
         private const val MAX_URL_RETRY_ATTEMPTS = 3
         private const val URL_RETRY_DELAY_MS = 1500L
-        private const val RECOMMENDATION_BATCH_SIZE = 8 // Larger batches = fewer round-trips
-        private const val RECOMMENDATION_FETCH_LIMIT = 15
-        private const val SAME_SONG_RETRY_COOLDOWN_MS = 5000L // Faster retry for same song
+        private const val RECOMMENDATION_BATCH_SIZE = 20 // Larger batches to load queue fast
+        private const val TARGET_QUEUE_SIZE = 20
+        private const val SAME_SONG_RETRY_COOLDOWN_MS = 2000L // Fast retry for queue refill
         // History dedup by song ID only (StateFlow emits same song twice per transition)
     }
 
@@ -169,7 +172,8 @@ class PlayerViewModel @Inject constructor(
 
     // Track active recommendation fetch to prevent duplicates
     private var recommendationJob: Job? = null
-    private var isRecommendationFetching = false
+    // ── OPTIMIZATION 9: Mutex replaces boolean flag ──
+    private val recommendationMutex = Mutex()
     private var lastRecommendationSongId: String? = null
     private var lastRecommendationRequestAt: Long = 0L
     private var lastHistorySongId: String? = null
@@ -211,9 +215,10 @@ class PlayerViewModel @Inject constructor(
         // Set up callback for infinite queue (ViTune-style)
         playerServiceConnection.setOnQueueNeedsMoreSongs { songId ->
 
-            if (_infiniteModeEnabled.value && !isRecommendationFetching) {
-
-                fetchAndAddRecommendations(songId)
+            if (_infiniteModeEnabled.value && !recommendationMutex.isLocked) {
+                val remaining = playerServiceConnection.getRemainingQueueSize()
+                val needed = (TARGET_QUEUE_SIZE - remaining).coerceAtLeast(1)
+                fetchAndAddRecommendations(songId, needed)
             } else {
 
             }
@@ -273,9 +278,12 @@ class PlayerViewModel @Inject constructor(
             }
         }
         
-        // Sync queue state + current index with repository (single combined collector)
+        // ── OPTIMIZATION 8: Debounced queue sync ──────────────────
+        // conflate() drops intermediate emissions during batch hydration
+        // so syncQueueState() fires once instead of 4-8 times.
         viewModelScope.launch {
             combine(queue, currentQueueIndex) { songs, index -> songs to index }
+                .conflate()
                 .collect { (songs, index) ->
                     try {
                         queueRepository.syncQueueState(songs, index)
@@ -377,7 +385,7 @@ class PlayerViewModel @Inject constructor(
                         
                         // ViTune Logic: Instant Radio — fire recommendations immediately (no delay)
                         if (_infiniteModeEnabled.value) {
-                            fetchAndAddRecommendations(song.id)
+                            fetchAndAddRecommendations(song.id, TARGET_QUEUE_SIZE)
                         }
 
                         _isLoading.value = false
@@ -684,7 +692,7 @@ class PlayerViewModel @Inject constructor(
      * Uses BATCH LOADING for instant perception of speed
      * Prevents duplicate fetches and handles edge cases
      */
-    private fun fetchAndAddRecommendations(currentSongId: String) {
+    private fun fetchAndAddRecommendations(currentSongId: String, limit: Int = TARGET_QUEUE_SIZE) {
 
 
         val now = System.currentTimeMillis()
@@ -700,12 +708,13 @@ class PlayerViewModel @Inject constructor(
         recommendationJob?.cancel()
         
         recommendationJob = viewModelScope.launch {
-            if (isRecommendationFetching) {
-
+            // ── OPTIMIZATION 9: Mutex guard ──────────────────────────
+            // tryLock prevents overlapping fetches; if another coroutine
+            // already holds the mutex we skip (the running one will deliver).
+            if (!recommendationMutex.tryLock()) {
                 return@launch
             }
             
-            isRecommendationFetching = true
             lastRecommendationSongId = currentSongId
             lastRecommendationRequestAt = now
             
@@ -713,7 +722,7 @@ class PlayerViewModel @Inject constructor(
                 Log.d(TAG, "🔄 Fetching recommendations for: $currentSongId")
 
                 val primarySongs = queueRepository
-                    .getRelatedSongs(currentSongId, RECOMMENDATION_FETCH_LIMIT)
+                    .getRelatedSongs(currentSongId, limit)
                     .getOrElse { error ->
                         Log.e(TAG, "❌ Failed to fetch related songs", error)
                         emptyList()
@@ -723,7 +732,7 @@ class PlayerViewModel @Inject constructor(
                     primarySongs
                 } else {
                     Log.d(TAG, "⚠️ Related queue empty, trying mix fallback")
-                    queueRepository.getSongMix(currentSongId, RECOMMENDATION_FETCH_LIMIT).getOrDefault(emptyList())
+                    queueRepository.getSongMix(currentSongId, limit).getOrDefault(emptyList())
                 }
 
                 val blacklist = blacklistedSongIds.value
@@ -759,9 +768,7 @@ class PlayerViewModel @Inject constructor(
                         "➕ Enqueued background fetch for batch of ${batch.size} (total enqueued: $totalAdded)"
                     )
 
-                    if (index < filteredCandidates.size / RECOMMENDATION_BATCH_SIZE - 1) {
-                        delay(100)
-                    }
+                    // No inter-batch delay — lazy hydration is parallel now
                 }
 
                 if (totalAdded == 0) {
@@ -774,7 +781,7 @@ class PlayerViewModel @Inject constructor(
                 lastRecommendationSongId = null
                 lastRecommendationRequestAt = 0L
             } finally {
-                isRecommendationFetching = false
+                recommendationMutex.unlock()
             }
         }
     }

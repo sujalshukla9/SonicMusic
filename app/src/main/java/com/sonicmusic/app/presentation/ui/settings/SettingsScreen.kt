@@ -226,7 +226,9 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "High-Res streams use more data than High Quality. An external DAC may be required for the best listening experience.",
+                            text = "Very High uses Opus codec at 256 kbps for the best clarity. " +
+                                "High and Medium use AAC at 256 and 128 kbps respectively. " +
+                                "Lower quality uses less data — ideal for cellular or slow networks.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -486,18 +488,29 @@ fun SettingsScreen(
                         SettingsActionItem(
                             title = "Download Update",
                             subtitle = if (appUpdateState.isDownloading) {
-                                "Preparing installer..."
+                                appUpdateState.statusText
                             } else {
                                 "Download and install the latest version in-app"
                             },
                             icon = Icons.Rounded.Download,
-                            value = if (appUpdateState.isDownloading) "..." else null,
+                            value = if (appUpdateState.isDownloading) "${appUpdateState.downloadProgress}%" else null,
                             onClick = {
                                 if (!appUpdateState.isDownloading) {
                                     viewModel.downloadUpdate()
                                 }
                             }
                         )
+                        if (appUpdateState.isDownloading) {
+                            LinearProgressIndicator(
+                                progress = { appUpdateState.downloadProgress / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    .height(4.dp),
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 }
             }
@@ -928,7 +941,7 @@ private fun AudioQualityItem(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (currentQuality.isHighRes) {
+                if (qualityBadge(currentQuality).isNotEmpty()) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer,
                         shape = MaterialTheme.shapes.extraSmall,
@@ -975,27 +988,27 @@ private fun fullPlayerStyleMenuLabel(style: FullPlayerStyle): String {
 
 private fun qualityMenuLabel(quality: StreamQuality): String {
     return when (quality) {
-        StreamQuality.LOW -> "Low"
-        StreamQuality.MEDIUM -> "Medium"
-        StreamQuality.HIGH -> "High"
-        StreamQuality.BEST -> "Very High (Opus)"
+        StreamQuality.LOW -> "Low · 64 kbps"
+        StreamQuality.MEDIUM -> "Medium · AAC 128 kbps"
+        StreamQuality.HIGH -> "High · AAC 256 kbps"
+        StreamQuality.BEST -> "Very High · Opus 256 kbps"
     }
 }
 
 private fun qualityMenuDescription(quality: StreamQuality): String {
     return when (quality) {
-        StreamQuality.LOW -> "Lower quality, saves data"
-        StreamQuality.MEDIUM -> "Balanced quality and data usage"
-        StreamQuality.HIGH -> "High quality streaming"
-        StreamQuality.BEST -> "Opus codec · Best available quality"
+        StreamQuality.LOW -> "~30 MB/hr · Saves data on slow networks"
+        StreamQuality.MEDIUM -> "~58 MB/hr · Balanced quality and data"
+        StreamQuality.HIGH -> "~115 MB/hr · CD-comparable audio"
+        StreamQuality.BEST -> "~138 MB/hr · Best available clarity"
     }
 }
 
 private fun qualityBadge(quality: StreamQuality): String {
     return when (quality) {
         StreamQuality.BEST -> "OPUS"
-        StreamQuality.LOW,
-        StreamQuality.MEDIUM,
-        StreamQuality.HIGH -> ""
+        StreamQuality.HIGH -> "HQ"
+        StreamQuality.MEDIUM -> "AAC"
+        StreamQuality.LOW -> ""
     }
 }

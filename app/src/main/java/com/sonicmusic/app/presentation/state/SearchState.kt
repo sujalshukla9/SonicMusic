@@ -44,10 +44,13 @@ sealed interface SearchState {
     data class Results(
         val query: String,
         val songs: List<Song>,
+        val videos: List<Song> = emptyList(),
         val paginationState: PaginationState = PaginationState.Idle,
+        val videoPaginationState: PaginationState = PaginationState.Idle,
         val totalCount: Int = songs.size,
         val filters: SearchFilters = SearchFilters(),
-        val continuationToken: String? = null
+        val continuationToken: String? = null,
+        val videoContinuationToken: String? = null
     ) : SearchState
     
     /**
@@ -66,6 +69,30 @@ sealed interface SearchState {
         val query: String? = null,
         val isRecoverable: Boolean = true,
         val errorType: ErrorType = ErrorType.Unknown
+    ) : SearchState
+
+    /**
+     * Browse top artists from charts
+     */
+    data class BrowseArtists(
+        val artists: List<Song> = emptyList(),
+        val isLoading: Boolean = true,
+        val error: String? = null,
+        val continuationToken: String? = null,
+        val isPaginating: Boolean = false,
+        val paginationError: String? = null
+    ) : SearchState
+
+    /**
+     * Browse top albums from charts
+     */
+    data class BrowseAlbums(
+        val albums: List<Song> = emptyList(),
+        val isLoading: Boolean = true,
+        val error: String? = null,
+        val continuationToken: String? = null,
+        val isPaginating: Boolean = false,
+        val paginationError: String? = null
     ) : SearchState
 }
 
@@ -136,8 +163,14 @@ sealed interface SearchAction {
     data object ClearSearch : SearchAction
     data object RetrySearch : SearchAction
     data object LoadMore : SearchAction
+    data object LoadMoreVideos : SearchAction
     data class UpdateFilters(val filters: SearchFilters) : SearchAction
     data object DismissError : SearchAction
+    data object BrowseArtists : SearchAction
+    data object BrowseAlbums : SearchAction
+    data object BackFromBrowse : SearchAction
+    data object LoadMoreArtists : SearchAction
+    data object LoadMoreAlbums : SearchAction
 }
 
 /**

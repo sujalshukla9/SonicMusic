@@ -139,8 +139,80 @@ class SearchViewModel @Inject constructor(
             is SearchAction.ClearSearch -> clearSearch()
             is SearchAction.RetrySearch -> retrySearch()
             is SearchAction.LoadMore -> loadMoreResults()
+            is SearchAction.LoadMoreVideos -> loadMoreVideos()
             is SearchAction.UpdateFilters -> updateFilters(action.filters)
             is SearchAction.DismissError -> dismissError()
+            is SearchAction.BrowseArtists -> browseArtists()
+            is SearchAction.BrowseAlbums -> browseAlbums()
+            is SearchAction.BackFromBrowse -> backFromBrowse()
+            is SearchAction.LoadMoreArtists -> loadMoreArtists()
+            is SearchAction.LoadMoreAlbums -> loadMoreAlbums()
+        }
+    }
+
+    private fun loadMoreArtists() {
+        val currentState = _searchState.value as? SearchState.BrowseArtists ?: return
+        val token = currentState.continuationToken
+
+        if (token.isNullOrBlank() || currentState.isPaginating) return
+
+        _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
+
+        viewModelScope.launch {
+            searchRepository.loadMoreArtists(token).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
+                    // Filter duplicates
+                    val existingIds = latestState.artists.map { it.id }.toSet()
+                    val newArtists = result.items.filterNot { it.id in existingIds }
+
+                    _searchState.value = latestState.copy(
+                        artists = latestState.artists + newArtists,
+                        continuationToken = result.continuationToken,
+                        isPaginating = false
+                    )
+                },
+                onFailure = { e ->
+                    val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
+                    _searchState.value = latestState.copy(
+                        isPaginating = false,
+                        paginationError = e.message ?: "Failed to load more artists"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun loadMoreAlbums() {
+        val currentState = _searchState.value as? SearchState.BrowseAlbums ?: return
+        val token = currentState.continuationToken
+
+        if (token.isNullOrBlank() || currentState.isPaginating) return
+
+        _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
+
+        viewModelScope.launch {
+            searchRepository.loadMoreAlbums(token).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
+                    // Filter duplicates
+                    val existingIds = latestState.albums.map { it.id }.toSet()
+                    val newAlbums = result.items.filterNot { it.id in existingIds }
+
+                    _searchState.value = latestState.copy(
+                        albums = latestState.albums + newAlbums,
+                        continuationToken = result.continuationToken,
+                        isPaginating = false
+                    )
+                },
+                onFailure = { e ->
+                    val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
+                    _searchState.value = latestState.copy(
+                        isPaginating = false,
+                        paginationError = e.message ?: "Failed to load more albums"
+                    )
+                }
+            )
         }
     }
 
@@ -187,14 +259,21 @@ class SearchViewModel @Inject constructor(
                         _searchState.value = SearchState.Results(
                             query = trimmedQuery,
                             songs = songs,
+                            videos = result.videos,
                             totalCount = songs.size,
                             paginationState = if (result.hasMore) {
                                 PaginationState.Idle
                             } else {
                                 PaginationState.NoMoreData
                             },
+                            videoPaginationState = if (!result.videoContinuationToken.isNullOrBlank()) {
+                                PaginationState.Idle
+                            } else {
+                                PaginationState.NoMoreData
+                            },
                             filters = currentFilters,
-                            continuationToken = result.continuationToken
+                            continuationToken = result.continuationToken,
+                            videoContinuationToken = result.videoContinuationToken
                         )
                         _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
                     }
@@ -399,11 +478,110 @@ class SearchViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Load more videos for the horizontal video row.
+     * Fetches an additional batch of video results from the mixed search API.
+     */
+    private fun loadMoreVideos() {
+        val currentState = _searchState.value
+        if (currentState !is SearchState.Results) return
+        if (currentState.videoPaginationState is PaginationState.Loading) return
+        if (currentState.videoPaginationState is PaginationState.NoMoreData) return
+
+        _searchState.value = currentState.copy(
+            videoPaginationState = PaginationState.Loading
+        )
+
+        viewModelScope.launch {
+            searchRepository.searchVideos(
+                query = currentState.query,
+                limit = 20,
+                continuation = currentState.videoContinuationToken
+            ).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    val existingVideoIds = latestState.videos.map { it.id }.toHashSet()
+                    val newVideos = result.videos
+                        .filterNot { existingVideoIds.contains(it.id) }
+                        .distinctBy { it.id }
+
+                    val mergedVideos = latestState.videos + newVideos
+                    val hasMoreVideos = !result.videoContinuationToken.isNullOrBlank() && newVideos.isNotEmpty()
+                    _searchState.value = latestState.copy(
+                        videos = mergedVideos,
+                        videoPaginationState = if (hasMoreVideos) {
+                            PaginationState.Idle
+                        } else {
+                            PaginationState.NoMoreData
+                        },
+                        videoContinuationToken = result.videoContinuationToken
+                    )
+                },
+                onFailure = { exception ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    _searchState.value = latestState.copy(
+                        videoPaginationState = PaginationState.Error(
+                            getErrorMessage(exception)
+                        )
+                    )
+                }
+            )
+        }
+    }
+
     private fun dismissError() {
         val currentState = _searchState.value
         if (currentState is SearchState.Error) {
             _searchState.value = SearchState.Initial
         }
+    }
+
+    private fun browseArtists() {
+        _searchState.value = SearchState.BrowseArtists(isLoading = true)
+        viewModelScope.launch {
+            searchRepository.getTopArtists(50).fold(
+                onSuccess = { artists ->
+                    _searchState.value = SearchState.BrowseArtists(
+                        artists = artists,
+                        isLoading = false
+                    )
+                },
+                onFailure = { e ->
+                    _searchState.value = SearchState.BrowseArtists(
+                        isLoading = false,
+                        error = e.message ?: "Failed to load artists"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun browseAlbums() {
+        _searchState.value = SearchState.BrowseAlbums(isLoading = true)
+        viewModelScope.launch {
+            searchRepository.getTopAlbums(50).fold(
+                onSuccess = { albums ->
+                    _searchState.value = SearchState.BrowseAlbums(
+                        albums = albums,
+                        isLoading = false
+                    )
+                },
+                onFailure = { e ->
+                    _searchState.value = SearchState.BrowseAlbums(
+                        isLoading = false,
+                        error = e.message ?: "Failed to load albums"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun backFromBrowse() {
+        _searchState.value = SearchState.Initial
     }
 
     private fun loadRecentSearches() {

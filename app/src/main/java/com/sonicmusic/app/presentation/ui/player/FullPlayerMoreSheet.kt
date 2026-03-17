@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.sonicmusic.app.data.downloadmanager.DownloadProgress
 import com.sonicmusic.app.data.downloadmanager.DownloadStatus
@@ -74,7 +75,7 @@ fun FullPlayerMoreSheet(
     onSpeedAndPitch: () -> Unit,
     onSleepTimer: () -> Unit,
     onGoToAlbum: () -> Unit,
-    onMoreFromArtist: () -> Unit,
+    onMoreFromArtist: (artistName: String) -> Unit,
     onWatchOnYouTube: () -> Unit,
     onOpenInYouTubeMusic: () -> Unit,
     onDownloadOffline: () -> Unit,
@@ -152,7 +153,9 @@ fun FullPlayerMoreSheet(
                     ) {
                         SongThumbnail(
                             artworkUrl = song.thumbnailUrl,
-                            modifier = Modifier.size(58.dp),
+                            modifier = Modifier
+                                .size(58.dp)
+                                .clip(RoundedCornerShape(10.dp)),
                             contentDescription = null
                         )
                         Spacer(modifier = Modifier.width(12.dp))
@@ -228,11 +231,21 @@ fun FullPlayerMoreSheet(
                 label = "Go to album",
                 onClick = onGoToAlbum
             )
-            FullPlayerMoreActionRow(
-                icon = Icons.Rounded.Person,
-                label = "More from ${song.artist}",
-                onClick = onMoreFromArtist
-            )
+            // ── ViTune-style: Separate row per artist ──────────────
+            val artistNames = remember(song.artist) {
+                song.artist
+                    .split(Regex(",\\s*|\\s+&\\s+|\\s+feat\\.?\\s+|\\s+ft\\.?\\s+|\\s+x\\s+", RegexOption.IGNORE_CASE))
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+            }
+            artistNames.forEach { artistName ->
+                FullPlayerMoreActionRow(
+                    icon = Icons.Rounded.Person,
+                    label = "More from $artistName",
+                    onClick = { onMoreFromArtist(artistName) }
+                )
+            }
             FullPlayerMoreActionRow(
                 icon = Icons.Rounded.PlayArrow,
                 label = "Watch on YouTube",

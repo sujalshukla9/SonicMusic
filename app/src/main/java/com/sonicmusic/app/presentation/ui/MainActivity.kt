@@ -82,6 +82,7 @@ import com.sonicmusic.app.presentation.ui.home.HomeScreen
 import com.sonicmusic.app.presentation.ui.library.DownloadedSongsScreen
 import com.sonicmusic.app.presentation.ui.library.LibraryScreen
 import com.sonicmusic.app.presentation.ui.library.LikedSongsScreen
+import com.sonicmusic.app.presentation.ui.library.AlbumDetailScreen
 import com.sonicmusic.app.presentation.ui.library.ArtistDetailScreen
 import com.sonicmusic.app.presentation.ui.library.LocalSongsScreen
 import com.sonicmusic.app.presentation.ui.library.PlaylistsScreen
@@ -94,6 +95,8 @@ import com.sonicmusic.app.presentation.ui.search.SearchScreen
 import com.sonicmusic.app.presentation.ui.settings.SettingsScreen
 import com.sonicmusic.app.presentation.ui.theme.SonicMusicTheme
 import com.sonicmusic.app.presentation.viewmodel.HomeViewModel
+import com.sonicmusic.app.presentation.ui.components.NoInternetBanner
+import com.sonicmusic.app.presentation.ui.components.LocalIsOnline
 import dagger.hilt.android.AndroidEntryPoint
 
 import androidx.lifecycle.lifecycleScope
@@ -193,6 +196,7 @@ object SubScreens {
     const val LIKED_SONGS = "library/liked_songs"
     const val PLAYLISTS = "library/playlists"
     const val PLAYLIST_DETAIL = "library/playlist/{playlistId}"
+    const val ALBUM_DETAIL = "library/album/{albumId}?title={title}&artist={artist}&thumbnail={thumbnail}"
     const val RECENTLY_PLAYED = "library/recently_played"
     const val LOCAL_SONGS = "library/local_songs"
     const val DOWNLOADS = "library/downloads"
@@ -202,6 +206,22 @@ object SubScreens {
     fun homeSection(sectionKey: String): String =
         "home/section/${java.net.URLEncoder.encode(sectionKey, "UTF-8")}"
     fun playlistDetail(playlistId: Long) = "library/playlist/$playlistId"
+    fun albumDetail(
+        albumId: String,
+        title: String,
+        artist: String,
+        thumbnailUrl: String? = null
+    ): String {
+        val encodedAlbumId = java.net.URLEncoder.encode(albumId, "UTF-8")
+        val encodedTitle = java.net.URLEncoder.encode(title, "UTF-8")
+        val encodedArtist = java.net.URLEncoder.encode(artist, "UTF-8")
+        val encodedThumbnail = thumbnailUrl
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { java.net.URLEncoder.encode(it, "UTF-8") }
+            .orEmpty()
+        return "library/album/$encodedAlbumId?title=$encodedTitle&artist=$encodedArtist&thumbnail=$encodedThumbnail"
+    }
     fun artistDetail(artistName: String, browseId: String? = null): String {
         val encodedName = java.net.URLEncoder.encode(artistName, "UTF-8")
         val encodedBrowseId = browseId?.trim()?.takeIf { it.isNotEmpty() }?.let {
@@ -486,7 +506,13 @@ fun MainScaffoldContent(
             .padding(if (!isCompact) androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues() else androidx.compose.foundation.layout.PaddingValues(0.dp))
     ) {
         val bottomPadding = paddingValues.calculateBottomPadding()
+        val isOnline = LocalIsOnline.current
         
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Offline banner at top of all screens
+            NoInternetBanner(isVisible = !isOnline)
+            
+            Box(modifier = Modifier.weight(1f)) {
         NavHost(
             navController = navController,
             startDestination = Screen.Home.route
@@ -537,6 +563,17 @@ fun MainScaffoldContent(
                     onShowFullPlayer = showFullPlayer,
                     onNavigateToArtist = { artistName, browseId ->
                         navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                    },
+                    onNavigateToAlbum = { album ->
+                        val albumId = album.albumId?.takeIf { it.isNotBlank() } ?: album.id
+                        navController.navigate(
+                            SubScreens.albumDetail(
+                                albumId = albumId,
+                                title = album.title,
+                                artist = album.artist,
+                                thumbnailUrl = album.thumbnailUrl
+                            )
+                        )
                     }
                 )
             }
@@ -645,6 +682,48 @@ fun MainScaffoldContent(
                 }
             }
             composable(
+                route = SubScreens.ALBUM_DETAIL,
+                arguments = listOf(
+                    navArgument("albumId") { type = NavType.StringType },
+                    navArgument("title") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("artist") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
+                    navArgument("thumbnail") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { backStackEntry ->
+                val albumId = backStackEntry.arguments?.getString("albumId")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }.orEmpty()
+                val title = backStackEntry.arguments?.getString("title")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }.orEmpty()
+                val artist = backStackEntry.arguments?.getString("artist")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }.orEmpty()
+                val thumbnailUrl = backStackEntry.arguments?.getString("thumbnail")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+
+                AlbumDetailScreen(
+                    albumId = albumId,
+                    albumTitle = title,
+                    artistName = artist,
+                    thumbnailUrl = thumbnailUrl,
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(
                 route = SubScreens.ARTIST_DETAIL,
                 arguments = listOf(
                     navArgument("artistName") { type = NavType.StringType },
@@ -682,6 +761,8 @@ fun MainScaffoldContent(
                     bottomPadding = bottomPadding
                 )
             }
-        }
-    }
+        } // NavHost
+        } // Box(weight)
+        } // Column
+    } // Box(drawBehind)
 }

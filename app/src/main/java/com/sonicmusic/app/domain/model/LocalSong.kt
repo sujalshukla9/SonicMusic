@@ -13,4 +13,10 @@ data class LocalSong(
     val albumId: Long? = null,
     val dateAdded: Long,
     val fileSize: Long
-)
+) {
+    /** Android content URI for the album art, if albumId is available */
+    val albumArtUri: String?
+        get() = albumId?.let {
+            "content://media/external/audio/albumart/$it"
+        }
+}

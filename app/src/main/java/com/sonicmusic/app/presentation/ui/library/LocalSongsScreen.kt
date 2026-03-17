@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -26,6 +27,7 @@ import com.sonicmusic.app.presentation.viewmodel.LibraryViewModel
 import com.sonicmusic.app.presentation.ui.components.permissions.AudioStoragePermissionHandler
 import androidx.compose.runtime.LaunchedEffect
 import com.sonicmusic.app.presentation.ui.components.SongListSkeleton
+import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -169,21 +171,32 @@ private fun LocalSongItem(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(8.dp)),
-            color = MaterialTheme.colorScheme.primaryContainer
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
+        if (song.albumArtUri != null) {
+            SongThumbnail(
+                artworkUrl = song.albumArtUri,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentDescription = song.title
+            )
+        } else {
+            Surface(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                color = MaterialTheme.colorScheme.primaryContainer
             ) {
-                Text(
-                    text = song.title.take(1).uppercase(),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MusicNote,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
         }
 
