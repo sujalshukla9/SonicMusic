@@ -30,15 +30,15 @@ android {
         applicationId = "com.sonicmusic.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.5.1"
+        versionCode = 9
+        versionName = "1.5.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "APP_VERSION", "\"1.5.1\"")
+        buildConfigField("String", "APP_VERSION", "\"1.5.2\"")
 
 
         buildConfigField(
@@ -58,14 +58,10 @@ android {
         
         signingConfigs {
             create("release") {
-                val releaseKeystorePath =
-                    System.getenv("KEYSTORE_FILE") ?: localProperties.getProperty("KEYSTORE_FILE")
-                val releaseStorePassword =
-                    System.getenv("KEYSTORE_PASSWORD") ?: localProperties.getProperty("KEYSTORE_PASSWORD")
-                val releaseKeyAlias =
-                    System.getenv("KEY_ALIAS") ?: localProperties.getProperty("KEY_ALIAS")
-                val releaseKeyPassword =
-                    System.getenv("KEY_PASSWORD") ?: localProperties.getProperty("KEY_PASSWORD")
+                val releaseKeystorePath = System.getenv("KEYSTORE_FILE") ?: localProperties.getProperty("KEYSTORE_FILE")
+                val releaseStorePassword = System.getenv("KEYSTORE_PASSWORD") ?: localProperties.getProperty("KEYSTORE_PASSWORD")
+                val releaseKeyAlias = System.getenv("KEY_ALIAS") ?: localProperties.getProperty("KEY_ALIAS")
+                val releaseKeyPassword = System.getenv("KEY_PASSWORD") ?: localProperties.getProperty("KEY_PASSWORD")
 
                 if (isReleaseBuild) {
                     if (innertubeApiKey.isBlank() || youtubeApiKey.isBlank()) {
@@ -73,27 +69,23 @@ android {
                             "Release builds require INNERTUBE_API_KEY and YOUTUBE_API_KEY in local.properties or environment variables."
                         )
                     }
-                    if (
-                        releaseKeystorePath.isNullOrBlank() ||
-                        releaseStorePassword.isNullOrBlank() ||
-                        releaseKeyAlias.isNullOrBlank() ||
-                        releaseKeyPassword.isNullOrBlank()
-                    ) {
-                        throw GradleException(
-                            "Release signing credentials are missing. Configure KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in local.properties or environment variables."
-                        )
-                    }
                 }
 
-                if (!releaseKeystorePath.isNullOrBlank()) {
-                    val releaseKeystoreFile = file(releaseKeystorePath)
-                    if (!releaseKeystoreFile.exists()) {
-                        throw GradleException("Release keystore file does not exist: $releaseKeystorePath")
+                if (!releaseKeystorePath.isNullOrBlank() && !releaseStorePassword.isNullOrBlank() && !releaseKeyAlias.isNullOrBlank() && !releaseKeyPassword.isNullOrBlank()) {
+                    val releaseKeystoreFile = rootProject.file(releaseKeystorePath)
+                    if (releaseKeystoreFile.exists()) {
+                        storeFile = releaseKeystoreFile
+                        storePassword = releaseStorePassword
+                        keyAlias = releaseKeyAlias
+                        keyPassword = releaseKeyPassword
                     }
-                    storeFile = releaseKeystoreFile
-                    storePassword = releaseStorePassword
-                    keyAlias = releaseKeyAlias
-                    keyPassword = releaseKeyPassword
+                } else {
+                    // Fallback to debug signature for Open Source compilation if keys are missing
+                    val debugConfig = signingConfigs.getByName("debug")
+                    storeFile = debugConfig.storeFile
+                    storePassword = debugConfig.storePassword
+                    keyAlias = debugConfig.keyAlias
+                    keyPassword = debugConfig.keyPassword
                 }
             }
         }
