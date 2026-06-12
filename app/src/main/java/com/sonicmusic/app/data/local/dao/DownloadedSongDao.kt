@@ -1,0 +1,52 @@
+package com.sonicmusic.app.data.local.dao
+
+import androidx.room.Dao
+import androidx.room.Delete
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import com.sonicmusic.app.data.local.entity.DownloadedSong
+import com.sonicmusic.app.data.local.entity.DownloadStatus
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface DownloadedSongDao {
+    @Query("SELECT * FROM downloaded_songs_v2 ORDER BY downloadedAt DESC")
+    fun getAllDownloadedSongs(): Flow<List<DownloadedSong>>
+
+    @Query("SELECT * FROM downloaded_songs_v2 WHERE videoId = :videoId")
+    suspend fun getDownloadedSong(videoId: String): DownloadedSong?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertDownloadedSong(song: DownloadedSong)
+
+    @Delete
+    suspend fun deleteDownloadedSong(song: DownloadedSong)
+
+    @Query("DELETE FROM downloaded_songs_v2 WHERE videoId = :videoId")
+    suspend fun deleteBySongId(videoId: String)
+
+    @Query("SELECT SUM(fileSizeBytes) FROM downloaded_songs_v2 WHERE status = 'COMPLETED'")
+    suspend fun getTotalDownloadSize(): Long?
+
+    @Query("SELECT COUNT(*) FROM downloaded_songs_v2 WHERE status = 'COMPLETED'")
+    suspend fun getDownloadCount(): Int
+
+    @Query("DELETE FROM downloaded_songs_v2")
+    suspend fun deleteAll()
+
+    @Query("SELECT * FROM downloaded_songs_v2 WHERE status = 'COMPLETED' AND (title LIKE :query OR artists LIKE :query)")
+    suspend fun searchDownloadedSongs(query: String): List<DownloadedSong>
+
+    @Query("UPDATE downloaded_songs_v2 SET status = :status WHERE videoId = :videoId")
+    suspend fun updateStatus(videoId: String, status: DownloadStatus)
+
+    @Query("UPDATE downloaded_songs_v2 SET status = :status, fileSizeBytes = :fileSizeBytes WHERE videoId = :videoId")
+    suspend fun updateStatusAndSize(videoId: String, status: DownloadStatus, fileSizeBytes: Long)
+
+    @Query("UPDATE downloaded_songs_v2 SET localFilePath = :filePath, status = :status WHERE videoId = :videoId")
+    suspend fun updateFilePathAndStatus(videoId: String, filePath: String, status: DownloadStatus)
+
+    @Query("DELETE FROM downloaded_songs_v2 WHERE status = :status")
+    suspend fun deleteByStatus(status: DownloadStatus)
+}

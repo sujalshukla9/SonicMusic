@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+   Sample data extraction rules file; uncomment with customized values.
+
+   <data-extraction-rules>
+     <cloud-backup>
+       <include domain="sharedpref" path="."/>
+       <exclude domain="sharedpref" path="device.xml"/>
+     </cloud-backup>
+   </data-extraction-rules>
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="."/>
+        <include domain="database" path="."/>
+    </cloud-backup>
+</data-extraction-rules>

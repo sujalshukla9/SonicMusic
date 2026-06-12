@@ -1,0 +1,758 @@
+package com.sonicmusic.app.presentation.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.player.audio.AudioEngine
+import com.sonicmusic.app.domain.model.SearchSuggestionItem
+import com.sonicmusic.app.domain.repository.RecentSearchRepository
+import com.sonicmusic.app.domain.repository.SearchRepository
+import com.sonicmusic.app.domain.repository.SongRepository
+import com.sonicmusic.app.domain.repository.SearchSuggestionRepository
+import com.sonicmusic.app.presentation.state.ErrorType
+import com.sonicmusic.app.presentation.state.PaginationState
+import com.sonicmusic.app.presentation.state.SearchAction
+import com.sonicmusic.app.presentation.state.SearchEffect
+import com.sonicmusic.app.presentation.state.SearchFilters
+import com.sonicmusic.app.presentation.state.SearchState
+import com.sonicmusic.app.service.PlayerServiceConnection
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.launch
+import com.sonicmusic.app.core.network.NetworkMonitor
+import com.sonicmusic.app.data.repository.DownloadRepository
+import com.sonicmusic.app.domain.model.ContentType
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.Calendar
+import java.util.Locale
+import javax.inject.Inject
+
+/**
+ * Enhanced Search ViewModel with MVI pattern, pagination, and improved state management
+ */
+@OptIn(FlowPreview::class)
+@HiltViewModel
+class SearchViewModel @Inject constructor(
+    private val searchRepository: SearchRepository,
+    private val recentSearchRepository: RecentSearchRepository,
+    private val songRepository: SongRepository,
+    private val playerServiceConnection: PlayerServiceConnection,
+    private val audioEngine: AudioEngine,
+    private val networkMonitor: NetworkMonitor,
+    private val downloadRepository: DownloadRepository,
+    private val searchSuggestionRepository: SearchSuggestionRepository
+) : ViewModel() {
+
+    // Network status StateFlow for the UI
+    val isOnline: StateFlow<Boolean> = networkMonitor.isOnlineState
+
+    // State
+    private val _searchState = MutableStateFlow<SearchState>(SearchState.Initial)
+    val searchState: StateFlow<SearchState> = _searchState.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _recentSearches = MutableStateFlow<List<String>>(emptyList())
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
+
+    // Dual flows for rich suggestions
+    private val _textSuggestions = MutableStateFlow<List<String>>(emptyList())
+    val textSuggestions: StateFlow<List<String>> = _textSuggestions.asStateFlow()
+
+    private val _contentSuggestions = MutableStateFlow<List<SearchSuggestionItem>>(emptyList())
+    val contentSuggestions: StateFlow<List<SearchSuggestionItem>> = _contentSuggestions.asStateFlow()
+
+    private val _isLoadingSuggestions = MutableStateFlow(false)
+    val isLoadingSuggestions: StateFlow<Boolean> = _isLoadingSuggestions.asStateFlow()
+
+    // Effects (one-time events)
+    private val _effects = Channel<SearchEffect>()
+    val effects = _effects.receiveAsFlow()
+
+    // Pagination
+    private val pageSize = 100
+    private var currentQuery: String = ""
+    private var currentFilters: SearchFilters = SearchFilters()
+    private var activeSearchToken: Long = 0L
+
+    // Jobs
+    private var searchJob: Job? = null
+    private var suggestionsJob: Job? = null
+
+    // Trending searches
+    private val _trendingSearches = MutableStateFlow<List<String>>(emptyList())
+    val trendingSearches: StateFlow<List<String>> = _trendingSearches.asStateFlow()
+
+    init {
+        // Debounced query changes for suggestions
+        _searchQuery
+            .debounce(300)
+            .onEach { query ->
+                val trimmed = query.trim()
+                if (trimmed.length >= 2) {
+                    fetchSuggestions(trimmed)
+                } else {
+                    _textSuggestions.value = emptyList()
+                    _contentSuggestions.value = emptyList()
+                    _isLoadingSuggestions.value = false
+                    if (trimmed.isEmpty()) {
+                        _searchState.value = SearchState.Initial
+                    }
+                }
+            }
+            .launchIn(viewModelScope)
+
+        loadRecentSearches()
+        loadTrendingSearches()
+    }
+
+    private fun loadTrendingSearches() {
+        viewModelScope.launch {
+            searchRepository.getTrendingSearches()
+                .onSuccess { _trendingSearches.value = it }
+                .onFailure {
+                    _trendingSearches.value = getFallbackTrendingSearches()
+                }
+        }
+    }
+
+    private fun getFallbackTrendingSearches(): List<String> {
+        val countryName = Locale.getDefault().displayCountry.takeIf { it.isNotBlank() }
+        val year = Calendar.getInstance().get(Calendar.YEAR)
+        return if (countryName != null) {
+            listOf(
+                "Top Hits in $countryName",
+                "Trending Songs $year",
+                "New Releases",
+                "Workout Mix",
+                "Chill Vibes",
+                "Party Mix"
+            )
+        } else {
+            listOf(
+                "Top Hits",
+                "Trending Songs",
+                "New Releases",
+                "Workout Mix",
+                "Chill Vibes",
+                "Party Mix"
+            )
+        }
+    }
+
+    /**
+     * Handle search actions (MVI pattern)
+     */
+    fun onAction(action: SearchAction) {
+        when (action) {
+            is SearchAction.QueryChanged -> handleQueryChange(action.query)
+            is SearchAction.SubmitSearch -> submitSearch(action.query)
+            is SearchAction.SuggestionClicked -> handleSuggestionClick(action.suggestion)
+            is SearchAction.RecentSearchClicked -> handleRecentSearchClick(action.query)
+            is SearchAction.SongClicked -> handleSongClick(action.song)
+            is SearchAction.DeleteRecentSearch -> deleteRecentSearch(action.query)
+            is SearchAction.ClearAllRecentSearches -> clearAllRecentSearches()
+            is SearchAction.ClearSearch -> clearSearch()
+            is SearchAction.RetrySearch -> retrySearch()
+            is SearchAction.LoadMore -> loadMoreResults()
+            is SearchAction.LoadMoreVideos -> loadMoreVideos()
+            is SearchAction.UpdateFilters -> updateFilters(action.filters)
+            is SearchAction.DismissError -> dismissError()
+            is SearchAction.BrowseArtists -> browseArtists()
+            is SearchAction.BrowseAlbums -> browseAlbums()
+            is SearchAction.BackFromBrowse -> backFromBrowse()
+            is SearchAction.LoadMoreArtists -> loadMoreArtists()
+            is SearchAction.LoadMoreAlbums -> loadMoreAlbums()
+        }
+    }
+
+    private fun loadMoreArtists() {
+        val currentState = _searchState.value as? SearchState.BrowseArtists ?: return
+        val token = currentState.continuationToken
+
+        if (token.isNullOrBlank() || currentState.isPaginating) return
+
+        _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
+
+        viewModelScope.launch {
+            searchRepository.loadMoreArtists(token).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
+                    // Filter duplicates
+                    val existingIds = latestState.artists.map { it.id }.toSet()
+                    val newArtists = result.items.filterNot { it.id in existingIds }
+
+                    _searchState.value = latestState.copy(
+                        artists = latestState.artists + newArtists,
+                        continuationToken = result.continuationToken,
+                        isPaginating = false
+                    )
+                },
+                onFailure = { e ->
+                    val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
+                    _searchState.value = latestState.copy(
+                        isPaginating = false,
+                        paginationError = e.message ?: "Failed to load more artists"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun loadMoreAlbums() {
+        val currentState = _searchState.value as? SearchState.BrowseAlbums ?: return
+        val token = currentState.continuationToken
+
+        if (token.isNullOrBlank() || currentState.isPaginating) return
+
+        _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
+
+        viewModelScope.launch {
+            searchRepository.loadMoreAlbums(token).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
+                    // Filter duplicates
+                    val existingIds = latestState.albums.map { it.id }.toSet()
+                    val newAlbums = result.items.filterNot { it.id in existingIds }
+
+                    _searchState.value = latestState.copy(
+                        albums = latestState.albums + newAlbums,
+                        continuationToken = result.continuationToken,
+                        isPaginating = false
+                    )
+                },
+                onFailure = { e ->
+                    val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
+                    _searchState.value = latestState.copy(
+                        isPaginating = false,
+                        paginationError = e.message ?: "Failed to load more albums"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun handleQueryChange(query: String) {
+        _searchQuery.value = query
+
+        if (query.isBlank()) {
+            cancelActiveJobs()
+            currentQuery = ""
+            _textSuggestions.value = emptyList()
+            _contentSuggestions.value = emptyList()
+            _isLoadingSuggestions.value = false
+            _searchState.value = SearchState.Initial
+        }
+    }
+
+    private fun submitSearch(query: String) {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.length < 2) return
+
+        cancelActiveJobs()
+        currentQuery = trimmedQuery
+        _searchQuery.value = trimmedQuery
+        activeSearchToken += 1L
+        val searchToken = activeSearchToken
+
+        _searchState.value = SearchState.LoadingResults(trimmedQuery)
+
+        if (!networkMonitor.isConnectedNow()) {
+            searchJob = viewModelScope.launch {
+                try {
+                    val localSongs = downloadRepository.searchDownloadedSongs("%$trimmedQuery%")
+                    if (searchToken != activeSearchToken) return@launch
+
+                    val mappedSongs = localSongs.map { downloadedSong ->
+                        Song(
+                            id = downloadedSong.videoId,
+                            title = downloadedSong.title,
+                            artist = downloadedSong.artists,
+                            duration = (downloadedSong.durationMs / 1000).toInt(),
+                            thumbnailUrl = downloadedSong.thumbnailUrl,
+                            contentType = ContentType.SONG
+                        )
+                    }
+
+                    if (mappedSongs.isEmpty()) {
+                        _searchState.value = SearchState.Empty(
+                            query = trimmedQuery,
+                            suggestions = emptyList()
+                        )
+                    } else {
+                        recentSearchRepository.addSearch(trimmedQuery)
+                        _searchState.value = SearchState.Results(
+                            query = trimmedQuery,
+                            songs = mappedSongs,
+                            videos = emptyList(),
+                            totalCount = mappedSongs.size,
+                            paginationState = PaginationState.NoMoreData,
+                            videoPaginationState = PaginationState.NoMoreData,
+                            filters = currentFilters,
+                            continuationToken = null,
+                            videoContinuationToken = null
+                        )
+                        _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
+                    }
+                } catch (e: Exception) {
+                    if (searchToken != activeSearchToken) return@launch
+                    _searchState.value = SearchState.Error(
+                        message = e.message ?: "Failed to perform offline search",
+                        query = trimmedQuery,
+                        errorType = ErrorType.Unknown
+                    )
+                }
+            }
+            return
+        }
+
+        searchJob = viewModelScope.launch {
+            searchRepository.searchSongs(
+                query = trimmedQuery,
+                limit = pageSize,
+                offset = 0,
+                filters = currentFilters
+            ).fold(
+                onSuccess = { result ->
+                    if (searchToken != activeSearchToken) return@fold
+
+                    val songs = result.songs.distinctBy { it.id }
+                    if (songs.isEmpty()) {
+                        _searchState.value = SearchState.Empty(
+                            query = trimmedQuery,
+                            suggestions = getAlternativeSuggestions(trimmedQuery)
+                        )
+                    } else {
+                        recentSearchRepository.addSearch(trimmedQuery)
+                        _searchState.value = SearchState.Results(
+                            query = trimmedQuery,
+                            songs = songs,
+                            videos = result.videos,
+                            totalCount = songs.size,
+                            paginationState = if (result.hasMore) {
+                                PaginationState.Idle
+                            } else {
+                                PaginationState.NoMoreData
+                            },
+                            videoPaginationState = if (!result.videoContinuationToken.isNullOrBlank()) {
+                                PaginationState.Idle
+                            } else {
+                                PaginationState.NoMoreData
+                            },
+                            filters = currentFilters,
+                            continuationToken = result.continuationToken,
+                            videoContinuationToken = result.videoContinuationToken
+                        )
+                        _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
+                    }
+                },
+                onFailure = { exception ->
+                    if (searchToken != activeSearchToken) return@fold
+                    _searchState.value = SearchState.Error(
+                        message = getErrorMessage(exception),
+                        query = trimmedQuery,
+                        errorType = classifyError(exception)
+                    )
+                }
+            )
+        }
+    }
+
+    private fun fetchSuggestions(query: String) {
+        suggestionsJob?.cancel()
+
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.length < 2) return
+
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results && currentState.query == trimmedQuery) {
+            return
+        }
+        if (currentState is SearchState.LoadingResults && currentState.query == trimmedQuery) {
+            return
+        }
+
+        _searchState.value = SearchState.LoadingSuggestions(trimmedQuery)
+
+        if (!networkMonitor.isConnectedNow()) {
+            suggestionsJob = viewModelScope.launch {
+                try {
+                    val localSongs = downloadRepository.searchDownloadedSongs("%$trimmedQuery%")
+                    if (_searchQuery.value.trim() != trimmedQuery) return@launch
+                    val suggestions = localSongs.map { it.title }.distinct().take(5)
+                    _textSuggestions.value = suggestions
+                    _contentSuggestions.value = emptyList()
+                    _isLoadingSuggestions.value = false
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmedQuery,
+                        suggestions = suggestions,
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
+                            .take(3)
+                    )
+                } catch (e: Exception) {
+                    if (_searchQuery.value.trim() != trimmedQuery) return@launch
+                    _textSuggestions.value = emptyList()
+                    _contentSuggestions.value = emptyList()
+                    _isLoadingSuggestions.value = false
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmedQuery,
+                        suggestions = emptyList(),
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
+                            .take(3)
+                    )
+                }
+            }
+            return
+        }
+
+        _isLoadingSuggestions.value = true
+        suggestionsJob = viewModelScope.launch {
+            searchSuggestionRepository.getSearchSuggestions(trimmedQuery).fold(
+                onSuccess = { parsedSuggestions ->
+                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
+                    val textSugs = parsedSuggestions.first
+                    val contentSugs = parsedSuggestions.second
+
+                    _textSuggestions.value = textSugs
+                    _contentSuggestions.value = contentSugs
+                    _isLoadingSuggestions.value = false
+
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmedQuery,
+                        suggestions = textSugs,
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
+                            .take(3)
+                    )
+                },
+                onFailure = {
+                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
+                    _isLoadingSuggestions.value = false
+                    // Keep existing cached suggestions but fail silently as requested
+                }
+            )
+        }
+    }
+
+    private fun handleSuggestionClick(suggestion: String) {
+        _searchQuery.value = suggestion
+        submitSearch(suggestion)
+        viewModelScope.launch {
+            _effects.send(SearchEffect.ClearFocus)
+        }
+    }
+
+    private fun handleRecentSearchClick(query: String) {
+        _searchQuery.value = query
+        submitSearch(query)
+        viewModelScope.launch {
+            _effects.send(SearchEffect.ClearFocus)
+        }
+    }
+
+    private fun handleSongClick(song: Song) {
+        viewModelScope.launch {
+            // Save current query to recent searches with metadata
+            val currentQuery = _searchQuery.value.trim()
+            if (currentQuery.isNotBlank() && currentQuery.length >= 2) {
+                recentSearchRepository.addSearch(
+                    query = currentQuery,
+                    resultId = song.id,
+                    resultType = song.contentType.name
+                )
+            }
+
+            // Get stream URL and play
+            songRepository.getStreamUrl(song.id, audioEngine.getOptimalQuality())
+                .fold(
+                    onSuccess = { streamUrl ->
+                        playerServiceConnection.playSong(song, streamUrl)
+                        _effects.send(SearchEffect.NavigateToPlayer(song))
+                    },
+                    onFailure = { exception ->
+                        _effects.send(
+                            SearchEffect.ShowSnackbar(
+                                "Failed to play: ${exception.message}"
+                            )
+                        )
+                    }
+                )
+        }
+    }
+
+    private fun deleteRecentSearch(query: String) {
+        viewModelScope.launch {
+            recentSearchRepository.deleteSearch(query)
+        }
+    }
+
+    private fun clearAllRecentSearches() {
+        viewModelScope.launch {
+            recentSearchRepository.clearAllSearches()
+        }
+    }
+
+    private fun clearSearch() {
+        cancelActiveJobs()
+        _searchQuery.value = ""
+        _textSuggestions.value = emptyList()
+        _contentSuggestions.value = emptyList()
+        _isLoadingSuggestions.value = false
+        _searchState.value = SearchState.Initial
+    }
+
+    private fun retrySearch() {
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results && currentState.paginationState is PaginationState.Error) {
+            loadMoreResults()
+            return
+        }
+
+        val query = when (currentState) {
+            is SearchState.Error -> currentState.query
+            is SearchState.Empty -> currentState.query
+            else -> _searchQuery.value
+        }
+        
+        if (!query.isNullOrBlank()) {
+            submitSearch(query)
+        }
+    }
+
+    private fun loadMoreResults() {
+        val currentState = _searchState.value
+        if (currentState !is SearchState.Results) return
+        if (currentState.paginationState is PaginationState.Loading) return
+        if (currentState.paginationState is PaginationState.NoMoreData) return
+
+        _searchState.value = currentState.copy(
+            paginationState = PaginationState.Loading
+        )
+
+        viewModelScope.launch {
+            val offset = currentState.songs.size
+
+            searchRepository.searchSongs(
+                query = currentState.query,
+                limit = pageSize,
+                offset = offset,
+                continuation = currentState.continuationToken,
+                filters = currentState.filters
+            ).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    val existingIds = latestState.songs.asSequence().map { it.id }.toHashSet()
+                    val appendedSongs = result.songs.filterNot { existingIds.contains(it.id) }
+                    val mergedSongs = latestState.songs + appendedSongs
+                    val hasMoreData = result.hasMore && appendedSongs.isNotEmpty()
+
+                    _searchState.value = latestState.copy(
+                        songs = mergedSongs,
+                        totalCount = mergedSongs.size,
+                        paginationState = if (hasMoreData) {
+                            PaginationState.Idle
+                        } else {
+                            PaginationState.NoMoreData
+                        },
+                        continuationToken = result.continuationToken
+                    )
+                },
+                onFailure = { exception ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    _searchState.value = latestState.copy(
+                        paginationState = PaginationState.Error(
+                            getErrorMessage(exception)
+                        )
+                    )
+                }
+            )
+        }
+    }
+
+    private fun updateFilters(filters: SearchFilters) {
+        currentFilters = filters
+        val currentState = _searchState.value
+        if (currentState is SearchState.Results) {
+            _searchState.value = currentState.copy(filters = filters)
+            // Re-submit search with new filters
+            submitSearch(currentState.query)
+        }
+    }
+
+    /**
+     * Load more videos for the horizontal video row.
+     * Fetches an additional batch of video results from the mixed search API.
+     */
+    private fun loadMoreVideos() {
+        val currentState = _searchState.value
+        if (currentState !is SearchState.Results) return
+        if (currentState.videoPaginationState is PaginationState.Loading) return
+        if (currentState.videoPaginationState is PaginationState.NoMoreData) return
+
+        _searchState.value = currentState.copy(
+            videoPaginationState = PaginationState.Loading
+        )
+
+        viewModelScope.launch {
+            searchRepository.searchVideos(
+                query = currentState.query,
+                limit = 20,
+                continuation = currentState.videoContinuationToken
+            ).fold(
+                onSuccess = { result ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    val existingVideoIds = latestState.videos.map { it.id }.toHashSet()
+                    val newVideos = result.videos
+                        .filterNot { existingVideoIds.contains(it.id) }
+                        .distinctBy { it.id }
+
+                    val mergedVideos = latestState.videos + newVideos
+                    val hasMoreVideos = !result.videoContinuationToken.isNullOrBlank() && newVideos.isNotEmpty()
+                    _searchState.value = latestState.copy(
+                        videos = mergedVideos,
+                        videoPaginationState = if (hasMoreVideos) {
+                            PaginationState.Idle
+                        } else {
+                            PaginationState.NoMoreData
+                        },
+                        videoContinuationToken = result.videoContinuationToken
+                    )
+                },
+                onFailure = { exception ->
+                    val latestState = _searchState.value as? SearchState.Results
+                    if (latestState == null || latestState.query != currentState.query) return@fold
+
+                    _searchState.value = latestState.copy(
+                        videoPaginationState = PaginationState.Error(
+                            getErrorMessage(exception)
+                        )
+                    )
+                }
+            )
+        }
+    }
+
+    private fun dismissError() {
+        val currentState = _searchState.value
+        if (currentState is SearchState.Error) {
+            _searchState.value = SearchState.Initial
+        }
+    }
+
+    private fun browseArtists() {
+        _searchState.value = SearchState.BrowseArtists(isLoading = true)
+        viewModelScope.launch {
+            searchRepository.getTopArtists(50).fold(
+                onSuccess = { artists ->
+                    _searchState.value = SearchState.BrowseArtists(
+                        artists = artists,
+                        isLoading = false
+                    )
+                },
+                onFailure = { e ->
+                    _searchState.value = SearchState.BrowseArtists(
+                        isLoading = false,
+                        error = e.message ?: "Failed to load artists"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun browseAlbums() {
+        _searchState.value = SearchState.BrowseAlbums(isLoading = true)
+        viewModelScope.launch {
+            searchRepository.getTopAlbums(50).fold(
+                onSuccess = { albums ->
+                    _searchState.value = SearchState.BrowseAlbums(
+                        albums = albums,
+                        isLoading = false
+                    )
+                },
+                onFailure = { e ->
+                    _searchState.value = SearchState.BrowseAlbums(
+                        isLoading = false,
+                        error = e.message ?: "Failed to load albums"
+                    )
+                }
+            )
+        }
+    }
+
+    private fun backFromBrowse() {
+        _searchState.value = SearchState.Initial
+    }
+
+    private fun loadRecentSearches() {
+        viewModelScope.launch {
+            recentSearchRepository.getRecentSearches(10)
+                .collect { searches ->
+                    val recentQueries = searches.map { it.query }
+                    _recentSearches.value = recentQueries
+
+                    val state = _searchState.value
+                    if (state is SearchState.Suggestions) {
+                        _searchState.value = state.copy(
+                            recentSearches = recentQueries
+                                .filter { it.contains(state.query, ignoreCase = true) }
+                                .take(3)
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun cancelActiveJobs() {
+        searchJob?.cancel()
+        suggestionsJob?.cancel()
+    }
+
+    private fun getAlternativeSuggestions(query: String): List<String> {
+        return listOf(
+            "$query official",
+            "$query lyrics",
+            "$query audio",
+            "$query cover"
+        )
+    }
+
+    private fun getErrorMessage(exception: Throwable): String {
+        return when (exception) {
+            is SocketTimeoutException -> "Connection timed out. Please try again."
+            is IOException -> "No internet connection. Check your network."
+            else -> exception.message ?: "An unexpected error occurred"
+        }
+    }
+
+    private fun classifyError(exception: Throwable): ErrorType {
+        return when (exception) {
+            is SocketTimeoutException -> ErrorType.Timeout
+            is IOException -> ErrorType.Network
+            else -> ErrorType.Unknown
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        cancelActiveJobs()
+    }
+}
