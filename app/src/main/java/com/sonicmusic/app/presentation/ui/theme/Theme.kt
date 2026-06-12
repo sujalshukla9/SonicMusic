@@ -211,6 +211,29 @@ private val SonicShapes = Shapes(
 
 private const val DEFAULT_DYNAMIC_SEED = 0xFF4A7DFF.toInt()
 
+// Allocated once at class-load time. SonicMusicTheme recomposes on every
+// animated color frame during playback; re-creating these objects there
+// caused needless allocations and CompositionLocal equality churn.
+private val DefaultExpressiveShapes = ExpressiveShapes()
+private val DefaultExpressiveMotion = ExpressiveMotion()
+private val EmphasizedExpressiveTypography = ExpressiveTypography(
+    displayLargeEmphasized = Typography.displayLarge.copy(fontWeight = FontWeight.ExtraBold),
+    displayMediumEmphasized = Typography.displayMedium.copy(fontWeight = FontWeight.ExtraBold),
+    displaySmallEmphasized = Typography.displaySmall.copy(fontWeight = FontWeight.ExtraBold),
+    headlineLargeEmphasized = Typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
+    headlineMediumEmphasized = Typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+    headlineSmallEmphasized = Typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+    titleLargeEmphasized = Typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+    titleMediumEmphasized = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+    titleSmallEmphasized = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+    bodyLargeEmphasized = Typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+    bodyMediumEmphasized = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+    bodySmallEmphasized = Typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+    labelLargeEmphasized = Typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+    labelMediumEmphasized = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+    labelSmallEmphasized = Typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+)
+
 @Composable
 fun SonicMusicTheme(
     themeViewModel: ThemeViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
@@ -330,32 +353,20 @@ fun SonicMusicTheme(
         }
     }
 
-    androidx.compose.runtime.CompositionLocalProvider(
-        LocalDynamicThemeState provides DynamicThemeState(
+    val dynamicThemeState = androidx.compose.runtime.remember(seedColor, isDark, themeMode) {
+        DynamicThemeState(
             seedColor = seedColor?.let { androidx.compose.ui.graphics.Color(it) } ?: androidx.compose.ui.graphics.Color(0xFF4A7DFF),
             isDark = isDark,
             themeMode = themeMode
-        ),
+        )
+    }
+
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalDynamicThemeState provides dynamicThemeState,
         LocalPlayerColorScheme provides playerColorScheme,
-        LocalExpressiveShapes provides ExpressiveShapes(),
-        LocalExpressiveTypography provides ExpressiveTypography(
-            displayLargeEmphasized = Typography.displayLarge.copy(fontWeight = FontWeight.ExtraBold),
-            displayMediumEmphasized = Typography.displayMedium.copy(fontWeight = FontWeight.ExtraBold),
-            displaySmallEmphasized = Typography.displaySmall.copy(fontWeight = FontWeight.ExtraBold),
-            headlineLargeEmphasized = Typography.headlineLarge.copy(fontWeight = FontWeight.Bold),
-            headlineMediumEmphasized = Typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-            headlineSmallEmphasized = Typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-            titleLargeEmphasized = Typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-            titleMediumEmphasized = Typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            titleSmallEmphasized = Typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-            bodyLargeEmphasized = Typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-            bodyMediumEmphasized = Typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-            bodySmallEmphasized = Typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-            labelLargeEmphasized = Typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-            labelMediumEmphasized = Typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-            labelSmallEmphasized = Typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-        ),
-        LocalExpressiveMotion provides ExpressiveMotion()
+        LocalExpressiveShapes provides DefaultExpressiveShapes,
+        LocalExpressiveTypography provides EmphasizedExpressiveTypography,
+        LocalExpressiveMotion provides DefaultExpressiveMotion
     ) {
         MaterialTheme(
             colorScheme = animatedColorScheme,

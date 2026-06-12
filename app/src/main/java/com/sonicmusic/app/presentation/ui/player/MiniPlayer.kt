@@ -1,8 +1,8 @@
 package com.sonicmusic.app.presentation.ui.player
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -37,8 +37,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * Material 3 Expressive MiniPlayer
@@ -89,16 +90,13 @@ fun MiniPlayer(
     val miniHeight = ResponsiveDimensions.miniPlayerHeight(screenDims.heightDp)
     val artSize = ResponsiveDimensions.miniPlayerArtSize(screenDims.widthDp)
 
-    var offsetX by remember { mutableFloatStateOf(0f) }
-    val animatedOffsetX by animateFloatAsState(
-        targetValue = offsetX,
-        animationSpec = tween(durationMillis = 150, easing = FastOutSlowInEasing),
-        label = "offset"
-    )
+    // Swipe offset driven by an Animatable inside the gesture handlers.
+    // It is only read in the deferred offset{} lambda below, so dragging
+    // no longer recomposes the whole MiniPlayer on every frame.
+    val offsetX = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
     
     val swipeThreshold = 120f
-    val isSwipingNext = offsetX < -swipeThreshold
-    val isSwipingPrevious = offsetX > swipeThreshold
     val artworkPalette = rememberPlayerArtworkPalette(
         artworkUrl = currentSong?.thumbnailUrl,
         fallbackColorScheme = MaterialTheme.colorScheme,
@@ -132,15 +130,23 @@ fun MiniPlayer(
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             when {
-                                offsetX < -swipeThreshold -> viewModel.skipToNext()
-                                offsetX > swipeThreshold -> viewModel.skipToPrevious()
+                                offsetX.value < -swipeThreshold -> viewModel.skipToNext()
+                                offsetX.value > swipeThreshold -> viewModel.skipToPrevious()
                             }
-                            offsetX = 0f
+                            swipeScope.launch {
+                                offsetX.animateTo(0f, tween(durationMillis = 150, easing = FastOutSlowInEasing))
+                            }
                         },
-                        onDragCancel = { offsetX = 0f },
+                        onDragCancel = {
+                            swipeScope.launch {
+                                offsetX.animateTo(0f, tween(durationMillis = 150, easing = FastOutSlowInEasing))
+                            }
+                        },
                         onHorizontalDrag = { change, dragAmount ->
                             change.consume()
-                            offsetX = (offsetX + dragAmount).coerceIn(-200f, 200f)
+                            swipeScope.launch {
+                                offsetX.snapTo((offsetX.value + dragAmount).coerceIn(-200f, 200f))
+                            }
                         }
                     )
                 }
@@ -154,7 +160,7 @@ fun MiniPlayer(
                 // Swipe indicators (background)
                 // Main content
                 Column(
-                    modifier = Modifier.offset { IntOffset(animatedOffsetX.roundToInt(), 0) }
+                    modifier = Modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }
                 ) {
                     Row(
                         modifier = Modifier

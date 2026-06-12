@@ -258,6 +258,72 @@ val bottomNavItems = listOf(
     Screen.Settings
 )
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Material 3 Expressive navigation transitions.
+// Sub-screens use a shared-axis X pattern (slide + fade) with M3 emphasized
+// easing; top-level tabs use fade-through so switching tabs feels instant.
+// Allocated once at file scope to avoid per-recomposition lambda churn.
+// ─────────────────────────────────────────────────────────────────────────────
+private val EmphasizedDecelerateEasing =
+    androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+private val EmphasizedAccelerateEasing =
+    androidx.compose.animation.core.CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+
+private val sharedAxisEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    slideIntoContainer(
+        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
+        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
+        initialOffset = { fullWidth -> fullWidth / 5 }
+    ) + androidx.compose.animation.fadeIn(
+        animationSpec = tween(durationMillis = 210, delayMillis = 90)
+    )
+}
+
+private val sharedAxisExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    slideOutOfContainer(
+        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
+        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
+        targetOffset = { fullWidth -> fullWidth / 5 }
+    ) + androidx.compose.animation.fadeOut(
+        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
+    )
+}
+
+private val sharedAxisPopEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    slideIntoContainer(
+        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
+        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
+        initialOffset = { fullWidth -> fullWidth / 5 }
+    ) + androidx.compose.animation.fadeIn(
+        animationSpec = tween(durationMillis = 210, delayMillis = 90)
+    )
+}
+
+private val sharedAxisPopExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    slideOutOfContainer(
+        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
+        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
+        targetOffset = { fullWidth -> fullWidth / 5 }
+    ) + androidx.compose.animation.fadeOut(
+        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
+    )
+}
+
+private val fadeThroughEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    androidx.compose.animation.fadeIn(
+        animationSpec = tween(durationMillis = 210, delayMillis = 90)
+    ) + androidx.compose.animation.scaleIn(
+        initialScale = 0.92f,
+        animationSpec = tween(durationMillis = 210, delayMillis = 90, easing = EmphasizedDecelerateEasing)
+    )
+}
+
+private val fadeThroughExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    androidx.compose.animation.fadeOut(
+        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
+    )
+}
+
 @Composable
 fun SonicMusicApp(
     windowSizeClass: WindowSizeClass,
@@ -273,9 +339,10 @@ fun SonicMusicApp(
 
     var showSplash by remember { mutableStateOf(true) }
 
+    // Dismiss the splash as soon as settings are loaded — no artificial
+    // delay. The 500ms fade-out below keeps the transition smooth.
     androidx.compose.runtime.LaunchedEffect(onboardingCompleted) {
         if (onboardingCompleted != null) {
-            kotlinx.coroutines.delay(800)
             showSplash = false
         }
     }
@@ -521,7 +588,7 @@ fun SonicMusicApp(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0C0B16))
+                    .background(MaterialTheme.colorScheme.surface)
             )
         }
 
@@ -535,7 +602,7 @@ fun SonicMusicApp(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color(0xFF0C0B16)),
+                    .background(MaterialTheme.colorScheme.surface),
                 contentAlignment = Alignment.Center
             ) {
                 androidx.compose.foundation.Image(
@@ -585,10 +652,20 @@ fun MainScaffoldContent(
             Box(modifier = Modifier.weight(1f)) {
         NavHost(
             navController = navController,
-            startDestination = Screen.Home.route
+            startDestination = Screen.Home.route,
+            enterTransition = sharedAxisEnter,
+            exitTransition = sharedAxisExit,
+            popEnterTransition = sharedAxisPopEnter,
+            popExitTransition = sharedAxisPopExit
         ) {
             // Main screens
-            composable(Screen.Home.route) {
+            composable(
+                route = Screen.Home.route,
+                enterTransition = fadeThroughEnter,
+                exitTransition = fadeThroughExit,
+                popEnterTransition = fadeThroughEnter,
+                popExitTransition = fadeThroughExit
+            ) {
                 HomeScreen(
                     bottomPadding = bottomPadding,
                     onNavigateToSearch = { 
@@ -624,7 +701,13 @@ fun MainScaffoldContent(
                     onShowFullPlayer = showFullPlayer
                 )
             }
-            composable(Screen.Search.route) {
+            composable(
+                route = Screen.Search.route,
+                enterTransition = fadeThroughEnter,
+                exitTransition = fadeThroughExit,
+                popEnterTransition = fadeThroughEnter,
+                popExitTransition = fadeThroughExit
+            ) {
                 SearchScreen(
                     bottomPadding = bottomPadding,
                     onShowFullPlayer = showFullPlayer,
@@ -653,7 +736,13 @@ fun MainScaffoldContent(
                     }
                 )
             }
-            composable(Screen.Library.route) {
+            composable(
+                route = Screen.Library.route,
+                enterTransition = fadeThroughEnter,
+                exitTransition = fadeThroughExit,
+                popEnterTransition = fadeThroughEnter,
+                popExitTransition = fadeThroughExit
+            ) {
                 LibraryScreen(
                     bottomPadding = bottomPadding,
                     onNavigateToLikedSongs = { 
@@ -683,7 +772,13 @@ fun MainScaffoldContent(
                     onShowFullPlayer = showFullPlayer
                 )
             }
-            composable(SubScreens.SETTINGS) {
+            composable(
+                route = SubScreens.SETTINGS,
+                enterTransition = fadeThroughEnter,
+                exitTransition = fadeThroughExit,
+                popEnterTransition = fadeThroughEnter,
+                popExitTransition = fadeThroughExit
+            ) {
                 SettingsScreen(
                     bottomPadding = bottomPadding,
                     onNavigateBack = { navController.popBackStack() }

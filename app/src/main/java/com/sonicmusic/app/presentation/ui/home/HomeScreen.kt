@@ -204,22 +204,47 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                val listenAgainFiltered = if (isOnline) homeContent.listenAgain else homeContent.listenAgain.filter { it.id in downloadedSongIds }
-                val quickPicksFiltered = if (isOnline) homeContent.quickPicks else homeContent.quickPicks.filter { it.id in downloadedSongIds }
-                val trendingFiltered = if (isOnline) homeContent.trending else homeContent.trending.filter { it.id in downloadedSongIds }
-                val newReleasesFiltered = if (isOnline) homeContent.newReleases else homeContent.newReleases.filter { it.id in downloadedSongIds }
-                val personalizedFiltered = if (isOnline) homeContent.personalizedForYou else homeContent.personalizedForYou.filter { it.id in downloadedSongIds }
-                val chartsFilteredSongs = if (isOnline) homeContent.charts?.songs.orEmpty() else homeContent.charts?.songs.orEmpty().filter { it.id in downloadedSongIds }
-                val trendingAlbumsFiltered = if (isOnline) homeContent.trendingAlbums else homeContent.trendingAlbums.filter { it.id in downloadedSongIds }
-                val englishHitsFiltered = if (isOnline) homeContent.englishHits else homeContent.englishHits.filter { it.id in downloadedSongIds }
-                val forgottenFavoritesFiltered = if (isOnline) homeContent.forgottenFavorites else homeContent.forgottenFavorites.filter { it.id in downloadedSongIds }
-                val mixedForYouFiltered = if (isOnline) homeContent.mixedForYou else homeContent.mixedForYou.filter { it.id in downloadedSongIds }
-                val artistsFiltered = if (isOnline) {
-                    homeContent.artists
-                } else {
-                    homeContent.artists.map { section ->
-                        section.copy(songs = section.songs.filter { it.id in downloadedSongIds })
-                    }.filter { it.songs.isNotEmpty() }
+                // Memoized: these filters previously ran on every recomposition,
+                // iterating all home lists each frame. Now they only re-run when
+                // content, online state, or the downloaded-ids set change.
+                val listenAgainFiltered = remember(homeContent.listenAgain, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.listenAgain else homeContent.listenAgain.filter { it.id in downloadedSongIds }
+                }
+                val quickPicksFiltered = remember(homeContent.quickPicks, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.quickPicks else homeContent.quickPicks.filter { it.id in downloadedSongIds }
+                }
+                val trendingFiltered = remember(homeContent.trending, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.trending else homeContent.trending.filter { it.id in downloadedSongIds }
+                }
+                val newReleasesFiltered = remember(homeContent.newReleases, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.newReleases else homeContent.newReleases.filter { it.id in downloadedSongIds }
+                }
+                val personalizedFiltered = remember(homeContent.personalizedForYou, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.personalizedForYou else homeContent.personalizedForYou.filter { it.id in downloadedSongIds }
+                }
+                val chartsFilteredSongs = remember(homeContent.charts, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.charts?.songs.orEmpty() else homeContent.charts?.songs.orEmpty().filter { it.id in downloadedSongIds }
+                }
+                val trendingAlbumsFiltered = remember(homeContent.trendingAlbums, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.trendingAlbums else homeContent.trendingAlbums.filter { it.id in downloadedSongIds }
+                }
+                val englishHitsFiltered = remember(homeContent.englishHits, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.englishHits else homeContent.englishHits.filter { it.id in downloadedSongIds }
+                }
+                val forgottenFavoritesFiltered = remember(homeContent.forgottenFavorites, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.forgottenFavorites else homeContent.forgottenFavorites.filter { it.id in downloadedSongIds }
+                }
+                val mixedForYouFiltered = remember(homeContent.mixedForYou, isOnline, downloadedSongIds) {
+                    if (isOnline) homeContent.mixedForYou else homeContent.mixedForYou.filter { it.id in downloadedSongIds }
+                }
+                val artistsFiltered = remember(homeContent.artists, isOnline, downloadedSongIds) {
+                    if (isOnline) {
+                        homeContent.artists
+                    } else {
+                        homeContent.artists.map { section ->
+                            section.copy(songs = section.songs.filter { it.id in downloadedSongIds })
+                        }.filter { it.songs.isNotEmpty() }
+                    }
                 }
 
                 LazyColumn(
