@@ -66,6 +66,7 @@ fun FullPlayerMoreSheet(
     isLiked: Boolean,
     isDownloaded: Boolean,
     downloadProgress: DownloadProgress?,
+    albumLinkState: com.sonicmusic.app.presentation.viewmodel.AlbumLinkState,
     onDismiss: () -> Unit,
     onToggleLike: () -> Unit,
     onShare: () -> Unit,
@@ -226,15 +227,24 @@ fun FullPlayerMoreSheet(
                 label = "Sleep timer",
                 onClick = onSleepTimer
             )
+            val albumLabel = when (albumLinkState) {
+                is com.sonicmusic.app.presentation.viewmodel.AlbumLinkState.Loading -> "Go to album (Loading…)"
+                is com.sonicmusic.app.presentation.viewmodel.AlbumLinkState.Unavailable -> "Go to album (Unavailable)"
+                is com.sonicmusic.app.presentation.viewmodel.AlbumLinkState.Available -> "Go to album"
+            }
+            val isAlbumAvailable = albumLinkState is com.sonicmusic.app.presentation.viewmodel.AlbumLinkState.Available
+            val isAlbumLoading = albumLinkState is com.sonicmusic.app.presentation.viewmodel.AlbumLinkState.Loading
             FullPlayerMoreActionRow(
                 icon = Icons.Rounded.Album,
-                label = "Go to album",
-                onClick = onGoToAlbum
+                label = albumLabel,
+                onClick = onGoToAlbum,
+                enabled = !isAlbumLoading,
+                tint = if (isAlbumAvailable) colorScheme.onSurfaceVariant else colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
             )
             // ── ViTune-style: Separate row per artist ──────────────
             val artistNames = remember(song.artist) {
                 song.artist
-                    .split(Regex(",\\s*|\\s+&\\s+|\\s+feat\\.?\\s+|\\s+ft\\.?\\s+|\\s+x\\s+", RegexOption.IGNORE_CASE))
+                    .split(Regex("\\s*[,;/+×|\\u00d7]\\s*|\\s*&\\s*|\\s+(?:and|with|w/|feat\\.?|ft\\.?|x|vs\\.?)\\s+", RegexOption.IGNORE_CASE))
                     .map { it.trim() }
                     .filter { it.isNotBlank() }
                     .distinct()
@@ -322,14 +332,18 @@ private fun FullPlayerMoreActionRow(
     label: String,
     onClick: () -> Unit,
     showTrailingArrow: Boolean = false,
+    enabled: Boolean = true,
     tint: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant
 ) {
     val colorScheme = MaterialTheme.colorScheme
+    val alpha = if (enabled) 1f else 0.38f
+    val finalTint = tint.copy(alpha = alpha)
+    val finalTextColor = colorScheme.onSurface.copy(alpha = alpha)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -338,7 +352,7 @@ private fun FullPlayerMoreActionRow(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = tint,
+                tint = finalTint,
                 modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(16.dp))
@@ -346,7 +360,7 @@ private fun FullPlayerMoreActionRow(
                 text = label,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = colorScheme.onSurface
+                color = finalTextColor
             )
         }
 
@@ -354,7 +368,7 @@ private fun FullPlayerMoreActionRow(
             Text(
                 text = ">",
                 style = MaterialTheme.typography.titleMedium,
-                color = colorScheme.onSurfaceVariant
+                color = colorScheme.onSurfaceVariant.copy(alpha = alpha)
             )
         }
     }

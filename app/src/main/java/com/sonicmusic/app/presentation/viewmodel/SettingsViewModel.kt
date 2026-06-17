@@ -10,6 +10,8 @@ import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.domain.model.PlayerControlStyle
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.player.audio.AudioEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +39,7 @@ class SettingsViewModel @Inject constructor(
     private val audioEngine: AudioEngine,
     private val appUpdateService: AppUpdateService,
     private val recentSearchRepository: RecentSearchRepository,
+    private val databaseBackupManager: com.sonicmusic.app.data.local.database.DatabaseBackupManager,
     @SuppressLint("StaticFieldLeak") @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -139,6 +142,12 @@ class SettingsViewModel @Inject constructor(
 
     val onboardingCompleted: StateFlow<Boolean?> = settingsRepository.onboardingCompleted
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val thumbnailShape: StateFlow<ThumbnailShape> = settingsRepository.thumbnailShape
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ThumbnailShape.ROUNDED_SQUARE)
+
+    val playerControlStyle: StateFlow<PlayerControlStyle> = settingsRepository.playerControlStyle
+        .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerControlStyle.CLASSIC)
 
     private val _appUpdateState = MutableStateFlow(AppUpdateState())
     val appUpdateState: StateFlow<AppUpdateState> = _appUpdateState.asStateFlow()
@@ -316,6 +325,18 @@ class SettingsViewModel @Inject constructor(
     fun setOnboardingCompleted(completed: Boolean) {
         viewModelScope.launch {
             settingsRepository.setOnboardingCompleted(completed)
+        }
+    }
+
+    fun setThumbnailShape(shape: ThumbnailShape) {
+        viewModelScope.launch {
+            settingsRepository.setThumbnailShape(shape)
+        }
+    }
+
+    fun setPlayerControlStyle(style: PlayerControlStyle) {
+        viewModelScope.launch {
+            settingsRepository.setPlayerControlStyle(style)
         }
     }
 
@@ -540,6 +561,30 @@ class SettingsViewModel @Inject constructor(
             bytes < 1024 * 1024 -> "${bytes / 1024} KB"
             bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
             else -> String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024))
+        }
+    }
+
+    fun backupDatabase(outputStream: java.io.OutputStream, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            databaseBackupManager.backupDatabase(outputStream)
+                .onSuccess {
+                    withContext(Dispatchers.Main) { onSuccess() }
+                }
+                .onFailure { error ->
+                    withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
+                }
+        }
+    }
+
+    fun restoreDatabase(inputStream: java.io.InputStream, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            databaseBackupManager.restoreDatabase(inputStream)
+                .onSuccess {
+                    withContext(Dispatchers.Main) { onSuccess() }
+                }
+                .onFailure { error ->
+                    withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
+                }
         }
     }
 }

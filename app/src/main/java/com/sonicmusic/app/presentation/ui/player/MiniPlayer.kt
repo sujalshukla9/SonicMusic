@@ -51,12 +51,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import com.sonicmusic.app.presentation.ui.theme.ResponsiveDimensions
-import com.sonicmusic.app.presentation.ui.theme.rememberScreenDimensions
+import androidx.compose.foundation.layout.widthIn
+import com.sonicmusic.app.presentation.ui.theme.Dimens
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 import com.sonicmusic.app.presentation.viewmodel.PlayerViewModel
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.presentation.ui.theme.toComposeShape
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -83,12 +85,12 @@ fun MiniPlayer(
     val isLiked by viewModel.isLiked.collectAsStateWithLifecycle()
     val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
     val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
+    val thumbnailShape by viewModel.thumbnailShape.collectAsStateWithLifecycle()
 
     if (currentSong == null) return
 
-    val screenDims = rememberScreenDimensions()
-    val miniHeight = ResponsiveDimensions.miniPlayerHeight(screenDims.heightDp)
-    val artSize = ResponsiveDimensions.miniPlayerArtSize(screenDims.widthDp)
+    val miniHeight = Dimens.miniPlayerHeight
+    val artSize = Dimens.miniPlayerArtSize
 
     // Swipe offset driven by an Animatable inside the gesture handlers.
     // It is only read in the deferred offset{} lambda below, so dragging
@@ -122,10 +124,15 @@ fun MiniPlayer(
             label = "bgColor"
         )
 
-        Surface(
-            modifier = modifier
-                .fillMaxWidth()
-                .height(miniHeight)
+        Box(
+            modifier = modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            Surface(
+                modifier = Modifier
+                    .widthIn(max = Dimens.maxContentWidth)
+                    .fillMaxWidth()
+                    .height(miniHeight)
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
@@ -172,10 +179,9 @@ fun MiniPlayer(
                         // Album Art with shadow
                         SongThumbnail(
                             artworkUrl = currentSong?.thumbnailUrl,
-                            modifier = Modifier
-                                .size(artSize)
-                                .shadow(8.dp, RoundedCornerShape(8.dp))
-                                .clip(RoundedCornerShape(8.dp))
+                            shape = thumbnailShape,
+                            shadowElevation = 8.dp,
+                            modifier = Modifier.size(artSize)
                         )
 
                         Spacer(modifier = Modifier.width(12.dp))
@@ -261,8 +267,9 @@ fun MiniPlayer(
                     )
                 }
             }
-        }
-    }
+        } // Surface
+        } // Box (centering container)
+    } // MaterialTheme
 }
 
 @Composable

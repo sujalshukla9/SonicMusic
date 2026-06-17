@@ -6,6 +6,8 @@ import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.domain.model.PlayerControlStyle
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,6 +36,8 @@ class SettingsRepository @Inject constructor(
     val blacklistedSongIds: Flow<Set<String>> = settingsDataStore.blacklistedSongIds
     val autoUpdateEnabled: Flow<Boolean> = settingsDataStore.autoUpdateEnabled
     val onboardingCompleted: Flow<Boolean> = settingsDataStore.onboardingCompleted
+    val thumbnailShape: Flow<ThumbnailShape> = settingsDataStore.thumbnailShape
+    val playerControlStyle: Flow<PlayerControlStyle> = settingsDataStore.playerControlStyle
 
     suspend fun setStreamQuality(quality: StreamQuality) {
         settingsDataStore.setStreamQuality(quality)
@@ -117,6 +121,14 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
         settingsDataStore.setOnboardingCompleted(completed)
+    }
+
+    suspend fun setThumbnailShape(shape: ThumbnailShape) {
+        settingsDataStore.setThumbnailShape(shape)
+    }
+
+    suspend fun setPlayerControlStyle(style: PlayerControlStyle) {
+        settingsDataStore.setPlayerControlStyle(style)
     }
 
     suspend fun resetToDefaults() {

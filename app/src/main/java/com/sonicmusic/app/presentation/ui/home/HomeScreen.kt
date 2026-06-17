@@ -25,11 +25,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -66,6 +68,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -81,8 +84,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.sonicmusic.app.presentation.ui.theme.ResponsiveDimensions
-import com.sonicmusic.app.presentation.ui.theme.rememberScreenDimensions
+import com.sonicmusic.app.presentation.ui.theme.Dimens
+import com.sonicmusic.app.presentation.ui.theme.LocalThumbnailShape
+import com.sonicmusic.app.presentation.ui.theme.toComposeShape
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.Song
@@ -115,6 +119,18 @@ fun HomeScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val countryName by viewModel.countryName.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
+    val visibleKeys by remember {
+        derivedStateOf {
+            listState.layoutInfo.visibleItemsInfo.map { it.key }.toSet()
+        }
+    }
+
+    val isScrollInProgress = listState.isScrollInProgress
+    LaunchedEffect(visibleKeys, isScrollInProgress) {
+        viewModel.onVisibleSectionsChanged(visibleKeys, isScrollInProgress)
+    }
+
     val onHomeSectionSongClick: (String, Song) -> Unit = { sectionKey, song ->
         if (viewModel.onSectionSongClick(sectionKey, song)) {
             onShowFullPlayer()
@@ -248,6 +264,7 @@ fun HomeScreen(
                 }
 
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = bottomPadding)
                 ) {
@@ -613,46 +630,49 @@ private fun HomeHeader(
 ) {
     val greeting = remember { getGreeting() }
     
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .padding(horizontal = 20.dp)
-            .padding(top = 12.dp, bottom = 8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = Dimens.maxContentWidth)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(horizontal = Dimens.screenPadding)
+                .padding(top = 12.dp, bottom = 8.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = greeting,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "What do you want to listen to?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                IconButton(onClick = onSearchClick) {
-                    Icon(
-                        imageVector = Icons.Rounded.Search,
-                        contentDescription = "Search",
-                        tint = MaterialTheme.colorScheme.onSurface
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = greeting,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "What do you want to listen to?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = onSettingsClick) {
-                    Icon(
-                        imageVector = Icons.Rounded.Settings,
-                        contentDescription = "Settings",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    IconButton(onClick = onSearchClick) {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = "Search",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -687,32 +707,35 @@ private fun HomeQuickActions(
         )
     }
 
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        items(actions, key = { it.title }, contentType = { "action" }) { action ->
-            Surface(
-                modifier = Modifier.clickable(onClick = action.onClick),
-                shape = RoundedCornerShape(50),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        LazyRow(
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = Dimens.screenPadding, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(actions, key = { it.title }, contentType = { "action" }) { action ->
+                Surface(
+                    modifier = Modifier.clickable(onClick = action.onClick),
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
                 ) {
-                    Icon(
-                        imageVector = action.icon,
-                        contentDescription = action.title,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = action.title,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = action.icon,
+                            contentDescription = action.title,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = action.title,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
             }
         }
@@ -739,26 +762,28 @@ private fun ContinueListeningSection(
     isEnabled: Boolean = true,
     onSongClick: (Song) -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = "Continue Listening",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-        )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
+        ) {
+            Text(
+                text = "Continue Listening",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 12.dp)
+            )
 
-        // Show only the single last played song
-        ContinueListeningCard(
-            song = lastSong,
-            onClick = { onSongClick(lastSong) },
-            modifier = Modifier.padding(horizontal = 16.dp),
-            isEnabled = isEnabled
-        )
+            // Show only the single last played song
+            ContinueListeningCard(
+                song = lastSong,
+                onClick = { onSongClick(lastSong) },
+                modifier = Modifier.padding(horizontal = Dimens.screenPadding),
+                isEnabled = isEnabled
+            )
 
-        Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+        }
     }
 }
 
@@ -845,9 +870,8 @@ private fun ContinueListeningCard(
     modifier: Modifier = Modifier,
     isEnabled: Boolean = true
 ) {
-    val screenDims = rememberScreenDimensions()
-    val cardHeight = ResponsiveDimensions.continueListeningCardHeight(screenDims.widthDp)
-    val thumbSize = ResponsiveDimensions.continueListeningThumbSize(screenDims.widthDp)
+    val cardHeight = Dimens.continueListeningCardHeight
+    val thumbSize = Dimens.continueListeningThumbSize
     Card(
         onClick = onClick,
         enabled = isEnabled,
@@ -872,7 +896,7 @@ private fun ContinueListeningCard(
             Box(
                 modifier = Modifier
                     .size(thumbSize)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(LocalThumbnailShape.current.toComposeShape())
             ) {
                 SongThumbnail(
                     artworkUrl = song.thumbnailUrl,
@@ -953,137 +977,144 @@ private fun ListenAgainGrid(
     val pageCount = ((songs.size + songsPerPage - 1) / songsPerPage).coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        // Header with title, play buttons, and page indicators
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
+            // Header with title, play buttons, and page indicators
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onSeeAllClick) {
-                    Text(
-                        text = "See all",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                // Play All and Shuffle buttons
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IconButton(
-                        onClick = onShuffle,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = onPlayAll,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Play All",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
 
-                // Page indicators
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    repeat(pageCount) { index ->
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (pagerState.currentPage == index)
-                                        MaterialTheme.colorScheme.primary
-                                    else
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                )
+                    TextButton(onClick = onSeeAllClick) {
+                        Text(
+                            text = "See all",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
-                }
-            }
-        }
-        
-        // Swipeable pages with grids
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            pageSpacing = 16.dp
-        ) { page ->
-            val startIndex = page * songsPerPage
-            val pageSongs = songs.drop(startIndex).take(songsPerPage)
-            
-            // Dynamic Grid layout chunks
-            val rows = pageSongs.chunked(columns)
-            
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                rows.forEach { rowSongs ->
+                    // Play All and Shuffle buttons
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        rowSongs.forEach { song ->
-                            val isSongEnabled = isOnline || song.id in downloadedSongIds
-                            ListenAgainGridItem(
-                                song = song,
-                                onClick = { if (isSongEnabled) onSongClick(song) },
-                                modifier = Modifier.weight(1f),
-                                isEnabled = isSongEnabled
+                        IconButton(
+                            onClick = onShuffle,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        // Fill remaining space if row is incomplete
-                        repeat(columns - rowSongs.size) {
-                            Spacer(modifier = Modifier.weight(1f))
+                        IconButton(
+                            onClick = onPlayAll,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = "Play All",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
                         }
                     }
-                }
-                
-                // Fill empty rows if page has less than required rows
-                repeat(rowsCount - rows.size) {
+
+                    // Page indicators
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        repeat(columns) {
-                            Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
+                        repeat(pageCount) { index ->
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (pagerState.currentPage == index)
+                                            MaterialTheme.colorScheme.primary
+                                        else
+                                            MaterialTheme.colorScheme.surfaceVariant
+                                    )
+                            )
                         }
                     }
                 }
             }
+            
+            // Swipeable pages with grids
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
+                pageSpacing = 16.dp
+            ) { page ->
+                val startIndex = page * songsPerPage
+                val pageSongs = songs.drop(startIndex).take(songsPerPage)
+                
+                // Dynamic Grid layout chunks
+                val rows = pageSongs.chunked(columns)
+                
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    rows.forEach { rowSongs ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowSongs.forEach { song ->
+                                val isSongEnabled = isOnline || song.id in downloadedSongIds
+                                val gridItemClick: () -> Unit = {
+                                    if (isSongEnabled) {
+                                        onSongClick(song)
+                                    }
+                                }
+                                ListenAgainGridItem(
+                                    song = song,
+                                    onClick = gridItemClick,
+                                    modifier = Modifier.weight(1f),
+                                    isEnabled = isSongEnabled
+                                )
+                            }
+                            // Fill remaining space if row is incomplete
+                            repeat(columns - rowSongs.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+                    
+                    // Fill empty rows if page has less than required rows
+                    repeat(rowsCount - rows.size) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            repeat(columns) {
+                                Spacer(modifier = Modifier.weight(1f).aspectRatio(1f))
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(20.dp))
         }
-        
-        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -1094,11 +1125,12 @@ private fun ListenAgainGridItem(
     modifier: Modifier = Modifier,
     isEnabled: Boolean = true
 ) {
+    val currentShape = LocalThumbnailShape.current.toComposeShape()
     Card(
         onClick = onClick,
         enabled = isEnabled,
         modifier = modifier.aspectRatio(1f).alpha(if (isEnabled) 1f else 0.4f),
-        shape = RoundedCornerShape(16.dp),
+        shape = currentShape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         )
@@ -1157,81 +1189,83 @@ private fun QuickPicksSection(
     isOnline: Boolean = true,
     downloadedSongIds: Set<String> = emptySet()
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
         ) {
-            Column {
-                Text(
-                    text = "Quick Picks",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                Text(
-                    text = "Based on your listening",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            // Play All and Shuffle buttons
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onSeeAllClick) {
+                Column {
                     Text(
-                        text = "See all",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "Quick Picks",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "Based on your listening",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(
-                    onClick = onShuffle,
-                    modifier = Modifier.size(36.dp)
+
+                // Play All and Shuffle buttons
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
+                    TextButton(onClick = onSeeAllClick) {
+                        Text(
+                            text = "See all",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(
+                        onClick = onShuffle,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    FilledIconButton(
+                        onClick = onPlayAll,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Play All",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
-                FilledIconButton(
-                    onClick = onPlayAll,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = "Play All",
-                        modifier = Modifier.size(20.dp)
+            }
+
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(songs.take(15), key = { it.id }, contentType = { "song" }) { song ->
+                    val isSongEnabled = isOnline || song.id in downloadedSongIds
+                    QuickPickCard(
+                        song = song,
+                        onClick = { if (isSongEnabled) onSongClick(song) },
+                        isEnabled = isSongEnabled
                     )
                 }
             }
-        }
 
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(songs.take(15), key = { it.id }, contentType = { "song" }) { song ->
-                val isSongEnabled = isOnline || song.id in downloadedSongIds
-                QuickPickCard(
-                    song = song,
-                    onClick = { if (isSongEnabled) onSongClick(song) },
-                    isEnabled = isSongEnabled
-                )
-            }
+            Spacer(modifier = Modifier.height(20.dp))
         }
-
-        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -1241,13 +1275,13 @@ private fun QuickPickCard(
     onClick: () -> Unit,
     isEnabled: Boolean = true
 ) {
-    val screenDims = rememberScreenDimensions()
-    val cw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
+    val cw = Dimens.cardWidth
+    val currentShape = LocalThumbnailShape.current.toComposeShape()
     Card(
         onClick = onClick,
         enabled = isEnabled,
         modifier = Modifier.width(cw).alpha(if (isEnabled) 1f else 0.4f),
-        shape = RoundedCornerShape(16.dp),
+        shape = currentShape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         ),
@@ -1259,7 +1293,7 @@ private fun QuickPickCard(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier
                     .size(cw)
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+                    .clip(currentShape),
                 contentDescription = song.title
             )
             
@@ -1313,115 +1347,117 @@ private fun SongSection(
     isOnline: Boolean = true,
     downloadedSongIds: Set<String> = emptySet()
 ) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        // Section Header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-                subtitle?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Action buttons
+            // Section Header
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Shuffle button
-                IconButton(
-                    onClick = onShuffle,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                // Play All button
-                IconButton(
-                    onClick = onPlayAll,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = "Play All",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                // See all button
-                TextButton(onClick = onSeeAllClick) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "See all",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
+                    subtitle?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-            }
-        }
 
-        // Song Cards based on style
-        when (cardStyle) {
-            CardStyle.LARGE_SQUARE -> {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                // Action buttons
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(songs.take(10), key = { it.id }, contentType = { "song" }) { song ->
-                        val isSongEnabled = isOnline || song.id in downloadedSongIds
-                        LargeSongCard(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
+                    // Shuffle button
+                    IconButton(
+                        onClick = onShuffle,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+
+                    // Play All button
+                    IconButton(
+                        onClick = onPlayAll,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.PlayArrow,
+                            contentDescription = "Play All",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    // See all button
+                    TextButton(onClick = onSeeAllClick) {
+                        Text(
+                            text = "See all",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            // Song Cards based on style
+            when (cardStyle) {
+                CardStyle.LARGE_SQUARE -> {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        items(songs.take(10), key = { it.id }, contentType = { "song" }) { song ->
+                            val isSongEnabled = isOnline || song.id in downloadedSongIds
+                            LargeSongCard(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
+                        }
+                    }
+                }
+                
+                CardStyle.MEDIUM_CARD -> {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(songs.take(12), key = { it.id }, contentType = { "song" }) { song ->
+                            val isSongEnabled = isOnline || song.id in downloadedSongIds
+                            MediumSongCard(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
+                        }
+                    }
+                }
+                
+                CardStyle.COMPACT_ROW -> {
+                    Column(
+                        modifier = Modifier.padding(horizontal = Dimens.screenPadding),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        songs.take(8).forEach { song ->
+                            val isSongEnabled = isOnline || song.id in downloadedSongIds
+                            CompactSongRow(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
+                        }
                     }
                 }
             }
             
-            CardStyle.MEDIUM_CARD -> {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(songs.take(12), key = { it.id }, contentType = { "song" }) { song ->
-                        val isSongEnabled = isOnline || song.id in downloadedSongIds
-                        MediumSongCard(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
-                    }
-                }
-            }
-            
-            CardStyle.COMPACT_ROW -> {
-                Column(
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    songs.take(8).forEach { song ->
-                        val isSongEnabled = isOnline || song.id in downloadedSongIds
-                        CompactSongRow(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
-                    }
-                }
-            }
+            Spacer(modifier = Modifier.height(24.dp))
         }
-        
-        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
@@ -1438,8 +1474,7 @@ private fun LargeSongCard(
     onClick: () -> Unit,
     isEnabled: Boolean = true
 ) {
-    val screenDims = rememberScreenDimensions()
-    val lcw = ResponsiveDimensions.largeCardWidth(screenDims.widthDp)
+    val lcw = Dimens.largeCardWidth
     Column(
         modifier = Modifier
             .width(lcw)
@@ -1450,7 +1485,7 @@ private fun LargeSongCard(
         Box(
             modifier = Modifier
                 .size(lcw)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(LocalThumbnailShape.current.toComposeShape())
         ) {
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,
@@ -1524,8 +1559,7 @@ private fun MediumSongCard(
     onClick: () -> Unit,
     isEnabled: Boolean = true
 ) {
-    val screenDims = rememberScreenDimensions()
-    val mcw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
+    val mcw = Dimens.cardWidth
     Column(
         modifier = Modifier
             .width(mcw)
@@ -1533,9 +1567,10 @@ private fun MediumSongCard(
             .clickable(enabled = isEnabled, onClick = onClick)
     ) {
         // Album art
+        val currentShape = LocalThumbnailShape.current.toComposeShape()
         ElevatedCard(
             modifier = Modifier.size(mcw),
-            shape = RoundedCornerShape(16.dp),
+            shape = currentShape,
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
         ) {
             SongThumbnail(
@@ -1595,7 +1630,7 @@ private fun CompactSongRow(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier
                     .size(56.dp)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .clip(LocalThumbnailShape.current.toComposeShape()),
                 contentDescription = song.title
             )
             
@@ -1718,8 +1753,7 @@ private fun ShimmerSongSection() {
 
 @Composable
 private fun ShimmerSongCard(brush: Brush) {
-    val screenDims = rememberScreenDimensions()
-    val cw = ResponsiveDimensions.cardWidth(screenDims.widthDp)
+    val cw = Dimens.cardWidth
     Column(
         modifier = Modifier.width(cw)
     ) {

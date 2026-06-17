@@ -125,6 +125,8 @@ class PlaybackService : MediaSessionService() {
     
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
+    private var player1: ExoPlayer? = null
+    private var player2: ExoPlayer? = null
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var currentArtwork: Bitmap? = null
@@ -156,38 +158,40 @@ class PlaybackService : MediaSessionService() {
 
     
     private fun initializePlayer() {
-        // Build ExoPlayer with proper audio configuration and buffer settings
-            // Apple Music-style Audio Attributes
-            val audioAttributes = AudioAttributes.Builder()
-                .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                .setUsage(C.USAGE_MEDIA)
-                .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
-                .build()
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val sharedAudioSessionId = audioManager.generateAudioSessionId()
 
-            val mediaSourceFactory = buildMediaSourceFactory()
+        // Apple Music-style Audio Attributes
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+            .setUsage(C.USAGE_MEDIA)
+            .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
+            .build()
 
-            player = ExoPlayer.Builder(this)
-                .setAudioAttributes(audioAttributes, true)
-                .setHandleAudioBecomingNoisy(true)
-                .setWakeMode(C.WAKE_MODE_NETWORK)
-                .setMediaSourceFactory(mediaSourceFactory)
-                .setRenderersFactory(
-                    object : DefaultRenderersFactory(this@PlaybackService) {
-                        init {
-                            setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
-                            setEnableAudioFloatOutput(true)
-                        }
-                        override fun buildAudioSink(
-                            context: Context,
-                            enableFloatOutput: Boolean,
-                            enableAudioTrackPlaybackParams: Boolean
-                        ): androidx.media3.exoplayer.audio.AudioSink {
-                            return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                                .setEnableFloatOutput(enableFloatOutput)
-                                .build()
-                        }
+        val mediaSourceFactory = buildMediaSourceFactory()
+
+        val p1 = ExoPlayer.Builder(this)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setRenderersFactory(
+                object : DefaultRenderersFactory(this@PlaybackService) {
+                    init {
+                        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+                        setEnableAudioFloatOutput(true)
                     }
-                )
+                    override fun buildAudioSink(
+                        context: Context,
+                        enableFloatOutput: Boolean,
+                        enableAudioTrackPlaybackParams: Boolean
+                    ): androidx.media3.exoplayer.audio.AudioSink {
+                        return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                            .setEnableFloatOutput(enableFloatOutput)
+                            .build()
+                    }
+                }
+            )
             .setLoadControl(
                 androidx.media3.exoplayer.DefaultLoadControl.Builder()
                     .setBufferDurationsMs(
@@ -200,16 +204,56 @@ class PlaybackService : MediaSessionService() {
                     .build()
             )
             .build()
-            .apply {
-                // Set up player listener for state changes
-                addListener(createPlayerListener())
 
-                // Defer audio engine init off main thread to reduce startup jank
-                val sessionId = audioSessionId
-                serviceScope.launch(Dispatchers.Default) {
-                    audioEngine.initialize(sessionId)
+        val p2 = ExoPlayer.Builder(this)
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .setRenderersFactory(
+                object : DefaultRenderersFactory(this@PlaybackService) {
+                    init {
+                        setExtensionRendererMode(EXTENSION_RENDERER_MODE_PREFER)
+                        setEnableAudioFloatOutput(true)
+                    }
+                    override fun buildAudioSink(
+                        context: Context,
+                        enableFloatOutput: Boolean,
+                        enableAudioTrackPlaybackParams: Boolean
+                    ): androidx.media3.exoplayer.audio.AudioSink {
+                        return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                            .setEnableFloatOutput(enableFloatOutput)
+                            .build()
+                    }
                 }
-            }
+            )
+            .setLoadControl(
+                androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(
+                        MIN_BUFFER_MS.toInt(),
+                        MAX_BUFFER_MS.toInt(),
+                        BUFFER_FOR_PLAYBACK_MS.toInt(),
+                        BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS.toInt()
+                    )
+                    .setBackBuffer(30_000, false)
+                    .build()
+            )
+            .build()
+
+        p1.setAudioSessionId(sharedAudioSessionId)
+        p1.addListener(createPlayerListener(p1))
+        player1 = p1
+
+        p2.setAudioSessionId(sharedAudioSessionId)
+        p2.addListener(createPlayerListener(p2))
+        player2 = p2
+
+        player = player1
+
+        // Defer audio engine init off main thread to reduce startup jank
+        serviceScope.launch(Dispatchers.Default) {
+            audioEngine.initialize(sharedAudioSessionId)
+        }
 
         // Create MediaSession for system integration with custom session commands
         mediaSession = player?.let { exoPlayer ->
@@ -219,7 +263,7 @@ class PlaybackService : MediaSessionService() {
                 .build()
         }
 
-        Log.d(TAG, "✅ Player initialized with custom buffer config")
+        Log.d(TAG, "✅ Dual players initialized with shared audioSessionId: $sharedAudioSessionId")
     }
 
     private fun buildMediaSourceFactory(): DefaultMediaSourceFactory {
@@ -257,14 +301,19 @@ class PlaybackService : MediaSessionService() {
 
         skipSilenceJob = serviceScope.launch {
             settingsDataStore.skipSilence.collect { enabled ->
-                player?.skipSilenceEnabled = enabled
+                player1?.skipSilenceEnabled = enabled
+                player2?.skipSilenceEnabled = enabled
                 Log.d(TAG, "🔇 Skip silence: $enabled")
             }
         }
 
         gaplessPlaybackJob = serviceScope.launch {
             settingsDataStore.gaplessPlayback.collect { enabled ->
-                player?.pauseAtEndOfMediaItems = !enabled
+                // Always set to false to ensure continuous playback. Disabling gapless transitions 
+                // in ExoPlayer's pre-buffering pipeline is handled by player configurations,
+                // but setting pauseAtEndOfMediaItems to true incorrectly halts all playback.
+                player1?.pauseAtEndOfMediaItems = false
+                player2?.pauseAtEndOfMediaItems = false
                 Log.d(TAG, "🎚️ Gapless playback: $enabled")
             }
         }
@@ -337,42 +386,87 @@ class PlaybackService : MediaSessionService() {
     private fun runCrossfadeTransition(currentPlayer: ExoPlayer, durationMs: Long) {
         if (isCrossfadeTransitionRunning) return
 
+        val nextPlayer = if (currentPlayer == player1) player2 else player1
+        if (nextPlayer == null) return
+
+        val nextMediaItem = if (currentPlayer.mediaItemCount > 1) {
+            currentPlayer.getMediaItemAt(1)
+        } else {
+            null
+        }
+
+        if (nextMediaItem == null) {
+            Log.d(TAG, "No next media item found in currentPlayer playlist to crossfade to.")
+            return
+        }
+
         crossfadeTransitionJob?.cancel()
-        // Default inheritable dispatcher is Main from serviceScope
         crossfadeTransitionJob = serviceScope.launch {
             isCrossfadeTransitionRunning = true
-            val halfDuration = (durationMs / 2L).coerceAtLeast(240L)
-            val steps = 8
-            val stepDelay = (halfDuration / steps).coerceAtLeast(16L)
+            Log.d(TAG, "🔀 Starting true overlapping crossfade over ${durationMs}ms...")
+
+            // 1. Prepare and start nextPlayer at 0 volume
+            nextPlayer.volume = 0f
+            nextPlayer.setMediaItem(nextMediaItem)
+            nextPlayer.prepare()
+            nextPlayer.play()
+
+            // 2. Switch mediaSession's player to nextPlayer
+            mediaSession?.setPlayer(nextPlayer)
+            player = nextPlayer // Keep player reference pointing to active player
+
+            // 3. Simultaneously fade out currentPlayer and fade in nextPlayer
+            val steps = 20
+            val stepDelay = (durationMs / steps).coerceAtLeast(16L)
 
             try {
-                for (step in steps downTo 0) {
-                    currentPlayer.volume = step.toFloat() / steps.toFloat()
+                for (step in 1..steps) {
+                    val progress = step.toFloat() / steps.toFloat()
+                    currentPlayer.volume = 1f - progress
+                    nextPlayer.volume = progress
                     delay(stepDelay)
                 }
-
-                if (currentPlayer.hasNextMediaItem()) {
-                    currentPlayer.seekToNext()
-                    if (!currentPlayer.isPlaying) {
-                        currentPlayer.play()
-                    }
-                }
-
-                for (step in 0..steps) {
-                    currentPlayer.volume = step.toFloat() / steps.toFloat()
-                    delay(stepDelay)
-                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during crossfade step delay", e)
             } finally {
-                currentPlayer.volume = 1f
+                // Ensure target volumes are set correctly
+                currentPlayer.volume = 0f
+                currentPlayer.stop()
+                currentPlayer.clearMediaItems()
+                
+                nextPlayer.volume = 1f
                 isCrossfadeTransitionRunning = false
+                Log.d(TAG, "🔀 Crossfade transition completed.")
             }
         }
     }
     
 
     
-    private fun createPlayerListener() = object : Player.Listener {
+    private fun createPlayerListener(targetPlayer: ExoPlayer) = object : Player.Listener {
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            if (targetPlayer != player) return
+            Log.d(TAG, "🎵 Audio session ID changed: $audioSessionId")
+            serviceScope.launch(Dispatchers.Default) {
+                audioEngine.initialize(audioSessionId)
+            }
+        }
+
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            if (targetPlayer != player) return
+            if (targetPlayer.playbackState == Player.STATE_ENDED) {
+                val nextIndex = targetPlayer.currentMediaItemIndex + 1
+                if (nextIndex < targetPlayer.mediaItemCount) {
+                    Log.d(TAG, "▶️ Service onTimelineChanged: Auto-resuming ended playback at index $nextIndex (count=${targetPlayer.mediaItemCount})")
+                    targetPlayer.seekTo(nextIndex, 0L)
+                    targetPlayer.prepare()
+                    targetPlayer.play()
+                }
+            }
+        }
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (targetPlayer != player) return
             val now = System.currentTimeMillis()
             if (isPlaying) {
                 currentPlaySessionStartTimeMs = now
@@ -387,15 +481,16 @@ class PlaybackService : MediaSessionService() {
         }
         
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (targetPlayer != player) return
             Log.d(TAG, "🎵 Track changed: ${mediaItem?.mediaMetadata?.title}")
 
             if (!isCrossfadeTransitionRunning) {
-                player?.volume = 1f
+                targetPlayer.volume = 1f
             }
             
             // ════════ TELEMETRY COLLECTION ════════
             val now = System.currentTimeMillis()
-            if (player?.isPlaying == true && currentPlaySessionStartTimeMs > 0) {
+            if (targetPlayer.isPlaying && currentPlaySessionStartTimeMs > 0) {
                 accumulatedPlayDurationMs += (now - currentPlaySessionStartTimeMs)
                 currentPlaySessionStartTimeMs = now
             }
@@ -404,37 +499,34 @@ class PlaybackService : MediaSessionService() {
                 val prevSongId = prevItem.mediaId
                 if (prevSongId.isNotBlank() && accumulatedPlayDurationMs > 0) {
                     val playDurationSecs = (accumulatedPlayDurationMs / 1000).toInt().coerceAtLeast(0)
-                    
-                    // We need the total duration of the previous item.
-                    // If the user skipped, we might not have it in the ExoPlayer state accurately right now,
-                    // but we can extract it from the queue/metadata if available.
                     val durationMs = prevItem.mediaMetadata.extras?.getLong("duration_ms") ?: 0L
                     val totalDurationSecs = (durationMs / 1000).toInt()
                     
                     val completed = totalDurationSecs > 0 && 
                             playDurationSecs.toFloat() / totalDurationSecs >= 0.8f
-                    
-                    // Construct song object from MediaItem for history
-                    val song = Song(
-                        id = prevSongId,
-                        title = prevItem.mediaMetadata.title?.toString() ?: "Unknown",
-                        artist = prevItem.mediaMetadata.artist?.toString() ?: "Unknown",
-                        album = prevItem.mediaMetadata.albumTitle?.toString(),
-                        duration = totalDurationSecs,
-                        thumbnailUrl = prevItem.mediaMetadata.artworkUri?.toString() ?: ""
-                    )
 
-                    serviceScope.launch(Dispatchers.IO) {
-                        try {
-                            historyRepository.recordPlayback(
-                                song,
-                                playDuration = playDurationSecs,
-                                completed = completed,
-                                totalDuration = totalDurationSecs
-                            )
-                            Log.d(TAG, "📊 Telemetry recorded: ${song.title} | Dur: ${playDurationSecs}s | Completed: $completed")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Failed to record telemetry", e)
+                    if (playDurationSecs >= 30 || completed) {
+                        val song = Song(
+                            id = prevSongId,
+                            title = prevItem.mediaMetadata.title?.toString() ?: "Unknown",
+                            artist = prevItem.mediaMetadata.artist?.toString() ?: "Unknown",
+                            album = prevItem.mediaMetadata.albumTitle?.toString(),
+                            duration = totalDurationSecs,
+                            thumbnailUrl = prevItem.mediaMetadata.artworkUri?.toString() ?: ""
+                        )
+
+                        serviceScope.launch(Dispatchers.IO) {
+                            try {
+                                historyRepository.recordPlayback(
+                                    song,
+                                    playDuration = playDurationSecs,
+                                    completed = completed,
+                                    totalDuration = totalDurationSecs
+                                )
+                                Log.d(TAG, "📊 Telemetry recorded: ${song.title} | Dur: ${playDurationSecs}s | Completed: $completed")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "❌ Failed to record telemetry", e)
+                            }
                         }
                     }
                 }
@@ -443,7 +535,7 @@ class PlaybackService : MediaSessionService() {
             // Reset for the new track
             lastHistoryMediaItem = mediaItem
             accumulatedPlayDurationMs = 0L
-            if (player?.isPlaying == true) {
+            if (targetPlayer.isPlaying) {
                 currentPlaySessionStartTimeMs = System.currentTimeMillis()
             } else {
                 currentPlaySessionStartTimeMs = 0L
@@ -456,13 +548,14 @@ class PlaybackService : MediaSessionService() {
                     val isLiked = withContext(Dispatchers.IO) {
                         runCatching { songRepository.isLiked(songId) }.getOrDefault(false)
                     }
-                    val currentRepeatMode = player?.repeatMode ?: Player.REPEAT_MODE_OFF
+                    val currentRepeatMode = targetPlayer.repeatMode
                     mediaSession?.setCustomLayout(updateCustomLayout(isLiked, currentRepeatMode))
                 }
             }
         }
         
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (targetPlayer != player) return
             when (playbackState) {
                 Player.STATE_READY -> {
                     // Reset retry counter on successful playback
@@ -484,9 +577,9 @@ class PlaybackService : MediaSessionService() {
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) { }
         
         override fun onRepeatModeChanged(repeatMode: Int) {
+            if (targetPlayer != player) return
             // Update custom layout to reflect new repeat mode
-            val currentPlayer = player ?: return
-            val currentMediaItem = currentPlayer.currentMediaItem
+            val currentMediaItem = targetPlayer.currentMediaItem
             val songId = currentMediaItem?.mediaId.orEmpty()
             
             serviceScope.launch {
@@ -504,6 +597,7 @@ class PlaybackService : MediaSessionService() {
         }
         
         override fun onPlayerError(error: PlaybackException) {
+            if (targetPlayer != player) return
             Log.e(TAG, "❌ Player error: ${error.message}", error)
             handlePlaybackError(error)
         }
@@ -518,7 +612,9 @@ class PlaybackService : MediaSessionService() {
         val isNetworkError = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE
+            error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            error.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED
 
         lastErrorCode = error.errorCode
 
@@ -556,18 +652,16 @@ class PlaybackService : MediaSessionService() {
             return
         }
 
-        when {
-            // HTTP errors (403/410) - URL likely expired, don't retry
-            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> {
-                Log.d(TAG, "❌ HTTP error (likely expired URL), waiting for URL refresh callback")
-                retryAttempts = 0
-                p.pause()
-            }
-
-            // Corrupt/missing stream URL cases should also refresh the current track URL.
+        val isExpiredUrlError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
             error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
-                error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> {
-                Log.d(TAG, "❌ Stream URL invalid/missing, waiting for URL refresh callback")
+            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
+            error.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED
+
+        when {
+            // Expired stream URL errors - URL likely expired, pause and wait for URL refresh callback
+            isExpiredUrlError -> {
+                Log.d(TAG, "❌ Expired stream URL error (${error.errorCode}), waiting for URL refresh callback")
                 retryAttempts = 0
                 p.pause()
             }
@@ -716,14 +810,14 @@ class PlaybackService : MediaSessionService() {
         stopCrossfadeMonitor()
         serviceScope.cancel()
         mediaNotificationProvider?.release()
-        mediaSession?.run {
-            player.release()
-            release()
-        }
-
-        audioEngine.release()
+        player1?.release()
+        player2?.release()
+        player1 = null
+        player2 = null
         player = null
+        mediaSession?.release()
         mediaSession = null
+        audioEngine.release()
         super.onDestroy()
     }
     

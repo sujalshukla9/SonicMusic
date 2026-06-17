@@ -34,6 +34,15 @@ interface PlaybackHistoryDao {
     @Insert
     suspend fun insertPlayback(history: PlaybackHistoryEntity)
 
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun insertHistoryEntry(history: PlaybackHistoryEntity)
+
+    @Query("DELETE FROM playback_history WHERE id = :id")
+    suspend fun deleteHistoryEntry(id: Long)
+
+    @Query("DELETE FROM playback_history WHERE playedAt < :timestamp")
+    suspend fun pruneHistoryOlderThan(timestamp: Long)
+
     @Query("DELETE FROM playback_history WHERE id NOT IN (SELECT id FROM playback_history ORDER BY playedAt DESC LIMIT :keepCount)")
     suspend fun pruneOldHistory(keepCount: Int)
 

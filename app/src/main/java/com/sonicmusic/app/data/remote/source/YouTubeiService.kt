@@ -1035,15 +1035,27 @@ class YouTubeiService @Inject constructor(
                 } else null
             } else null
 
+            var cardAlbumName: String? = null
+            var cardAlbumBrowseId: String? = null
+            if (cardSubtitleRuns != null) {
+                val refs = extractArtistAndAlbumRefs(cardSubtitleRuns)
+                cardAlbumName = refs.album?.name
+                cardAlbumBrowseId = refs.album?.browseId
+            }
+
             return Song(
                 id = id,
                 title = titleText,
                 artist = cleanArtistName(cardArtist),
                 artistId = cardArtistId,
+                album = cardAlbumName,
+                albumId = cardAlbumBrowseId,
                 duration = 0,
                 thumbnailUrl = thumbnailUrl,
                 category = "Mixed",
-                contentType = contentType
+                contentType = contentType,
+                albumBrowseId = cardAlbumBrowseId,
+                albumName = cardAlbumName
             )
          } catch (e: Exception) {
              return null
@@ -1112,6 +1124,14 @@ class YouTubeiService @Inject constructor(
                 artistBrowseId = if (artistIds.isNotEmpty()) artistIds.joinToString(",") else null
             }
             
+            var albumName: String? = null
+            var albumBrowseId: String? = null
+            if (subtitleRuns != null) {
+                val refs = extractArtistAndAlbumRefs(subtitleRuns)
+                albumName = refs.album?.name
+                albumBrowseId = refs.album?.browseId
+            }
+            
             // Get ID
             val navigationEndpoint = item.optJSONObject("navigationEndpoint") 
                 ?: item.optJSONObject("overlay")?.optJSONObject("musicItemThumbnailOverlayRenderer")
@@ -1150,10 +1170,14 @@ class YouTubeiService @Inject constructor(
                 title = title,
                 artist = cleanArtistName(artist),
                 artistId = artistBrowseId,
+                album = albumName,
+                albumId = albumBrowseId,
                 duration = 0,
                 thumbnailUrl = thumbnailUrl,
                 category = "Mixed",
-                contentType = contentType
+                contentType = contentType,
+                albumBrowseId = albumBrowseId,
+                albumName = albumName
             )
         } catch (e: Exception) {
             return null
@@ -1190,6 +1214,8 @@ class YouTubeiService @Inject constructor(
             var artist = ""
             var artistId: String? = null
             var durationText = "0:00"
+            var albumName: String? = null
+            var albumBrowseId: String? = null
             
             if (flexColumns != null) {
                 // First column: Title
@@ -1215,6 +1241,38 @@ class YouTubeiService @Inject constructor(
                         } else {
                             // Fallback: use first non-separator run
                             extractFirstNonSeparatorRun(artistColumn)
+                        }
+                        
+                        if (refs.album != null) {
+                            albumName = refs.album.name
+                            albumBrowseId = refs.album.browseId
+                        }
+                    }
+                }
+                
+                // Fallback to third column if album not found in the second column
+                if (albumName.isNullOrBlank() && flexColumns.length() > 2) {
+                    val albumColumnRuns = flexColumns.optJSONObject(2)
+                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                        ?.optJSONObject("text")
+                        ?.optJSONArray("runs")
+                    if (albumColumnRuns != null && albumColumnRuns.length() > 0) {
+                        val albumRefs = extractArtistAndAlbumRefs(albumColumnRuns)
+                        if (albumRefs.album != null) {
+                            albumName = albumRefs.album.name
+                            albumBrowseId = albumRefs.album.browseId
+                        } else {
+                            val firstRun = albumColumnRuns.optJSONObject(0)
+                            if (firstRun != null) {
+                                val text = firstRun.optString("text", "").trim()
+                                if (text.isNotEmpty()) {
+                                    albumName = text
+                                    val browseId = firstRun.optJSONObject("navigationEndpoint")
+                                        ?.optJSONObject("browseEndpoint")
+                                        ?.optString("browseId", "")?.trim()
+                                    albumBrowseId = browseId?.takeIf { it.isNotBlank() }
+                                }
+                            }
                         }
                     }
                 }
@@ -1258,10 +1316,14 @@ class YouTubeiService @Inject constructor(
                 title = title,
                 artist = cleanArtistName(artist),
                 artistId = artistId,
+                album = albumName,
+                albumId = albumBrowseId,
                 duration = parseDuration(durationText),
                 thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
                 category = "Music",
-                contentType = contentType
+                contentType = contentType,
+                albumBrowseId = albumBrowseId,
+                albumName = albumName
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing music item", e)
@@ -1454,7 +1516,8 @@ class YouTubeiService @Inject constructor(
      * Extract the first non-separator run text from a JSONArray of runs.
      * Skips separators like " • ", " · ", " | ", ", " etc.
      */
-    private fun extractFirstNonSeparatorRun(runs: JSONArray): String {
+    private fun extractFirstNonSeparatorRun(runs: JSONArray?): String {
+        if (runs == null) return ""
         for (i in 0 until runs.length()) {
             val text = runs.optJSONObject(i)?.optString("text", "")?.trim() ?: ""
             if (text.isNotBlank() && text != "•" && text != "·" && text != "|" && text != "," && text != " ") {
@@ -2524,11 +2587,562 @@ class YouTubeiService @Inject constructor(
             )
             Result.success(tracks)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to fetch album tracks from Innertube", e)
             Result.failure(e)
         }
     }
-    
+
+    suspend fun getPlaylistDetailsFromInnertube(
+        playlistId: String,
+        limit: Int = 500
+    ): Result<Pair<com.sonicmusic.app.domain.model.Playlist, List<Song>>> = withContext(Dispatchers.IO) {
+        val rawPlaylistId = playlistId.trim()
+        val browseId = if (rawPlaylistId.startsWith("PL") && !rawPlaylistId.startsWith("VL")) "VL$rawPlaylistId" else rawPlaylistId
+        if (browseId.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("Playlist ID is empty"))
+        }
+
+        try {
+            val rawResult = browseRaw(browseId)
+            if (rawResult.isFailure) {
+                return@withContext Result.failure(rawResult.exceptionOrNull() ?: Exception("Failed to fetch playlist raw browse"))
+            }
+            val browseRaw = rawResult.getOrThrow()
+            val json = JSONObject(browseRaw)
+
+            val twoColumn = json.optJSONObject("contents")?.optJSONObject("twoColumnBrowseResultsRenderer")
+            val headerObj = twoColumn?.optJSONObject("header") 
+                ?: json.optJSONObject("header")
+
+            val responsiveHeader = headerObj?.optJSONObject("musicResponsiveHeaderRenderer")
+            val detailHeader = headerObj?.optJSONObject("musicDetailHeaderRenderer")
+            val musicHeader = headerObj?.optJSONObject("musicHeaderRenderer")
+
+            fun extractTextFromRuns(runs: JSONArray?): String? {
+                if (runs == null || runs.length() == 0) return null
+                val sb = java.lang.StringBuilder()
+                for (i in 0 until runs.length()) {
+                    runs.optJSONObject(i)?.optString("text")?.let { sb.append(it) }
+                }
+                return sb.toString().trim().takeIf { it.isNotEmpty() }
+            }
+
+            val title = responsiveHeader?.optJSONObject("title")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+                ?: detailHeader?.optJSONObject("title")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+                ?: musicHeader?.optJSONObject("title")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+                ?: "YouTube Music Playlist"
+
+            val description = responsiveHeader?.optJSONObject("description")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+                ?: detailHeader?.optJSONObject("description")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+                ?: detailHeader?.optJSONObject("subtitle")?.optJSONArray("runs")?.let { extractTextFromRuns(it) }
+
+            val thumbnailObj = responsiveHeader?.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")
+                ?: detailHeader?.optJSONObject("thumbnail")?.optJSONObject("croppedSquareThumbnailRenderer")
+                ?: detailHeader?.optJSONObject("thumbnail")?.optJSONObject("musicThumbnailRenderer")
+            val thumbnailsArray = thumbnailObj?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+            
+            var coverArtUrl: String? = null
+            if (thumbnailsArray != null && thumbnailsArray.length() > 0) {
+                coverArtUrl = thumbnailsArray.optJSONObject(thumbnailsArray.length() - 1)?.optString("url")
+            }
+
+            val songs = sanitizeSongResults(
+                songs = parseBrowseResponse(browseRaw),
+                limit = limit,
+                offset = 0
+            )
+
+            val playlist = com.sonicmusic.app.domain.model.Playlist(
+                id = 0,
+                name = title,
+                description = description,
+                coverArtUrl = coverArtUrl,
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis(),
+                songCount = songs.size,
+                songs = songs,
+                isLocal = false,
+                remoteId = rawPlaylistId
+            )
+
+            Result.success(Pair(playlist, songs))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse playlist details from Innertube", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun browseRaw(browseId: String): Result<String> = withContext(Dispatchers.IO) {
+        val normalizedBrowseId = browseId.trim()
+        if (normalizedBrowseId.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("Browse ID is empty"))
+        }
+        try {
+            val region = getRequestRegion()
+            val language = getLanguageForRegion(region)
+            val browseBody = Innertube.webRemixBody(language, region) {
+                put("browseId", normalizedBrowseId)
+            }
+            val browseRequest = Innertube.musicPost(
+                endpoint = Innertube.BROWSE,
+                body = browseBody,
+                acceptLanguage = getAcceptLanguageHeader(language, region)
+            )
+            val browseResponse = client.newCall(browseRequest).execute()
+            if (!browseResponse.isSuccessful) {
+                return@withContext Result.failure(Exception("Innertube browse failed: ${browseResponse.code}"))
+            }
+            val browseRaw = browseResponse.body?.string()
+                ?: return@withContext Result.failure(Exception("Empty response body"))
+            Result.success(browseRaw)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAlbumDetailsFromInnertube(
+        albumBrowseId: String
+    ): Result<com.sonicmusic.app.domain.model.AlbumDetails> = withContext(Dispatchers.IO) {
+        val browseId = albumBrowseId.trim()
+        Log.d(TAG, "🔍 getAlbumDetailsFromInnertube: ID = $browseId")
+        val rawResult = browseRaw(browseId)
+        if (rawResult.isFailure) {
+            return@withContext Result.failure(rawResult.exceptionOrNull() ?: Exception("Failed to fetch album raw browse"))
+        }
+        val browseRaw = rawResult.getOrThrow()
+        
+        try {
+            val json = JSONObject(browseRaw)
+            
+            // 1. Header parsing (musicResponsiveHeaderRenderer or musicDetailHeaderRenderer)
+            var headerTitle = ""
+            val headerArtists = mutableListOf<String>()
+            var headerYear: String? = null
+            var headerType: String? = null
+            var headerThumbnail = ""
+            var headerTrackCount = 0
+
+            val twoColumn = json.optJSONObject("contents")?.optJSONObject("twoColumnBrowseResultsRenderer")
+
+            val sectionLists = mutableListOf<JSONArray>()
+            twoColumn?.optJSONObject("secondaryContents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+                ?.let(sectionLists::add)
+
+            twoColumn?.optJSONArray("tabs")?.let { tabs ->
+                for (tabIndex in 0 until tabs.length()) {
+                    tabs.optJSONObject(tabIndex)
+                        ?.optJSONObject("tabRenderer")
+                        ?.optJSONObject("content")
+                        ?.optJSONObject("sectionListRenderer")
+                        ?.optJSONArray("contents")
+                        ?.let(sectionLists::add)
+                }
+            }
+
+            json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnBrowseResultsRenderer")
+                ?.optJSONArray("tabs")
+                ?.let { tabs ->
+                    for (tabIndex in 0 until tabs.length()) {
+                        tabs.optJSONObject(tabIndex)
+                            ?.optJSONObject("tabRenderer")
+                            ?.optJSONObject("content")
+                            ?.optJSONObject("sectionListRenderer")
+                            ?.optJSONArray("contents")
+                            ?.let(sectionLists::add)
+                    }
+                }
+
+            val headerFromSectionList = sectionLists.asSequence()
+                .flatMap { sections ->
+                    (0 until sections.length()).asSequence().mapNotNull { sections.optJSONObject(it) }
+                }
+                .firstOrNull { it.has("musicResponsiveHeaderRenderer") || it.has("musicDetailHeaderRenderer") }
+                ?: sectionLists.firstOrNull()?.optJSONObject(0)
+            
+            val headerObj = twoColumn?.optJSONObject("header") 
+                ?: json.optJSONObject("header")
+                ?: headerFromSectionList
+            
+            val responsiveHeader = headerObj?.optJSONObject("musicResponsiveHeaderRenderer")
+            val detailHeader = headerObj?.optJSONObject("musicDetailHeaderRenderer")
+            
+            if (responsiveHeader != null) {
+                Log.d(TAG, "🔍 Found musicResponsiveHeaderRenderer")
+                headerTitle = responsiveHeader.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "").orEmpty()
+                
+                val straplineTextOneRuns = responsiveHeader.optJSONObject("straplineTextOne")?.optJSONArray("runs")
+                val straplineRuns = responsiveHeader.optJSONObject("strapline")?.optJSONArray("runs")
+                val subtitleRuns = responsiveHeader.optJSONObject("subtitle")?.optJSONArray("runs")
+                val secondSubtitleRuns = responsiveHeader.optJSONObject("secondSubtitle")?.optJSONArray("runs")
+                
+                val artistRefs = extractArtistAndAlbumRefs(straplineTextOneRuns ?: straplineRuns ?: subtitleRuns)
+                headerArtists.addAll(artistRefs.artists.map { it.name })
+                
+                if (headerArtists.isEmpty()) {
+                    val fb = extractFirstNonSeparatorRun(straplineTextOneRuns ?: straplineRuns ?: subtitleRuns)
+                    if (fb.isNotBlank()) {
+                        headerArtists.add(fb)
+                    }
+                }
+                
+                val allDetailRuns = mutableListOf<JSONObject>()
+                listOf(subtitleRuns, secondSubtitleRuns, straplineRuns, straplineTextOneRuns).forEach { runs ->
+                    if (runs != null) {
+                        for (idx in 0 until runs.length()) {
+                            runs.optJSONObject(idx)?.let { allDetailRuns.add(it) }
+                        }
+                    }
+                }
+                
+                for (run in allDetailRuns) {
+                    val text = run.optString("text", "").trim()
+                    if (text.isBlank() || text == "•" || text == "·" || text == "|") continue
+                    
+                    if (text.endsWith("songs") || text.endsWith("song") || text.endsWith("tracks") || text.endsWith("track")) {
+                        headerTrackCount = text.split(" ")[0].toIntOrNull() ?: 0
+                    } else if (text.matches(Regex("\\d{4}"))) {
+                        headerYear = text
+                    } else if (text.equals("Album", ignoreCase = true) || text.equals("Single", ignoreCase = true) || text.equals("EP", ignoreCase = true)) {
+                        headerType = text
+                    }
+                }
+                
+                val thumbnails = responsiveHeader.optJSONObject("thumbnail")
+                    ?.optJSONObject("musicThumbnailRenderer")
+                    ?.optJSONObject("thumbnail")
+                    ?.optJSONArray("thumbnails")
+                headerThumbnail = extractHighestQualityThumbnail(thumbnails, "")
+                
+            } else if (detailHeader != null) {
+                Log.d(TAG, "🔍 Found musicDetailHeaderRenderer")
+                headerTitle = detailHeader.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "").orEmpty()
+                
+                val subtitleRuns = detailHeader.optJSONObject("subtitle")?.optJSONArray("runs")
+                val secondSubtitleRuns = detailHeader.optJSONObject("secondSubtitle")?.optJSONArray("runs")
+                
+                val artistRefs = extractArtistAndAlbumRefs(subtitleRuns)
+                headerArtists.addAll(artistRefs.artists.map { it.name })
+                
+                if (headerArtists.isEmpty() && subtitleRuns != null) {
+                    val fb = extractFirstNonSeparatorRun(subtitleRuns)
+                    if (fb.isNotBlank()) {
+                        headerArtists.add(fb)
+                    }
+                }
+                
+                val allDetailRuns = mutableListOf<JSONObject>()
+                listOf(subtitleRuns, secondSubtitleRuns).forEach { runs ->
+                    if (runs != null) {
+                        for (idx in 0 until runs.length()) {
+                            runs.optJSONObject(idx)?.let { allDetailRuns.add(it) }
+                        }
+                    }
+                }
+                
+                for (run in allDetailRuns) {
+                    val text = run.optString("text", "").trim()
+                    if (text.isBlank() || text == "•" || text == "·" || text == "|") continue
+                    
+                    if (text.endsWith("songs") || text.endsWith("song") || text.endsWith("tracks") || text.endsWith("track")) {
+                        headerTrackCount = text.split(" ")[0].toIntOrNull() ?: 0
+                    } else if (text.matches(Regex("\\d{4}"))) {
+                        headerYear = text
+                    } else if (text.equals("Album", ignoreCase = true) || text.equals("Single", ignoreCase = true) || text.equals("EP", ignoreCase = true)) {
+                        headerType = text
+                    }
+                }
+                
+                val thumbnails = detailHeader.optJSONObject("thumbnail")
+                    ?.optJSONObject("croppedSquareThumbnailRenderer")
+                    ?.optJSONObject("thumbnail")
+                    ?.optJSONArray("thumbnails")
+                headerThumbnail = extractHighestQualityThumbnail(thumbnails, "")
+            }
+
+            if (headerTitle.isBlank()) headerTitle = "Album"
+            
+            // 2. Track List (Songs section)
+            val songsList = mutableListOf<com.sonicmusic.app.domain.model.AlbumTrack>()
+            var nativeVideos = mutableListOf<com.sonicmusic.app.domain.model.AlbumVideo>()
+
+            for (sectionList in sectionLists) {
+                for (i in 0 until sectionList.length()) {
+                    val section = sectionList.optJSONObject(i) ?: continue
+                    
+                    val musicShelf = section.optJSONObject("musicShelfRenderer")
+                    if (musicShelf != null) {
+                        val contents = musicShelf.optJSONArray("contents")
+                        if (contents != null) {
+                            for (j in 0 until contents.length()) {
+                                val itemWrapper = contents.optJSONObject(j) ?: continue
+                                val item = itemWrapper.optJSONObject("musicResponsiveListItemRenderer") ?: continue
+                                
+                                val videoId = sequenceOf(
+                                    item.optJSONObject("playlistItemData")?.optString("videoId", ""),
+                                    item.optJSONObject("overlay")
+                                        ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+                                        ?.optJSONObject("content")
+                                        ?.optJSONObject("musicPlayButtonRenderer")
+                                        ?.optJSONObject("playNavigationEndpoint")
+                                        ?.optJSONObject("watchEndpoint")
+                                        ?.optString("videoId", "")
+                                ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
+                                
+                                if (videoId.isBlank()) {
+                                    Log.w(TAG, "⚠️ Track at index $j has no videoId")
+                                    continue
+                                }
+                                
+                                val flexColumns = item.optJSONArray("flexColumns") ?: continue
+                                if (flexColumns.length() == 0) continue
+                                
+                                val title = extractMusicText(flexColumns.optJSONObject(0))
+                                
+                                val trackArtists = mutableListOf<String>()
+                                if (flexColumns.length() > 1) {
+                                    val runs = flexColumns.optJSONObject(1)
+                                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                                        ?.optJSONObject("text")
+                                        ?.optJSONArray("runs")
+                                    val refs = extractArtistAndAlbumRefs(runs)
+                                    if (refs.artists.isNotEmpty()) {
+                                        trackArtists.addAll(refs.artists.map { it.name })
+                                    } else {
+                                        val fb = if (runs != null) extractFirstNonSeparatorRun(runs) else ""
+                                        if (fb.isNotBlank()) trackArtists.add(fb)
+                                    }
+                                }
+                                if (trackArtists.isEmpty()) {
+                                    trackArtists.addAll(headerArtists)
+                                }
+                                
+                                var durationText = "0:00"
+                                val fixedColumns = item.optJSONArray("fixedColumns")
+                                if (fixedColumns != null && fixedColumns.length() > 0) {
+                                    durationText = fixedColumns.optJSONObject(0)
+                                        ?.optJSONObject("musicResponsiveListItemFixedColumnRenderer")
+                                        ?.optJSONObject("text")
+                                        ?.optJSONArray("runs")
+                                        ?.optJSONObject(0)
+                                        ?.optString("text", "0:00") ?: "0:00"
+                                }
+                                
+                                val parsedTrackNumber = item.optJSONObject("indexText")
+                                    ?.optJSONArray("runs")
+                                    ?.optJSONObject(0)
+                                    ?.optString("text", "")
+                                    ?.toIntOrNull() ?: (j + 1)
+                                
+                                songsList.add(
+                                    com.sonicmusic.app.domain.model.AlbumTrack(
+                                        videoId = videoId,
+                                        trackNumber = parsedTrackNumber,
+                                        title = title,
+                                        durationText = durationText,
+                                        artists = trackArtists,
+                                        albumBrowseId = browseId,
+                                        albumName = headerTitle
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    
+                    val carouselShelf = section.optJSONObject("musicCarouselShelfRenderer")
+                    if (carouselShelf != null) {
+                        val titleText = carouselShelf.optJSONObject("header")
+                            ?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
+                            ?.optJSONObject("title")
+                            ?.optJSONArray("runs")
+                            ?.optJSONObject(0)
+                            ?.optString("text", "")
+                            .orEmpty()
+                        
+                        if (titleText.contains("Videos", ignoreCase = true) || titleText.contains("Versions", ignoreCase = true)) {
+                            Log.d(TAG, "🔍 Found videos carousel section: $titleText")
+                            val carouselContents = carouselShelf.optJSONArray("contents")
+                            if (carouselContents != null) {
+                                for (j in 0 until carouselContents.length()) {
+                                    val itemObj = carouselContents.optJSONObject(j) ?: continue
+                                    
+                                    val twoRow = itemObj.optJSONObject("musicTwoRowItemRenderer")
+                                    val responsive = itemObj.optJSONObject("musicResponsiveListItemRenderer")
+                                    
+                                    if (twoRow != null) {
+                                        val vId = twoRow.optJSONObject("navigationEndpoint")
+                                            ?.optJSONObject("watchEndpoint")
+                                            ?.optString("videoId", "")
+                                            ?: twoRow.optJSONObject("title")
+                                                ?.optJSONArray("runs")
+                                                ?.optJSONObject(0)
+                                                ?.optJSONObject("navigationEndpoint")
+                                                ?.optJSONObject("watchEndpoint")
+                                                ?.optString("videoId", "")
+                                            ?: ""
+                                        
+                                        if (vId.isNotBlank()) {
+                                            val vTitle = twoRow.optJSONObject("title")
+                                                ?.optJSONArray("runs")
+                                                ?.optJSONObject(0)
+                                                ?.optString("text", "Unknown Video") ?: "Unknown Video"
+                                            
+                                            val thumbs = twoRow.optJSONObject("thumbnailRenderer")
+                                                ?.optJSONObject("musicThumbnailRenderer")
+                                                ?.optJSONObject("thumbnail")
+                                                ?.optJSONArray("thumbnails")
+                                            val vThumb = extractHighestQualityThumbnail(thumbs, "https://i.ytimg.com/vi/$vId/hqdefault.jpg")
+                                            
+                                            var vDuration: String? = null
+                                            val subRuns = twoRow.optJSONObject("subtitle")?.optJSONArray("runs")
+                                            if (subRuns != null) {
+                                                for (k in 0 until subRuns.length()) {
+                                                    val t = subRuns.optJSONObject(k)?.optString("text", "").orEmpty()
+                                                    if (t.contains(":")) {
+                                                        vDuration = t
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                            
+                                            nativeVideos.add(
+                                                com.sonicmusic.app.domain.model.AlbumVideo(
+                                                    videoId = vId,
+                                                    title = vTitle,
+                                                    thumbnailUrl = upgradeThumbQuality(vThumb, vId),
+                                                    durationText = vDuration
+                                                )
+                                            )
+                                        }
+                                    } else if (responsive != null) {
+                                        val vId = sequenceOf(
+                                            responsive.optJSONObject("playlistItemData")?.optString("videoId", ""),
+                                            responsive.optJSONObject("overlay")
+                                                ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+                                                ?.optJSONObject("content")
+                                                ?.optJSONObject("musicPlayButtonRenderer")
+                                                ?.optJSONObject("playNavigationEndpoint")
+                                                ?.optJSONObject("watchEndpoint")
+                                                ?.optString("videoId", "")
+                                        ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
+                                        
+                                        if (vId.isNotBlank()) {
+                                            val flexCols = responsive.optJSONArray("flexColumns")
+                                            val vTitle = if (flexCols != null && flexCols.length() > 0) {
+                                                extractMusicText(flexCols.optJSONObject(0))
+                                            } else "Unknown Video"
+                                            
+                                            val thumbs = responsive.optJSONObject("thumbnail")
+                                                ?.optJSONObject("musicThumbnailRenderer")
+                                                ?.optJSONObject("thumbnail")
+                                                ?.optJSONArray("thumbnails")
+                                            val vThumb = extractHighestQualityThumbnail(thumbs, "https://i.ytimg.com/vi/$vId/hqdefault.jpg")
+                                            
+                                            var vDuration: String? = null
+                                            val fixedCols = responsive.optJSONArray("fixedColumns")
+                                            if (fixedCols != null && fixedCols.length() > 0) {
+                                                vDuration = fixedCols.optJSONObject(0)
+                                                    ?.optJSONObject("musicResponsiveListItemFixedColumnRenderer")
+                                                    ?.optJSONObject("text")
+                                                    ?.optJSONArray("runs")
+                                                    ?.optJSONObject(0)
+                                                    ?.optString("text", "")
+                                            }
+                                            
+                                            nativeVideos.add(
+                                                com.sonicmusic.app.domain.model.AlbumVideo(
+                                                    videoId = vId,
+                                                    title = vTitle,
+                                                    thumbnailUrl = upgradeThumbQuality(vThumb, vId),
+                                                    durationText = vDuration
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (headerArtists.isEmpty() && songsList.isNotEmpty()) {
+                val unionArtists = songsList.flatMap { it.artists }.distinct()
+                headerArtists.addAll(unionArtists)
+            }
+            if (headerArtists.isEmpty()) headerArtists.add("Unknown Artist")
+            if (headerThumbnail.isBlank() && songsList.isNotEmpty()) {
+                headerThumbnail = "https://i.ytimg.com/vi/${songsList.first().videoId}/hqdefault.jpg"
+            }
+            if (headerTrackCount == 0) {
+                headerTrackCount = songsList.size
+            }
+
+            if (nativeVideos.isEmpty() && songsList.isNotEmpty()) {
+                Log.d(TAG, "🔍 No native videos found. Running fallback search for top tracks...")
+                val topTracks = songsList.take(3)
+                
+                val searchResults = coroutineScope {
+                    topTracks.map { track ->
+                        val artistQuery = track.artists.firstOrNull() ?: ""
+                        val searchQuery = "${track.title} $artistQuery official video"
+                        async {
+                            val videos = searchVideos(searchQuery, limit = 3).getOrNull()?.songs.orEmpty()
+                            videos.firstOrNull { video ->
+                                val cleanVideoTitle = video.title.lowercase().replace(Regex("[^a-z0-9]"), "")
+                                val cleanVideoArtist = video.artist.lowercase().replace(Regex("[^a-z0-9]"), "")
+                                val cleanTrackTitle = track.title.lowercase()
+                                    .split(" feat").first()
+                                    .split(" ft").first()
+                                    .split(" with").first()
+                                    .split(" (").first()
+                                    .replace(Regex("[^a-z0-9]"), "")
+                                val cleanArtist = artistQuery.lowercase().replace(Regex("[^a-z0-9]"), "")
+                                
+                                val titleMatches = cleanVideoTitle.contains(cleanTrackTitle)
+                                val artistMatches = cleanArtist.isEmpty() || 
+                                        cleanVideoArtist.contains(cleanArtist) || 
+                                        cleanVideoTitle.contains(cleanArtist)
+                                
+                                titleMatches && artistMatches
+                            }
+                        }
+                    }
+                }.mapNotNull { it.await() }
+                
+                searchResults.forEach { matchedVideo ->
+                    nativeVideos.add(
+                        com.sonicmusic.app.domain.model.AlbumVideo(
+                            videoId = matchedVideo.id,
+                            title = matchedVideo.title,
+                            thumbnailUrl = upgradeThumbQuality(matchedVideo.thumbnailUrl, matchedVideo.id),
+                            durationText = matchedVideo.formattedDuration()
+                        )
+                    )
+                }
+                Log.d(TAG, "🔍 Fallback videos fetched: ${nativeVideos.size}")
+            }
+
+            val details = com.sonicmusic.app.domain.model.AlbumDetails(
+                browseId = browseId,
+                title = headerTitle,
+                artists = headerArtists,
+                year = headerYear,
+                albumType = headerType,
+                thumbnailUrl = headerThumbnail,
+                trackCount = headerTrackCount,
+                songs = songsList.distinctBy { it.videoId },
+                videos = nativeVideos.distinctBy { it.videoId }
+            )
+            Result.success(details)
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to parse album details", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun getSongDetails(videoId: String): Result<Song> = withContext(Dispatchers.IO) {
         try {
             val region = getRequestRegion()
@@ -2621,7 +3235,7 @@ class YouTubeiService @Inject constructor(
      *
      * RiMusic equivalent: Innertube.browse(browseId = "FEmusic_home")
      */
-    suspend fun browseHome(): Result<List<BrowseShelf>> = withContext(Dispatchers.IO) {
+    suspend fun browseHome(recentVideoIds: List<String> = emptyList()): Result<List<BrowseShelf>> = withContext(Dispatchers.IO) {
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
@@ -2629,6 +3243,11 @@ class YouTubeiService @Inject constructor(
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("browseId", "FEmusic_home")
+                if (recentVideoIds.isNotEmpty()) {
+                    put("playbackContext", JSONObject().apply {
+                        put("recentlyPlayedVideoIds", JSONArray(recentVideoIds))
+                    })
+                }
             }
 
             val request = Innertube.musicPost(
@@ -3167,6 +3786,26 @@ class YouTubeiService @Inject constructor(
     }
 
     /**
+     * Search for albums only.
+     */
+    suspend fun searchAlbums(query: String): Result<List<Song>> = withContext(Dispatchers.IO) {
+        try {
+            val region = getRequestRegion()
+            val language = getLanguageForRegion(region)
+            val page = searchArtistsOrAlbumsPage(
+                query = query,
+                filter = Innertube.SearchFilter.Album,
+                region = region,
+                language = language,
+                continuationToken = null
+            )
+            Result.success(page?.items ?: emptyList())
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Load more albums using a continuation token from a previous search.
      */
     suspend fun loadMoreAlbums(continuationToken: String): Result<BrowsePageResult> = withContext(Dispatchers.IO) {
@@ -3282,6 +3921,10 @@ class YouTubeiService @Inject constructor(
         val items = parseAlbumSearchResponse(jsonString)
         val continuation = extractBrowseContinuationToken(jsonString)
         return BrowsePageResult(items, continuation)
+    }
+
+    private fun isAlbumBrowseId(browseId: String): Boolean {
+        return browseId.startsWith("MPRE") || browseId.startsWith("MPLA")
     }
 
     /**
@@ -3548,7 +4191,7 @@ class YouTubeiService @Inject constructor(
 
                     if (albumTitle.isBlank()) continue
 
-                    val effectiveId = browseId.ifBlank { albumTitle }
+                    if (!isAlbumBrowseId(browseId)) continue
 
                     // Extract artist name from subtitle runs
                     val subtitleRuns = if (flexColumns != null && flexColumns.length() > 1) {
@@ -3586,10 +4229,10 @@ class YouTubeiService @Inject constructor(
                     )
 
                     albums.add(Song(
-                        id = effectiveId,
+                        id = browseId,
                         title = albumTitle,
                         artist = cleanArtistName(artistName),
-                        albumId = browseId.takeIf { it.startsWith("MPRE") },
+                        albumId = browseId,
                         duration = 0,
                         thumbnailUrl = thumbnailUrl,
                         contentType = ContentType.ALBUM
@@ -3725,15 +4368,6 @@ class YouTubeiService @Inject constructor(
                     val section = sections.optJSONObject(s) ?: continue
                     val shelf = section.optJSONObject("musicCarouselShelfRenderer") ?: continue
 
-                    val shelfTitle = shelf.optJSONObject("header")
-                        ?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
-                        ?.optJSONObject("title")
-                    val titleText = extractText(shelfTitle).lowercase()
-
-                    val isAlbumSection = titleText.contains("album") ||
-                        titleText.contains("top album") ||
-                        titleText.contains("trending album")
-
                     val contents = shelf.optJSONArray("contents") ?: continue
 
                     for (i in 0 until contents.length()) {
@@ -3744,8 +4378,8 @@ class YouTubeiService @Inject constructor(
                             ?.optJSONObject("browseEndpoint")
                         val browseId = browseEndpoint?.optString("browseId", "") ?: ""
 
-                        // Album browseIds start with "MPRE"
-                        if (browseId.startsWith("MPRE") || isAlbumSection) {
+                        // Album browseIds are required for the detail pipeline.
+                        if (isAlbumBrowseId(browseId)) {
                             val albumTitle = extractText(twoRow.optJSONObject("title"))
                             if (albumTitle.isBlank()) continue
 
@@ -3769,10 +4403,10 @@ class YouTubeiService @Inject constructor(
                             )
 
                             albums.add(Song(
-                                id = browseId.ifBlank { albumTitle },
+                                id = browseId,
                                 title = albumTitle,
                                 artist = cleanArtistName(artistName),
-                                albumId = browseId.takeIf { it.startsWith("MPRE") },
+                                albumId = browseId,
                                 duration = 0,
                                 thumbnailUrl = thumbnailUrl,
                                 contentType = ContentType.ALBUM
@@ -4148,6 +4782,17 @@ class YouTubeiService @Inject constructor(
             
             if (gridContents != null) {
                 songs.addAll(parseSectionContents(gridContents))
+            }
+
+            // Two-column structure (typically albums/playlists detail page)
+            val twoColumnContents = json.optJSONObject("contents")
+                ?.optJSONObject("twoColumnBrowseResultsRenderer")
+                ?.optJSONObject("secondaryContents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+            
+            if (twoColumnContents != null) {
+                songs.addAll(parseSectionContents(twoColumnContents))
             }
             
         } catch (e: Exception) {
@@ -4636,6 +5281,10 @@ class YouTubeiService @Inject constructor(
                 )
                 val artist = artistInfo.displayName
                 
+                val refs = extractArtistAndAlbumRefs(longBylineRuns ?: shortBylineRuns)
+                val albumName = refs.album?.name
+                val albumBrowseId = refs.album?.browseId
+                
                 val durationText = extractText(item.optJSONObject("lengthText"))
                 val contentType = detectContentType(title, artist, durationText)
                 if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
@@ -4656,10 +5305,14 @@ class YouTubeiService @Inject constructor(
                     artistId = if (artistInfo.individuals.isNotEmpty()) {
                         artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
                     } else null,
+                    album = albumName,
+                    albumId = albumBrowseId,
                     duration = parseDuration(durationText),
                     thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
                     category = "Music",
-                    contentType = ContentType.SONG
+                    contentType = ContentType.SONG,
+                    albumBrowseId = albumBrowseId,
+                    albumName = albumName
                 ))
             }
 
@@ -4753,6 +5406,10 @@ class YouTubeiService @Inject constructor(
                         )
                         val artist = artistInfo.displayName
 
+                        val refs = extractArtistAndAlbumRefs(longBylineRuns ?: shortBylineRuns)
+                        val albumName = refs.album?.name
+                        val albumBrowseId = refs.album?.browseId
+
                         val durationText = extractText(item.optJSONObject("lengthText"))
                         val contentType = detectContentType(title, artist, durationText)
                         if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
@@ -4773,10 +5430,14 @@ class YouTubeiService @Inject constructor(
                             artistId = if (artistInfo.individuals.isNotEmpty()) {
                                 artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
                             } else null,
+                            album = albumName,
+                            albumId = albumBrowseId,
                             duration = parseDuration(durationText),
                             thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
                             category = "Music",
-                            contentType = ContentType.SONG
+                            contentType = ContentType.SONG,
+                            albumBrowseId = albumBrowseId,
+                            albumName = albumName
                         ))
                     }
                 }
@@ -6956,6 +7617,68 @@ class YouTubeiService @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    suspend fun testAlbumBrowseRaw(browseId: String) = withContext(Dispatchers.IO) {
+        try {
+            val region = getRequestRegion()
+            val language = getLanguageForRegion(region)
+            val body = Innertube.webRemixBody(language, region) {
+                put("browseId", browseId)
+            }
+            val request = Innertube.musicPost(
+                endpoint = Innertube.BROWSE,
+                body = body,
+                acceptLanguage = getAcceptLanguageHeader(language, region)
+            )
+            val response = client.newCall(request).execute()
+            val code = response.code
+            val responseStr = response.body?.string().orEmpty()
+            
+            Log.d(TAG, "🧪 testAlbumBrowseRaw HTTP status: $code")
+            Log.d(TAG, "🧪 testAlbumBrowseRaw response length: ${responseStr.length}")
+            Log.d(TAG, "🧪 testAlbumBrowseRaw first 1500: ${responseStr.take(1500)}")
+            
+            val cacheFile = java.io.File("/data/data/com.sonicmusic.app/cache", "album_raw_${browseId.replace("[^a-zA-Z0-9_-]".toRegex(), "_")}.json")
+            cacheFile.parentFile?.mkdirs()
+            cacheFile.writeText(responseStr)
+            Log.d(TAG, "🧪 testAlbumBrowseRaw saved to: ${cacheFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ testAlbumBrowseRaw error", e)
+        }
+    }
+
+    suspend fun testNextEndpointRaw(videoId: String, playlistId: String?) = withContext(Dispatchers.IO) {
+        try {
+            val region = getRequestRegion()
+            val language = getLanguageForRegion(region)
+            val body = Innertube.webRemixBody(language, region) {
+                put("videoId", videoId)
+                if (playlistId != null) {
+                    put("playlistId", playlistId)
+                }
+                put("isAudioOnly", true)
+            }
+            val request = Innertube.musicPost(
+                endpoint = Innertube.NEXT,
+                body = body,
+                acceptLanguage = getAcceptLanguageHeader(language, region)
+            )
+            val response = client.newCall(request).execute()
+            val code = response.code
+            val responseStr = response.body?.string().orEmpty()
+            
+            Log.d(TAG, "🧪 testNextEndpointRaw HTTP status: $code")
+            Log.d(TAG, "🧪 testNextEndpointRaw response length: ${responseStr.length}")
+            Log.d(TAG, "🧪 testNextEndpointRaw first 1500: ${responseStr.take(1500)}")
+            
+            val cacheFile = java.io.File("/data/data/com.sonicmusic.app/cache", "next_raw_${videoId}_${playlistId.orEmpty().replace("[^a-zA-Z0-9_-]".toRegex(), "_")}.json")
+            cacheFile.parentFile?.mkdirs()
+            cacheFile.writeText(responseStr)
+            Log.d(TAG, "🧪 testNextEndpointRaw saved to: ${cacheFile.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ testNextEndpointRaw error", e)
         }
     }
 }

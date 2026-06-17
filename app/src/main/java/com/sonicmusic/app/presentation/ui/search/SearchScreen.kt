@@ -57,6 +57,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.sonicmusic.app.presentation.ui.theme.Dimens
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.SearchSuggestionItem
@@ -136,8 +137,12 @@ fun SearchScreen(
 
             // Content
             val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
-            Box(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(max = Dimens.maxContentWidth)
+                        .fillMaxSize()
+                ) {
                     com.sonicmusic.app.presentation.ui.components.NoInternetBanner(isVisible = !isOnline)
                 AnimatedContent(
                     targetState = searchState,
@@ -303,14 +308,16 @@ private fun SearchBarSection(
     onClear: () -> Unit,
     onSearch: () -> Unit,
 ) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        tonalElevation = 3.dp,
-    ) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Surface(
+            modifier = Modifier
+                .widthIn(max = Dimens.maxContentWidth)
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            tonalElevation = 3.dp,
+        ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -366,6 +373,7 @@ private fun SearchBarSection(
             }
         }
     }
+}
 }
 
 @Composable
@@ -549,7 +557,7 @@ private fun SearchResultsContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                        .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -602,7 +610,7 @@ private fun SearchResultsContent(
 
                 LazyRow(
                     state = videoRowState,
-                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     items(
@@ -633,7 +641,7 @@ private fun SearchResultsContent(
 
             item(key = "videos_divider") {
                 HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                    modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
                 )
             }
@@ -836,7 +844,7 @@ private fun ResultsHeader(query: String, count: Int, totalCount: Int) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -945,7 +953,7 @@ private fun SearchResultCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = Dimens.screenPadding, vertical = 4.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         onClick = onClick,
@@ -1199,7 +1207,7 @@ private fun ShimmerLoadingState() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = Dimens.screenPadding, vertical = 12.dp)
     ) {
         // Header shimmer
         Box(
@@ -1288,11 +1296,11 @@ private fun TrendingSearchesSection(
             text = "Trending",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
         )
 
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
+            contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             items(trendingSearches) { suggestion ->
@@ -1314,7 +1322,7 @@ private fun RecentSearchesHeader(onClearAll: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
+            .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1338,7 +1346,7 @@ private fun RecentSearchItem(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 2.dp),
+            .padding(horizontal = Dimens.screenPadding, vertical = 2.dp),
         shape = RoundedCornerShape(16.dp),
         color = Color.Transparent,
         onClick = onClick,
@@ -1388,13 +1396,13 @@ private fun BrowseCategoriesSection(
             text = "Browse",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
         )
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = Dimens.screenPadding),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             BrowseCategoryCard(

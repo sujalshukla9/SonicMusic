@@ -45,7 +45,9 @@ data class Song(
     val viewCount: Long? = null,
     val isLiked: Boolean = false,
     val likedAt: Long? = null,
-    val contentType: ContentType = ContentType.SONG  // Default to SONG for backward compatibility
+    val contentType: ContentType = ContentType.SONG,  // Default to SONG for backward compatibility
+    val albumBrowseId: String? = null,
+    val albumName: String? = null
 ) {
     fun formattedDuration(): String {
         val minutes = duration / 60

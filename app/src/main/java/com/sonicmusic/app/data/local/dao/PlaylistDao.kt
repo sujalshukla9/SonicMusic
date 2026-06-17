@@ -70,6 +70,9 @@ interface PlaylistDao {
         }
         insertPlaylistSongs(crossRefs)
     }
+
+    @Query("SELECT * FROM playlists WHERE remoteId = :remoteId LIMIT 1")
+    suspend fun getPlaylistByRemoteId(remoteId: String): PlaylistEntity?
 }
 
 data class PlaylistWithCount(
@@ -79,5 +82,7 @@ data class PlaylistWithCount(
     val coverArtUrl: String?,
     val createdAt: Long,
     val updatedAt: Long,
-    val songCount: Int
+    val songCount: Int,
+    val isLocal: Boolean = true,
+    val remoteId: String? = null
 )

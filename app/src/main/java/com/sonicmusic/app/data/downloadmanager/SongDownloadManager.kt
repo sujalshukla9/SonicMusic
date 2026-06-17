@@ -130,8 +130,16 @@ class SongDownloadManager @Inject constructor(
             val videoId = song.id
             Log.d(TAG, "📥 Requesting download: ${song.title}")
 
-            // 1. Insert initial pending record to DB
+            // 1. Check storage space
             val destMusicDir = File(context.getExternalFilesDir(null), "Music").apply { mkdirs() }
+            if (destMusicDir.usableSpace < 104_857_600L) { // 100 MB
+                Log.w(TAG, "❌ Disk space too low for download: ${destMusicDir.usableSpace} bytes available")
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(context, "Storage space too low for downloads", android.widget.Toast.LENGTH_LONG).show()
+                }
+                return@launch
+            }
+
             val destThumbDir = File(context.getExternalFilesDir(null), "Thumbnails").apply { mkdirs() }
             val localFilePath = File(destMusicDir, "$videoId.opus").absolutePath // default placeholder
 

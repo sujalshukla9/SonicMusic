@@ -186,35 +186,10 @@ class NewPipeService @Inject constructor() {
         val validStreams = streams.filter { it.content.isNotEmpty() }
         if (validStreams.isEmpty()) return null
         
-        // Filter for AAC streams first as per user request to fetch best AAC quality
-        val aacStreams = validStreams.filter { stream ->
-            val mimeType = stream.format?.mimeType ?: stream.format?.name.orEmpty()
-            mimeType.contains("m4a", true) || 
-            mimeType.contains("mp4", true) || 
-            mimeType.contains("aac", true) || 
-            mimeType.contains("mp4a", true)
-        }
-
-        val pool = aacStreams.ifEmpty { validStreams }
-
-        return when (quality) {
-            StreamQuality.LOW -> {
-                // Data Saver: pick the stream closest to 64 kbps
-                pool.minByOrNull { kotlin.math.abs(it.averageBitrate - 64) }
-            }
-            StreamQuality.MEDIUM -> {
-                // High Efficiency: pick the stream closest to 128 kbps
-                pool.minByOrNull { kotlin.math.abs(it.averageBitrate - 128) }
-            }
-            StreamQuality.HIGH, StreamQuality.BEST -> {
-                // High Quality / Best: pick the highest bitrate
-                if (pool === aacStreams && aacStreams.isNotEmpty()) {
-                    aacStreams.maxByOrNull { it.averageBitrate }
-                } else {
-                    pool.maxByOrNull(::bestSourceScore)
-                }
-            }
-        }
+        return validStreams.maxWithOrNull(
+            compareBy<AudioStream> { it.averageBitrate }
+                .thenBy { bestSourceScore(it) }
+        )
     }
 
     private fun bestSourceScore(stream: AudioStream): Long {

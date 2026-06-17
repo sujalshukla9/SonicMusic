@@ -328,7 +328,9 @@ private fun ChartSong.toSong(): Song {
         artist = artists.joinToString(", "),
         duration = parseDuration(durationText ?: "0:00"),
         thumbnailUrl = thumbnailUrl,
-        contentType = ContentType.SONG
+        contentType = ContentType.SONG,
+        albumBrowseId = albumBrowseId,
+        albumName = albumName
     )
 }
 

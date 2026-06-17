@@ -84,14 +84,55 @@ class SongRepositoryImpl @Inject constructor(
     override suspend fun getSongById(id: String): Result<Song> {
         // Try to get from database first
         val cachedSong = songDao.getSongById(id)
-        if (cachedSong != null) {
+        if (cachedSong != null && !cachedSong.albumId.isNullOrBlank()) {
             return Result.success(cachedSong.toSong())
         }
 
         // Fetch from API
         return youTubeiService.getSongDetails(id)
+            .map { song ->
+                if (song.albumBrowseId.isNullOrBlank()) {
+                    try {
+                        val upNextSongs = youTubeiService.getUpNext(id).getOrNull()?.first.orEmpty()
+                        val matching = upNextSongs.firstOrNull { it.id == id }
+                        if (matching != null && !matching.albumBrowseId.isNullOrBlank()) {
+                            song.copy(
+                                album = matching.album,
+                                albumId = matching.albumId,
+                                albumBrowseId = matching.albumBrowseId,
+                                albumName = matching.albumName
+                            )
+                        } else if (upNextSongs.isNotEmpty() && upNextSongs[0].id == id && !upNextSongs[0].albumBrowseId.isNullOrBlank()) {
+                            val firstSong = upNextSongs[0]
+                            song.copy(
+                                album = firstSong.album,
+                                albumId = firstSong.albumId,
+                                albumBrowseId = firstSong.albumBrowseId,
+                                albumName = firstSong.albumName
+                            )
+                        } else {
+                            song
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to resolve album info from Up Next for $id", e)
+                        song
+                    }
+                } else {
+                    song
+                }
+            }
             .onSuccess { song ->
-                songDao.insertSong(song.toEntity())
+                val entityToInsert = if (cachedSong != null) {
+                    song.toEntity().copy(
+                        isLiked = cachedSong.isLiked,
+                        likedAt = cachedSong.likedAt,
+                        cachedStreamUrl = cachedSong.cachedStreamUrl,
+                        cacheExpiry = cachedSong.cacheExpiry
+                    )
+                } else {
+                    song.toEntity()
+                }
+                songDao.insertSong(entityToInsert)
             }
     }
 

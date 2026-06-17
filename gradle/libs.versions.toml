@@ -29,8 +29,10 @@ paging = "3.3.5"
 materialColorUtilities = "1.0.0-alpha01"
 work = "2.10.0"
 hiltWork = "1.2.0"
+graphics-shapes = "1.0.1"
 
 [libraries]
+androidx-graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphics-shapes" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

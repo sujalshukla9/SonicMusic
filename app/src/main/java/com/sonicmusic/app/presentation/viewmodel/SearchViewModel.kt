@@ -383,6 +383,8 @@ class SearchViewModel @Inject constructor(
             return
         }
 
+        _textSuggestions.value = emptyList()
+        _contentSuggestions.value = emptyList()
         _searchState.value = SearchState.LoadingSuggestions(trimmedQuery)
 
         if (!networkMonitor.isConnectedNow()) {

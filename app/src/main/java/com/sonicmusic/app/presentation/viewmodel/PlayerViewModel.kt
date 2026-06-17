@@ -10,6 +10,8 @@ import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.domain.model.PlayerControlStyle
 import com.sonicmusic.app.domain.model.LyricsResult
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.LyricsRepository
@@ -42,6 +44,14 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import kotlin.time.Duration
+import com.sonicmusic.app.presentation.ui.player.PlayerUiState
+import com.sonicmusic.app.presentation.ui.player.PlayerActions
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import androidx.media3.common.Player
+import com.sonicmusic.app.player.queue.AlbumLinkResolver
+import com.sonicmusic.app.player.queue.toQueueSong
 
 /**
  * Player ViewModel - ViTune Style
@@ -82,6 +92,17 @@ sealed interface LyricsUiState {
     /** Error fetching lyrics. */
     data class Error(val message: String) : LyricsUiState
 }
+
+/**
+ * UI state for album link resolution on the full player.
+ */
+sealed interface AlbumLinkState {
+    data object Loading : AlbumLinkState
+    data class Available(val browseId: String, val name: String) : AlbumLinkState
+    data object Unavailable : AlbumLinkState
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection,
@@ -92,8 +113,10 @@ class PlayerViewModel @Inject constructor(
     private val queueRepository: QueueRepositoryImpl,
     private val settingsRepository: SettingsRepository,
     private val lyricsRepository: LyricsRepository,
-    val sleepTimerManager: SleepTimerManager
-) : ViewModel() {
+    val sleepTimerManager: SleepTimerManager,
+    private val audioCapabilityDetector: com.sonicmusic.app.player.audio.AudioCapabilityDetector,
+    private val albumLinkResolver: AlbumLinkResolver
+) : ViewModel(), PlayerActions {
 
     companion object {
         private const val TAG = "SonicPlayer"
@@ -164,6 +187,68 @@ class PlayerViewModel @Inject constructor(
     val albumArtBlurEnabled: StateFlow<Boolean> = settingsRepository.albumArtBlur
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
+    val thumbnailShape: StateFlow<ThumbnailShape> = settingsRepository.thumbnailShape
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThumbnailShape.ROUNDED_SQUARE)
+
+    val playerControlStyle: StateFlow<PlayerControlStyle> = settingsRepository.playerControlStyle
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlayerControlStyle.CLASSIC)
+
+    // Seek preview position flow to support live dragging
+    private val _seekPreviewPosition = MutableStateFlow<Long?>(null)
+    val seekPreviewPosition: StateFlow<Long?> = _seekPreviewPosition.asStateFlow()
+
+    val playerUiState: StateFlow<PlayerUiState> = combine(
+        currentSong,
+        isPlaying,
+        currentPosition,
+        duration,
+        queue,
+        currentQueueIndex,
+        isBuffering,
+        repeatMode,
+        infiniteModeEnabled
+    ) { array ->
+        val song = array[0] as? Song
+        val playing = array[1] as Boolean
+        val position = array[2] as Long
+        val dur = array[3] as Long
+        @Suppress("UNCHECKED_CAST")
+        val q = array[4] as List<Song>
+        val idx = array[5] as Int
+        val buffering = array[6] as Boolean
+        val repeat = array[7] as Int
+        val infinite = array[8] as Boolean
+
+        val canPrev = idx > 0 || repeat == Player.REPEAT_MODE_ALL || repeat == Player.REPEAT_MODE_ONE
+        val canNext = idx < q.size - 1 || repeat == Player.REPEAT_MODE_ALL || repeat == Player.REPEAT_MODE_ONE || infinite
+
+        PlayerUiState(
+            title = song?.title.orEmpty(),
+            artist = song?.artist.orEmpty(),
+            albumArtUrl = song?.thumbnailUrl.orEmpty(),
+            isPlaying = playing,
+            currentPositionMs = position,
+            durationMs = dur,
+            canSkipNext = canNext,
+            canSkipPrevious = canPrev,
+            isBuffering = buffering
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = PlayerUiState(
+            title = "",
+            artist = "",
+            albumArtUrl = "",
+            isPlaying = false,
+            currentPositionMs = 0L,
+            durationMs = 0L,
+            canSkipNext = false,
+            canSkipPrevious = false,
+            isBuffering = false
+        )
+    )
+
     val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -191,6 +276,11 @@ class PlayerViewModel @Inject constructor(
     val showOriginalScript: StateFlow<Boolean> = _showOriginalScript.asStateFlow()
 
     private var lyricsFetchJob: Job? = null
+
+    private val _albumLinkState = MutableStateFlow<AlbumLinkState>(AlbumLinkState.Unavailable)
+    val albumLinkState: StateFlow<AlbumLinkState> = _albumLinkState.asStateFlow()
+
+    private var albumResolutionJob: Job? = null
 
     /** Limits concurrent stream URL fetch requests to avoid socket exhaustion. */
     private val urlFetchSemaphore = Semaphore(3)
@@ -252,6 +342,14 @@ class PlayerViewModel @Inject constructor(
                         downloadCheckJob = launch {
                             _isCurrentSongDownloaded.value = songDownloadManager.isDownloaded(song.id)
                         }
+
+                        // Resolve album info
+                        albumResolutionJob?.cancel()
+                        _albumLinkState.value = AlbumLinkState.Loading
+                        albumResolutionJob = launch {
+                            val state = albumLinkResolver.resolveAlbumInfo(song.toQueueSong())
+                            _albumLinkState.value = state
+                        }
                         
                         // Mark only the IMMEDIATELY preceding song as played (O(1)).
                         // Previous approach iterated entire queue prefix which was O(n).
@@ -271,9 +369,11 @@ class PlayerViewModel @Inject constructor(
                         Log.e(TAG, "Error in current song observer", e)
                     }
                 } else {
-                    // Song cleared — reset lyrics
+                    // Song cleared — reset lyrics and album link state
                     _lyricsState.value = LyricsUiState.Idle
                     lyricsFetchJob?.cancel()
+                    _albumLinkState.value = AlbumLinkState.Unavailable
+                    albumResolutionJob?.cancel()
                 }
             }
         }
@@ -304,43 +404,50 @@ class PlayerViewModel @Inject constructor(
             // Clear cached URL first
             songRepository.clearCachedStreamUrl(songId)
 
-            // Re-fetch and resume playback with retry logic
-            currentSong.value?.let { song ->
-                if (song.id == songId) {
-                    _error.value = "Refreshing stream..."
+            // Find song in queue or fetch it from repository
+            val song = queue.value.find { it.id == songId }
+                ?: songRepository.getSongById(songId).getOrNull()
 
-                    var lastException: Exception? = null
+            if (song != null) {
+                _error.value = "Refreshing stream..."
+                var lastException: Exception? = null
 
-                    // Retry with progressive delay
-                    repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
-                        try {
-                            Log.d(TAG, "📡 URL refresh attempt ${attempt + 1}/$MAX_URL_RETRY_ATTEMPTS")
+                // Retry with progressive delay
+                repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
+                    try {
+                        Log.d(TAG, "📡 URL refresh attempt ${attempt + 1}/$MAX_URL_RETRY_ATTEMPTS")
 
-                            val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+                        val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
 
-                            result.onSuccess { streamUrl ->
-                                Log.d(TAG, "✅ Got fresh stream URL, resuming playback")
-                                _error.value = null
-                                playerServiceConnection.playSongInPlace(song, streamUrl)
-                                return@launch
-                            }.onFailure { exception ->
-                                Log.e(TAG, "❌ Failed to get fresh URL", exception)
-                                lastException = exception as? Exception
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error refreshing URL", e)
-                            lastException = e
+                        result.onSuccess { streamUrl ->
+                            Log.d(TAG, "✅ Got fresh stream URL, resuming/updating playback")
+                            _error.value = null
+                            playerServiceConnection.playSongInPlace(song, streamUrl)
+                            return@launch
+                        }.onFailure { exception ->
+                            Log.e(TAG, "❌ Failed to get fresh URL", exception)
+                            lastException = exception as? Exception
                         }
-
-                        // Wait before retry (except on last attempt)
-                        if (attempt < MAX_URL_RETRY_ATTEMPTS - 1) {
-                            delay(URL_RETRY_DELAY_MS * (attempt + 1))
-                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "❌ Error refreshing URL", e)
+                        lastException = e
                     }
 
-                    // All retries failed
-                    _error.value = "Failed to refresh stream: ${lastException?.message ?: "Unknown error"}"
+                    // Wait before retry (except on last attempt)
+                    if (attempt < MAX_URL_RETRY_ATTEMPTS - 1) {
+                        delay(URL_RETRY_DELAY_MS * (attempt + 1))
+                    }
                 }
+
+                // All retries failed
+                val errMsg = "Failed to refresh stream for ${song.title}: ${lastException?.message ?: "Unknown error"}"
+                _error.value = errMsg
+                Log.w(TAG, "$errMsg. Skipping to next song.")
+                delay(1500)
+                if (_error.value == errMsg) {
+                    _error.value = null
+                }
+                playerServiceConnection.skipToNext()
             }
         }
     }
@@ -609,6 +716,22 @@ class PlayerViewModel @Inject constructor(
     val currentStreamInfo = playerServiceConnection.audioEngine.currentStreamInfo
     val outputDeviceType = playerServiceConnection.audioEngine.outputDeviceType
 
+    // ── Audio Capability Badges (Dolby Atmos, DTS, Hi-Res) ──────────
+    // Cached in the detector singleton; updates on audio output device changes.
+    val audioCapability = combine(
+        audioCapabilityDetector.capability,
+        audioEngineState
+    ) { cap, state ->
+        val showDolby = cap.dolbyLabel != null || state.dolbyDspEnabled
+        cap.copy(
+            dolbyLabel = if (showDolby) (cap.dolbyLabel ?: "Dolby Atmos") else null
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = com.sonicmusic.app.player.audio.AudioCapabilityDetector.AudioCapability()
+    )
+
     // Equalizer
     fun setEqualizerEnabled(enabled: Boolean) = playerServiceConnection.audioEngine.setEqualizer(enabled)
     fun setEqPreset(preset: String) = playerServiceConnection.audioEngine.setEqualizer(true, preset)
@@ -750,8 +873,8 @@ class PlayerViewModel @Inject constructor(
 
                 var totalAdded = 0
 
-                filteredCandidates.chunked(RECOMMENDATION_BATCH_SIZE).forEachIndexed { index, batch ->
-                    if (!currentCoroutineContext().isActive) return@forEachIndexed
+                filteredCandidates.chunked(RECOMMENDATION_BATCH_SIZE).forEach { batch ->
+                    if (!currentCoroutineContext().isActive) return@forEach
 
                     // ViTune-style lazy hydration: Push songs to playerServiceConnection immediately so UI updates 
                     // without waiting for stream extraction. Stream extraction runs in background.
@@ -806,6 +929,17 @@ class PlayerViewModel @Inject constructor(
             lastRecommendationSongId = null // Reset to force new fetch
             lastRecommendationRequestAt = 0L
             fetchAndAddRecommendations(song.id)
+        }
+    }
+
+    suspend fun resolveAlbumId(songId: String): String? {
+        return try {
+            songRepository.getSongById(songId).getOrNull()?.let { song ->
+                song.albumBrowseId ?: song.albumId
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resolving album ID for $songId", e)
+            null
         }
     }
 
@@ -901,12 +1035,12 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun addCurrentSongToPlaylist(playlistId: Long) {
+    fun addCurrentSongToPlaylist(playlistId: Long, force: Boolean = false) {
         viewModelScope.launch {
             val song = currentSong.value ?: return@launch
             runCatching {
                 songRepository.cacheSong(song)
-                playlistRepository.addSongToPlaylist(playlistId, song.id).getOrThrow()
+                playlistRepository.addSongToPlaylist(playlistId, song.id, force).getOrThrow()
             }.onSuccess {
                 _error.value = "Added to playlist"
             }.onFailure { error ->
@@ -914,6 +1048,10 @@ class PlayerViewModel @Inject constructor(
                 Log.e(TAG, "Failed adding current song to playlist", error)
             }
         }
+    }
+
+    suspend fun hasSongInPlaylist(playlistId: Long, songId: String): Boolean {
+        return playlistRepository.hasSongInPlaylist(playlistId, songId)
     }
 
     fun createPlaylistAndAddCurrentSong(name: String, description: String? = null) {
@@ -1115,5 +1253,34 @@ class PlayerViewModel @Inject constructor(
             }
         }
         // Don't disconnect - service should persist
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PLAYER ACTIONS IMPLEMENTATION
+    // ═══════════════════════════════════════════════════════════════
+
+    override fun onPlayPause() {
+        Log.d(TAG, "🎮 onPlayPause() — isPlaying was: ${isPlaying.value}")
+        togglePlayPause()
+    }
+
+    override fun onSkipNext() {
+        Log.d(TAG, "🎮 onSkipNext() — index: ${currentQueueIndex.value}, queueSize: ${queue.value.size}")
+        skipToNext()
+    }
+
+    override fun onSkipPrevious() {
+        Log.d(TAG, "🎮 onSkipPrevious() — index: ${currentQueueIndex.value}, queueSize: ${queue.value.size}")
+        skipToPrevious()
+    }
+
+    override fun onSeekTo(positionMs: Long) {
+        Log.d(TAG, "🎮 onSeekTo($positionMs) — duration: ${duration.value}")
+        seekToPosition(positionMs)
+        _seekPreviewPosition.value = null
+    }
+
+    override fun onSeekPreviewChange(positionMs: Long) {
+        _seekPreviewPosition.value = positionMs
     }
 }

@@ -73,6 +73,7 @@ import javax.inject.Singleton
 @Singleton
 class AudioEngine @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val capabilityDetector: AudioCapabilityDetector,
 ) {
     companion object {
         private const val TAG = "AudioEngine"
@@ -124,6 +125,26 @@ class AudioEngine @Inject constructor(
                 Log.w(TAG, "Failed to load saved audio prefs at startup", e)
             }
         }
+        // Observe capability detector changes dynamically to initialize Dolby DSP when detected
+        scope.launch {
+            capabilityDetector.capability.collect { cap ->
+                Log.d(TAG, "🔔 Dolby capability changed: ${cap.dolbyLabel} (descriptor=${cap.dolbyEffectDescriptor})")
+                val sessionId = currentAudioSessionId
+                if (sessionId != 0) {
+                    if (cap.dolbyEffectDescriptor != null) {
+                        initializeDolbyDsp(sessionId)
+                    } else {
+                        // Release Dolby
+                        dolbyEffect?.release()
+                        dolbyEffect = null
+                        _audioEngineState.value = _audioEngineState.value.copy(
+                            dolbyDspAvailable = false,
+                            dolbyDspEnabled = false
+                        )
+                    }
+                }
+            }
+        }
     }
     
     // Audio Effects
@@ -131,6 +152,7 @@ class AudioEngine @Inject constructor(
     private var virtualizer: Virtualizer? = null
     private var equalizer: Equalizer? = null
     private var reverb: PresetReverb? = null
+    private var dolbyEffect: AudioEffect? = null
     
     // Current audio session
     private var currentAudioSessionId: Int = 0
@@ -186,6 +208,7 @@ class AudioEngine @Inject constructor(
      */
     fun initialize(audioSessionId: Int) {
         if (audioSessionId == 0) return
+        if (audioSessionId == currentAudioSessionId) return
         
         Log.d(TAG, "🎵 Initializing Apple-Style Audio Engine with session: $audioSessionId")
         currentAudioSessionId = audioSessionId
@@ -198,6 +221,7 @@ class AudioEngine @Inject constructor(
         initializeVirtualizer(audioSessionId)
         initializeEqualizer(audioSessionId)
         initializeReverb(audioSessionId)
+        initializeDolbyDsp(audioSessionId)
         
         // Detect output device capabilities
         detectOutputDevice()
@@ -395,6 +419,27 @@ class AudioEngine @Inject constructor(
         Log.d(TAG, "🎵 Now Playing: ${info.fullDescription}")
         Log.d(TAG, "🏷️ Quality Badge: ${info.qualityBadge}")
         Log.d(TAG, "📡 Signal Path: ${info.getSignalPath(getOutputDeviceName())}")
+
+        // Dolby Atmos is enabled for all songs if supported by device/system
+        val shouldEnableDolby = true
+        dolbyEffect?.let { effect ->
+            try {
+                effect.enabled = shouldEnableDolby
+                _audioEngineState.value = _audioEngineState.value.copy(
+                    dolbyDspEnabled = shouldEnableDolby
+                )
+                if (shouldEnableDolby && virtualizer?.enabled == true) {
+                    Log.w(TAG, "⚠️ Dolby DSP is active, auto-disabling app's built-in Virtualizer to avoid double spatialization")
+                    virtualizer?.enabled = false
+                    _audioEngineState.value = _audioEngineState.value.copy(
+                        spatialAudioEnabled = false
+                    )
+                }
+                Unit
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to update Dolby Atmos status", e)
+            }
+        }
     }
     
     /**
@@ -402,6 +447,16 @@ class AudioEngine @Inject constructor(
      */
     fun clearStreamInfo() {
         _currentStreamInfo.value = null
+        dolbyEffect?.let { effect ->
+            try {
+                effect.enabled = false
+                _audioEngineState.value = _audioEngineState.value.copy(
+                    dolbyDspEnabled = false
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to disable Dolby Atmos on clear", e)
+            }
+        }
     }
     
     // ═══════════════════════════════════════════════════════════════
@@ -746,12 +801,18 @@ class AudioEngine @Inject constructor(
      * @param strength 0-1000 (0% to 100% immersion)
      */
     fun setSpatialAudio(enabled: Boolean, strength: Int = 800) {
+        val actualEnabled = if (enabled && dolbyEffect != null && dolbyEffect?.enabled == true) {
+            Log.w(TAG, "⚠️ Dolby DSP is active, disabling app's built-in Spatial Audio")
+            false
+        } else {
+            enabled
+        }
         val clampedStrength = strength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH)
 
         virtualizer?.let { v ->
             try {
-                v.enabled = enabled
-                if (enabled) {
+                v.enabled = actualEnabled
+                if (actualEnabled) {
                     v.setStrength(clampedStrength.toShort())
                     Log.d(TAG, "🎧 Platform Spatial Audio ON: ${(clampedStrength / 10)}% immersion")
                 } else {
@@ -763,13 +824,13 @@ class AudioEngine @Inject constructor(
         }
 
         _audioEngineState.value = _audioEngineState.value.copy(
-            spatialAudioEnabled = enabled,
+            spatialAudioEnabled = actualEnabled,
             spatialStrength = clampedStrength,
         )
 
         scope.launch {
             context.audioPrefs.edit {
-                it[KEY_SPATIAL_AUDIO] = enabled
+                it[KEY_SPATIAL_AUDIO] = actualEnabled
                 it[KEY_SPATIAL_STRENGTH] = clampedStrength
             }
         }
@@ -849,6 +910,75 @@ class AudioEngine @Inject constructor(
         Log.d(TAG, if (enabled) "🔀 Crossfade ON: ${clampedDuration}ms" else "🔀 Crossfade OFF")
     }
     
+    private fun initializeDolbyDsp(audioSessionId: Int) {
+        if (audioSessionId == 0) return
+        val descriptor = capabilityDetector.capability.value.dolbyEffectDescriptor
+        if (descriptor == null) {
+            Log.d(TAG, "Dolby effect descriptor is null, skipping Dolby DSP init")
+            _audioEngineState.value = _audioEngineState.value.copy(
+                dolbyDspAvailable = false,
+                dolbyDspEnabled = false
+            )
+            dolbyEffect?.release()
+            dolbyEffect = null
+            return
+        }
+
+        if (dolbyEffect != null) {
+            try {
+                val shouldEnableDolby = true
+                if (dolbyEffect?.enabled != shouldEnableDolby) {
+                    dolbyEffect?.enabled = shouldEnableDolby
+                    _audioEngineState.value = _audioEngineState.value.copy(
+                        dolbyDspEnabled = shouldEnableDolby
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to update existing dolby effect status", e)
+            }
+            return
+        }
+
+        try {
+            Log.d(TAG, "Instantiating Dolby DSP effect via reflection: type=${descriptor.type}, uuid=${descriptor.uuid}")
+            val constructor = AudioEffect::class.java.getDeclaredConstructor(
+                java.util.UUID::class.java,
+                java.util.UUID::class.java,
+                java.lang.Integer.TYPE,
+                java.lang.Integer.TYPE
+            ).apply {
+                isAccessible = true
+            }
+            val effect = constructor.newInstance(descriptor.type, descriptor.uuid, 0, audioSessionId) as AudioEffect
+            val shouldEnableDolby = true
+            effect.enabled = shouldEnableDolby
+            dolbyEffect = effect
+            val isEnabled = effect.enabled
+            Log.d(TAG, "✅ Dolby Atmos DSP initialized successfully: enabled=$isEnabled")
+            
+            _audioEngineState.value = _audioEngineState.value.copy(
+                dolbyDspAvailable = true,
+                dolbyDspEnabled = isEnabled
+            )
+
+            // Conflict resolution: disable built-in Virtualizer
+            if (isEnabled && virtualizer?.enabled == true) {
+                Log.w(TAG, "⚠️ Dolby DSP is active, auto-disabling app's built-in Virtualizer to avoid double spatialization")
+                virtualizer?.enabled = false
+                _audioEngineState.value = _audioEngineState.value.copy(
+                    spatialAudioEnabled = false
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to initialize Dolby Atmos DSP on session $audioSessionId", e)
+            dolbyEffect = null
+            _audioEngineState.value = _audioEngineState.value.copy(
+                dolbyDspAvailable = true,
+                dolbyDspEnabled = false
+            )
+        }
+    }
+
     /**
      * Reset all effects to default
      */
@@ -862,6 +992,15 @@ class AudioEngine @Inject constructor(
         setSpatialAudio(false)
         setReverb(false)
         setCrossfade(false)
+        try {
+            if (dolbyEffect != null) {
+                val shouldEnableDolby = true
+                dolbyEffect?.enabled = shouldEnableDolby
+                _audioEngineState.value = _audioEngineState.value.copy(dolbyDspEnabled = shouldEnableDolby)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update dolby effect in resetToDefault", e)
+        }
         Log.d(TAG, "🔄 Reset to defaults")
     }
     
@@ -875,6 +1014,7 @@ class AudioEngine @Inject constructor(
             virtualizer?.release()
             equalizer?.release()
             reverb?.release()
+            dolbyEffect?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing effects", e)
         }
@@ -883,6 +1023,7 @@ class AudioEngine @Inject constructor(
         virtualizer = null
         equalizer = null
         reverb = null
+        dolbyEffect = null
     }
     
     fun release() {
@@ -942,5 +1083,7 @@ data class AudioEngineState(
     val wifiQualityTier: StreamQuality = StreamQuality.BEST,
     val cellularQualityTier: StreamQuality = StreamQuality.HIGH,
     val downloadQualityTier: StreamQuality = StreamQuality.BEST,
-
+    // Dolby Atmos DSP
+    val dolbyDspAvailable: Boolean = false,
+    val dolbyDspEnabled: Boolean = false,
 )

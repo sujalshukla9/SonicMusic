@@ -11,5 +11,7 @@ data class Playlist(
     val createdAt: Long,
     val updatedAt: Long,
     val songCount: Int = 0,
-    val songs: List<Song> = emptyList()
+    val songs: List<Song> = emptyList(),
+    val isLocal: Boolean = true,
+    val remoteId: String? = null
 )

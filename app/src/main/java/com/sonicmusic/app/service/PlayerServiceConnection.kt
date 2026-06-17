@@ -28,12 +28,16 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import com.sonicmusic.app.domain.repository.SongCompletedEvent
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -122,6 +126,9 @@ class PlayerServiceConnection @Inject constructor(
     private val _currentStreamInfo = MutableStateFlow<AudioStreamInfo?>(null)
     val currentStreamInfo: StateFlow<AudioStreamInfo?> = _currentStreamInfo.asStateFlow()
 
+    private val _songCompletedEvents = MutableSharedFlow<SongCompletedEvent>(extraBufferCapacity = 64)
+    val songCompletedEvents: SharedFlow<SongCompletedEvent> = _songCompletedEvents.asSharedFlow()
+
     // ═══════════════════════════════════════════════════════════════
     // INTERNAL STATE
     // ═══════════════════════════════════════════════════════════════
@@ -147,6 +154,12 @@ class PlayerServiceConnection @Inject constructor(
     // Track if we're at end of queue
     private var reachedEndOfQueue = false
 
+    // Track if we are waiting for the next track to load after clicking Next at the end of the queue
+    private var isWaitingForNextTrack = false
+
+    // Track pending seek target to handle MediaController client-side stale timeline race conditions
+    private var pendingSeekIndex: Int? = null
+
     // Guard queue refill while lazy queue hydration is still adding known songs.
     private val lazyQueueHydrationJobs = AtomicInteger(0)
 
@@ -158,6 +171,8 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     private val playerListener = object : Player.Listener {
+        private var lastSongId: String? = null
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
             if (isPlaying) {
@@ -181,6 +196,34 @@ class PlayerServiceConnection @Inject constructor(
                 Player.STATE_ENDED -> {
                     _isBuffering.value = false
                     _isPlaying.value = false
+                    // Emit song completed event for the last song in the queue
+                    lastSongId?.let { videoId ->
+                        scope.launch {
+                            _songCompletedEvents.emit(SongCompletedEvent(videoId, System.currentTimeMillis()))
+                        }
+                    }
+                    lastSongId = null
+
+                    // ── AUTO-ADVANCE FIX ─────────────────────────────
+                    // ExoPlayer enters STATE_ENDED when the last item in
+                    // its playlist finishes.  Songs may have been lazily
+                    // appended to the controller *after* the playlist was
+                    // originally set (background URL resolution).  Try to
+                    // advance to the next item immediately before falling
+                    // back to requesting more recommendations.
+                    val ctrl = mediaController
+                    if (ctrl != null) {
+                        val nextIdx = ctrl.currentMediaItemIndex + 1
+                        if (nextIdx < ctrl.mediaItemCount) {
+                            Log.d(TAG, "▶️ STATE_ENDED: Auto-advancing to index $nextIdx (count=${ctrl.mediaItemCount})")
+                            ctrl.seekTo(nextIdx, 0L)
+                            ctrl.prepare()
+                            ctrl.play()
+                            return // Successfully advanced — skip queue refill
+                        }
+                    }
+                    // ─────────────────────────────────────────────────
+
                     reachedEndOfQueue = true
                     // Check if we need more songs
                     checkQueueAndRequestMore()
@@ -192,26 +235,43 @@ class PlayerServiceConnection @Inject constructor(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            mediaItem?.let { item ->
+            if (mediaItem != null) {
+                val prevSongId = lastSongId
+                val newSongId = mediaItem.mediaId
+                if (prevSongId != null && prevSongId != newSongId) {
+                    scope.launch {
+                        _songCompletedEvents.emit(SongCompletedEvent(prevSongId, System.currentTimeMillis()))
+                    }
+                }
+                lastSongId = newSongId
+
                 // ── OPTIMIZATION 6: Single-pass find + index ────────────
                 // Combined find() + indexOfFirst() into one loop.
                 synchronized(songQueue) {
                     var foundSong: Song? = null
                     var foundIndex = -1
                     for ((i, s) in songQueue.withIndex()) {
-                        if (s.id == item.mediaId) {
+                        if (s.id == newSongId) {
                             foundSong = s
                             foundIndex = i
                             break
                         }
                     }
-                    _currentSong.value = foundSong ?: item.toSong()
+                    _currentSong.value = foundSong ?: mediaItem.toSong()
                     _currentQueueIndex.value = foundIndex
                 }
                 
                 // Check if we need more songs after transition
                 // This is key for ViTune-style continuous playback
                 checkQueueAndRequestMore()
+            } else {
+                val prevSongId = lastSongId
+                if (prevSongId != null) {
+                    scope.launch {
+                        _songCompletedEvents.emit(SongCompletedEvent(prevSongId, System.currentTimeMillis()))
+                    }
+                }
+                lastSongId = null
             }
             updateDuration()
         }
@@ -249,6 +309,23 @@ class PlayerServiceConnection @Inject constructor(
                 checkQueueAndRequestMore()
             }
         }
+
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            val controller = mediaController ?: return
+            val pendingIndex = pendingSeekIndex
+            if (pendingIndex != null) {
+                if (pendingIndex < controller.mediaItemCount) {
+                    pendingSeekIndex = null
+                    isWaitingForNextTrack = false
+                    Log.d(TAG, "🎯 Executed pending seek to index $pendingIndex after timeline update. New count: ${controller.mediaItemCount}")
+                    controller.seekTo(pendingIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                } else {
+                    Log.d(TAG, "⏳ Timeline updated, but index $pendingIndex is still >= count ${controller.mediaItemCount}")
+                }
+            }
+        }
     }
     
     /**
@@ -257,10 +334,10 @@ class PlayerServiceConnection @Inject constructor(
     private fun isHttpError(error: PlaybackException): Boolean {
         return when (error.errorCode) {
             PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
             PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
-            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> true
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_UNSPECIFIED -> true
             else -> false
         }
     }
@@ -356,6 +433,8 @@ class PlayerServiceConnection @Inject constructor(
 
         lazyPlaybackJob?.cancel()
         queueSessionId.incrementAndGet()
+        isWaitingForNextTrack = false
+        pendingSeekIndex = null
         
         scope.launch {
             val source = songSourceResolver.getSongStreamSource(song.id)
@@ -400,7 +479,7 @@ class PlayerServiceConnection @Inject constructor(
      * This fixes the bug where refreshing an expired stream URL cleared the queue.
      */
     fun playSongInPlace(song: Song, streamUrl: String) {
-        Log.d(TAG, "🔄 Replacing current stream URL in-place: ${song.title}")
+        Log.d(TAG, "🔄 Replacing stream URL in-place: ${song.title}")
 
         lazyPlaybackJob?.cancel()
         
@@ -419,26 +498,32 @@ class PlayerServiceConnection @Inject constructor(
             streamUrlCache[song.id] = finalUrl
             
             val controller = mediaController ?: return@launch
-            val index = controller.currentMediaItemIndex
-            
-            if (index >= 0 && index < controller.mediaItemCount) {
-                val currentMediaItem = controller.getMediaItemAt(index)
-                if (currentMediaItem.mediaId == song.id) {
-                    val currentPosition = controller.currentPosition
+            val count = controller.mediaItemCount
+            var updated = false
+            for (i in 0 until count) {
+                val item = controller.getMediaItemAt(i)
+                if (item.mediaId == song.id) {
                     val newMediaItem = createMediaItem(song, finalUrl)
-                    
-                    controller.replaceMediaItem(index, newMediaItem)
-                    controller.seekTo(index, currentPosition)
-                    controller.prepare()
-                    controller.play()
-                    
-                    _currentSong.value = song
-                    return@launch
+                    if (i == controller.currentMediaItemIndex) {
+                        val currentPosition = controller.currentPosition
+                        controller.replaceMediaItem(i, newMediaItem)
+                        controller.seekTo(i, currentPosition)
+                        controller.prepare()
+                        controller.play()
+                        _currentSong.value = song
+                    } else {
+                        controller.replaceMediaItem(i, newMediaItem)
+                    }
+                    Log.d(TAG, "🔄 Replaced stream URL in-place for ${song.title} at index $i")
+                    updated = true
+                    break
                 }
             }
             
-            // Fallback if index matching fails
-            playSong(song, finalUrl)
+            if (!updated) {
+                // Fallback if index matching fails
+                playSong(song, finalUrl)
+            }
         }
     }
 
@@ -461,6 +546,8 @@ class PlayerServiceConnection @Inject constructor(
             lazyPlaybackJob?.cancel()
             queueSessionId.incrementAndGet()
         }
+        isWaitingForNextTrack = false
+        pendingSeekIndex = null
 
         val safeRequestedIndex = startIndex.coerceIn(0, songs.lastIndex)
         Log.d(TAG, "▶️ Playing queue: ${songs.size} songs, starting at $safeRequestedIndex")
@@ -538,6 +625,8 @@ class PlayerServiceConnection @Inject constructor(
 
         lazyPlaybackJob?.cancel()
         val sessionId = queueSessionId.incrementAndGet()
+        isWaitingForNextTrack = false
+        pendingSeekIndex = null
 
         lazyPlaybackJob = scope.launch {
             val safeStartIndex = startIndex.coerceIn(0, songs.lastIndex)
@@ -715,6 +804,33 @@ class PlayerServiceConnection @Inject constructor(
                                 if (localQueueChanged) {
                                     _queue.value = songQueue.toList()
                                 }
+
+                                if (controller != null && (controller.playbackState == Player.STATE_ENDED || isWaitingForNextTrack)) {
+                                    val nextIndex = controller.currentMediaItemIndex + 1
+                                    if (nextIndex < controller.mediaItemCount) {
+                                        isWaitingForNextTrack = false
+                                        pendingSeekIndex = null
+                                        Log.d(TAG, "▶️ Lazy-load resume at index $nextIndex (count=${controller.mediaItemCount})")
+                                        controller.seekTo(nextIndex, 0L)
+                                        controller.prepare()
+                                        controller.play()
+                                    } else {
+                                        pendingSeekIndex = nextIndex
+                                        Log.d(TAG, "⏳ Stale count in lazy load. Deferred seek to $nextIndex.")
+                                        scope.launch {
+                                            delay(200)
+                                            val pending = pendingSeekIndex
+                                            if (pending != null && pending < controller.mediaItemCount) {
+                                                pendingSeekIndex = null
+                                                isWaitingForNextTrack = false
+                                                Log.d(TAG, "▶️ Delayed lazy-load resume at index $pending (count=${controller.mediaItemCount})")
+                                                controller.seekTo(pending, 0L)
+                                                controller.prepare()
+                                                controller.play()
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 // Normal add to queue (append)
                                 addToQueue(validSongs, urlMap)
@@ -774,7 +890,41 @@ class PlayerServiceConnection @Inject constructor(
         }
 
         // Single IPC call instead of N individual addMediaItem() calls
-        mediaController?.addMediaItems(newMediaItems)
+        mediaController?.let { controller ->
+            val countBefore = controller.mediaItemCount
+            val nextIndex = controller.currentMediaItemIndex + 1
+            controller.addMediaItems(newMediaItems)
+
+            if (controller.playbackState == Player.STATE_ENDED || isWaitingForNextTrack) {
+                // Try immediate resume first
+                if (nextIndex < controller.mediaItemCount) {
+                    isWaitingForNextTrack = false
+                    pendingSeekIndex = null
+                    Log.d(TAG, "▶️ Resuming playback at index $nextIndex (count=${controller.mediaItemCount})")
+                    controller.seekTo(nextIndex, 0L)
+                    controller.prepare()
+                    controller.play()
+                } else {
+                    // MediaController IPC may not reflect the new items yet.
+                    // Set pending seek AND schedule a delayed retry as safety net
+                    // in case onTimelineChanged fires before we set pendingSeekIndex.
+                    pendingSeekIndex = nextIndex
+                    Log.d(TAG, "⏳ MediaController count stale ($countBefore + ${newMediaItems.size} items added). Deferred seek to $nextIndex.")
+                    scope.launch {
+                        delay(200) // Give IPC time to sync
+                        val pending = pendingSeekIndex
+                        if (pending != null && pending < controller.mediaItemCount) {
+                            pendingSeekIndex = null
+                            isWaitingForNextTrack = false
+                            Log.d(TAG, "▶️ Delayed resume at index $pending (count=${controller.mediaItemCount})")
+                            controller.seekTo(pending, 0L)
+                            controller.prepare()
+                            controller.play()
+                        }
+                    }
+                }
+            }
+        }
 
         // ── OPTIMIZATION 5: Deduplicated queue emission ───────────
         emitQueueIfChanged()
@@ -821,9 +971,12 @@ class PlayerServiceConnection @Inject constructor(
     fun skipToNext() {
         mediaController?.let { controller ->
             if (controller.hasNextMediaItem()) {
+                pendingSeekIndex = null
+                isWaitingForNextTrack = false
                 controller.seekToNext()
             } else {
                 // Request more songs if at end
+                isWaitingForNextTrack = true
                 _currentSong.value?.let { song ->
                     onQueueNeedsMoreSongs?.invoke(song.id)
                 }
@@ -836,6 +989,8 @@ class PlayerServiceConnection @Inject constructor(
      */
     fun skipToPrevious() {
         mediaController?.let { controller ->
+            pendingSeekIndex = null
+            isWaitingForNextTrack = false
             if (controller.currentPosition > 3000) {
                 controller.seekTo(0)
             } else if (controller.hasPreviousMediaItem()) {
@@ -934,6 +1089,8 @@ class PlayerServiceConnection @Inject constructor(
         _currentQueueIndex.value = -1
         _currentSong.value = null
         reachedEndOfQueue = false
+        isWaitingForNextTrack = false
+        pendingSeekIndex = null
     }
 
     /**
@@ -1004,6 +1161,8 @@ class PlayerServiceConnection @Inject constructor(
         mediaController?.let { controller ->
             if (index in 0 until controller.mediaItemCount) {
                 Log.d(TAG, "⏭️ Skipping to queue item: $index")
+                pendingSeekIndex = null
+                isWaitingForNextTrack = false
                 controller.seekTo(index, 0)
             }
         }
@@ -1087,6 +1246,11 @@ class PlayerServiceConnection @Inject constructor(
     
     private fun createMediaItem(song: Song, streamUrl: String): MediaItem {
         val sourceUri = normalizeSourceUri(streamUrl)
+        val extras = android.os.Bundle().apply {
+            putString("albumBrowseId", song.albumBrowseId)
+            putString("albumName", song.albumName ?: song.album)
+            putString("artistId", song.artistId)
+        }
         return MediaItem.Builder()
             .setUri(sourceUri)
             .setMediaId(song.id)
@@ -1094,8 +1258,9 @@ class PlayerServiceConnection @Inject constructor(
                 MediaMetadata.Builder()
                     .setTitle(song.title)
                     .setArtist(song.artist)
-                    .setAlbumTitle(song.album ?: "")
+                    .setAlbumTitle(song.album ?: song.albumName ?: "")
                     .setArtworkUri(Uri.parse(song.thumbnailUrl))
+                    .setExtras(extras)
                     .build()
             )
             .build()
@@ -1185,13 +1350,20 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     private fun MediaItem.toSong(): Song {
+        val extras = mediaMetadata.extras
+        val albumBrowseId = extras?.getString("albumBrowseId")
+        val albumName = extras?.getString("albumName")
+        val artistId = extras?.getString("artistId")
         return Song(
             id = mediaId,
             title = mediaMetadata.title?.toString() ?: "Unknown",
             artist = mediaMetadata.artist?.toString() ?: "Unknown Artist",
-            album = mediaMetadata.albumTitle?.toString(),
+            artistId = artistId,
+            album = albumName ?: mediaMetadata.albumTitle?.toString(),
             duration = 0,
-            thumbnailUrl = mediaMetadata.artworkUri?.toString() ?: ""
+            thumbnailUrl = mediaMetadata.artworkUri?.toString() ?: "",
+            albumBrowseId = albumBrowseId,
+            albumName = albumName ?: mediaMetadata.albumTitle?.toString()
         )
     }
 

@@ -60,7 +60,35 @@ class HistoryRepositoryImpl @Inject constructor(
             completed = completed
         )
         historyDao.insertPlayback(entity)
-        historyDao.pruneOldHistory(MAX_HISTORY_ROWS)
+
+        // Prune older than retention setting
+        val retention = settingsDataStore.historyRetention.first()
+        if (retention != "FOREVER") {
+            val days = if (retention == "30_DAYS") 30L else 90L
+            val threshold = System.currentTimeMillis() - days * 24 * 3600 * 1000L
+            historyDao.pruneHistoryOlderThan(threshold)
+        }
+
+        // Cap entries at 500
+        historyDao.pruneOldHistory(500)
+    }
+
+    override suspend fun deleteHistoryEntry(id: Long) {
+        historyDao.deleteHistoryEntry(id)
+    }
+
+    override suspend fun restoreHistoryEntry(history: PlaybackHistory) {
+        val entity = PlaybackHistoryEntity(
+            id = history.id,
+            songId = history.songId,
+            title = history.title,
+            artist = history.artist,
+            thumbnailUrl = history.thumbnailUrl,
+            playedAt = history.playedAt,
+            playDuration = history.playDuration,
+            completed = history.completed
+        )
+        historyDao.insertHistoryEntry(entity)
     }
 
     override suspend fun clearHistory() {
@@ -68,7 +96,13 @@ class HistoryRepositoryImpl @Inject constructor(
     }
 
     override suspend fun pruneOldHistory(keepCount: Int) {
-        historyDao.pruneOldHistory(keepCount)
+        val retention = settingsDataStore.historyRetention.first()
+        if (retention != "FOREVER") {
+            val days = if (retention == "30_DAYS") 30L else 90L
+            val threshold = System.currentTimeMillis() - days * 24 * 3600 * 1000L
+            historyDao.pruneHistoryOlderThan(threshold)
+        }
+        historyDao.pruneOldHistory(keepCount.coerceAtMost(500))
     }
 
     private fun PlaybackHistoryEntity.toPlaybackHistory(): PlaybackHistory {

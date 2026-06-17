@@ -239,28 +239,19 @@ class AudioStreamExtractor @Inject constructor(
         if (formats.isEmpty()) return null
         val validFormats = formats.filter { it.bitrateKbps > 0 }.ifEmpty { formats }
 
-        // Prefer AAC audio as per user request.
-        val aacFormats = validFormats.filter { it.isAac() }
-        val pool = aacFormats.ifEmpty { validFormats }
-
-        return when (requestedQuality) {
-            StreamQuality.LOW -> {
-                // Data Saver: pick the stream closest to 64 kbps
-                pool.minByOrNull { kotlin.math.abs(it.bitrateKbps - 64) }
-            }
-            StreamQuality.MEDIUM -> {
-                // High Efficiency: pick the stream closest to 128 kbps
-                pool.minByOrNull { kotlin.math.abs(it.bitrateKbps - 128) }
-            }
-            StreamQuality.HIGH, StreamQuality.BEST -> {
-                // High Quality / Best: pick the highest bitrate
-                pool.maxWithOrNull(
-                    compareBy<AudioFormat> { it.bitrateKbps }
-                        .thenBy { it.sampleRate }
-                        .thenBy { it.channelCount },
-                )
-            }
-        }
+        return validFormats.maxWithOrNull(
+            compareBy<AudioFormat> { it.bitrateKbps }
+                .thenBy { it.sampleRate }
+                .thenBy { it.channelCount }
+                .thenBy { fmt ->
+                    val codecBonus = when {
+                        fmt.isAac() -> 20L
+                        fmt.isOpus() -> 10L
+                        else -> 0L
+                    }
+                    (fmt.bitrateKbps.toLong() * 1_000L) + fmt.sampleRate + codecBonus
+                }
+        )
     }
 
     private fun bestSourceScore(format: AudioFormat): Long {

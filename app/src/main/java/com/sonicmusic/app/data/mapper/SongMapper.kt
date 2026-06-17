@@ -10,8 +10,8 @@ fun Song.toEntity(): SongEntity {
         title = title,
         artist = artist,
         artistId = artistId,
-        album = album,
-        albumId = albumId,
+        album = albumName ?: album,
+        albumId = albumBrowseId ?: albumId,
         duration = duration,
         thumbnailUrl = thumbnailUrl,
         year = year,
@@ -38,6 +38,8 @@ fun SongEntity.toSong(): Song {
         viewCount = viewCount,
         isLiked = isLiked,
         likedAt = likedAt,
-        contentType = contentType
+        contentType = contentType,
+        albumBrowseId = albumId,
+        albumName = album
     )
 }

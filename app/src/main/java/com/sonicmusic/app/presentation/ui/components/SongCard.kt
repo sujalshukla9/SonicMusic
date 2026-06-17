@@ -19,6 +19,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.presentation.ui.theme.LocalThumbnailShape
+import com.sonicmusic.app.presentation.ui.theme.toComposeShape
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -28,6 +30,7 @@ fun SongCard(
     onLongClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val currentShape = LocalThumbnailShape.current.toComposeShape()
     Column(
         modifier = modifier
             .width(140.dp)
@@ -37,7 +40,7 @@ fun SongCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f),
-            shape = RoundedCornerShape(16.dp),
+            shape = currentShape,
             elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
             colors = CardDefaults.elevatedCardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -79,6 +82,7 @@ fun SongCardCompact(
     modifier: Modifier = Modifier,
     trailing: @Composable (() -> Unit)? = null
 ) {
+    val currentShape = LocalThumbnailShape.current.toComposeShape()
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -87,9 +91,8 @@ fun SongCardCompact(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(12.dp)),
+            modifier = Modifier.size(56.dp),
+            shape = currentShape,
             tonalElevation = 2.dp,
             color = MaterialTheme.colorScheme.surfaceContainerLow
         ) {

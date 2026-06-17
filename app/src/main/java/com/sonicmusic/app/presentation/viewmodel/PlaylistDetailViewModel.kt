@@ -2,6 +2,9 @@ package com.sonicmusic.app.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.data.downloadmanager.SongDownloadManager
+import com.sonicmusic.app.data.local.entity.DownloadedSong
+import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
@@ -13,8 +16,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -23,6 +29,7 @@ import javax.inject.Inject
 class PlaylistDetailViewModel @Inject constructor(
     private val playlistRepository: PlaylistRepository,
     private val songRepository: SongRepository,
+    private val songDownloadManager: SongDownloadManager,
     private val playerServiceConnection: PlayerServiceConnection
 ) : ViewModel() {
 
@@ -40,18 +47,59 @@ class PlaylistDetailViewModel @Inject constructor(
 
     private var currentPlaylistId: Long? = null
 
+    val downloadedSongs: StateFlow<List<DownloadedSong>> = songDownloadManager.getDownloadedSongs()
+        .map { list -> list.filter { it.status == DownloadStatus.COMPLETED } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     fun loadPlaylist(playlistId: Long) {
         currentPlaylistId = playlistId
 
         viewModelScope.launch {
             refreshCurrentPlaylist(showLoading = true)
+            
+            // Auto sync YTM playlist if cache expired (> 1 hour)
+            val current = _playlist.value
+            if (current != null && !current.isLocal && current.remoteId != null) {
+                val age = System.currentTimeMillis() - current.updatedAt
+                val oneHour = 60 * 60 * 1000L
+                if (age > oneHour) {
+                    syncRemotePlaylist(current.remoteId)
+                }
+            }
         }
     }
 
-    /**
-     * Tap a single song in the playlist → play it with the full playlist as queue
-     * so next/previous continue with other songs in the list.
-     */
+    fun syncPlaylist() {
+        val current = _playlist.value ?: return
+        if (!current.isLocal && current.remoteId != null) {
+            syncRemotePlaylist(current.remoteId)
+        } else {
+            viewModelScope.launch {
+                refreshCurrentPlaylist(showLoading = true)
+            }
+        }
+    }
+
+    private fun syncRemotePlaylist(remoteId: String) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            playlistRepository.fetchRemotePlaylist(remoteId)
+                .onSuccess { (playlist, songs) ->
+                    playlistRepository.saveRemotePlaylist(playlist, songs)
+                        .onSuccess {
+                            refreshCurrentPlaylist()
+                        }
+                        .onFailure { e ->
+                            _error.value = "Failed to cache synced playlist: ${e.message}"
+                        }
+                }
+                .onFailure { e ->
+                    _error.value = "Failed to sync from YouTube Music: ${e.message}"
+                }
+            _isLoading.value = false
+        }
+    }
+
     fun playSong(song: Song) {
         val allSongs = _songs.value
         val index = allSongs.indexOfFirst { it.id == song.id }.takeIf { it >= 0 } ?: 0
@@ -61,7 +109,6 @@ class PlaylistDetailViewModel @Inject constructor(
                 .onSuccess { streamUrl ->
                     val urlMap = mutableMapOf(song.id to streamUrl)
 
-                    // Fetch remaining song URLs in parallel
                     val remaining = allSongs.filterNot { it.id == song.id }
                     val results = withContext(Dispatchers.IO) {
                         remaining.map { s ->
@@ -81,9 +128,6 @@ class PlaylistDetailViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Play all songs in the playlist (parallel URL fetching).
-     */
     fun playAll(songs: List<Song>) {
         if (songs.isEmpty()) return
 
@@ -93,7 +137,6 @@ class PlaylistDetailViewModel @Inject constructor(
                 .onSuccess { streamUrl ->
                     val urlMap = mutableMapOf(firstSong.id to streamUrl)
 
-                    // Fetch URLs in parallel for the rest
                     val results = withContext(Dispatchers.IO) {
                         songs.drop(1).map { song ->
                             async {
@@ -150,6 +193,47 @@ class PlaylistDetailViewModel @Inject constructor(
                         _error.value = "Failed to add: ${e.message}"
                     }
             }
+        }
+    }
+
+    fun updatePlaylistOrder(songIds: List<String>) {
+        currentPlaylistId?.let { playlistId ->
+            viewModelScope.launch {
+                playlistRepository.updatePlaylistOrder(playlistId, songIds)
+                    .onSuccess {
+                        refreshCurrentPlaylist()
+                    }
+                    .onFailure { e ->
+                        _error.value = "Failed to update order: ${e.message}"
+                    }
+            }
+        }
+    }
+
+    fun updatePlaylistMetadata(name: String, description: String?) {
+        currentPlaylistId?.let { playlistId ->
+            viewModelScope.launch {
+                playlistRepository.updatePlaylist(playlistId, name, description)
+                    .onSuccess {
+                        refreshCurrentPlaylist()
+                    }
+                    .onFailure { e ->
+                        _error.value = "Failed to update playlist info: ${e.message}"
+                    }
+            }
+        }
+    }
+
+    fun updatePlaylistCover(coverArtUrl: String?) {
+        val current = _playlist.value ?: return
+        viewModelScope.launch {
+            playlistRepository.updatePlaylist(current.id, current.name, current.description, coverArtUrl)
+                .onSuccess {
+                    refreshCurrentPlaylist()
+                }
+                .onFailure { e ->
+                    _error.value = "Failed to update cover art: ${e.message}"
+                }
         }
     }
 

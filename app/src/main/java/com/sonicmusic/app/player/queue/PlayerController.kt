@@ -210,6 +210,11 @@ class PlayerController @Inject constructor(
                 desiredSongs.mapNotNull { song ->
                     val url = streamUrlCache.getStreamUrl(song.videoId)
                     if (url != null) {
+                        val extras = android.os.Bundle().apply {
+                            putString("albumBrowseId", song.albumBrowseId)
+                            putString("albumName", song.albumName)
+                            putString("artistId", song.artistId)
+                        }
                         MediaItem.Builder()
                             .setUri(url)
                             .setMediaId(song.videoId)
@@ -217,7 +222,9 @@ class PlayerController @Inject constructor(
                                 MediaMetadata.Builder()
                                     .setTitle(song.title)
                                     .setArtist(song.artists)
+                                    .setAlbumTitle(song.albumName ?: "")
                                     .setArtworkUri(android.net.Uri.parse(song.thumbnailUrl))
+                                    .setExtras(extras)
                                     .build()
                             )
                             .build()

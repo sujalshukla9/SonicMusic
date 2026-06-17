@@ -35,6 +35,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.presentation.viewmodel.ThemeViewModel
+import com.sonicmusic.app.domain.model.ThumbnailShape
 
 // Material 3 Expressive shapes morphing
 data class ExpressiveShapes(
@@ -248,6 +249,7 @@ fun SonicMusicTheme(
     val dynamicColorsEnabled by themeViewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
     val dynamicColorIntensity by themeViewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
     val playerColorScheme by themeViewModel.playerColorScheme.collectAsStateWithLifecycle()
+    val thumbnailShape by themeViewModel.thumbnailShape.collectAsStateWithLifecycle()
     
     val context = LocalContext.current
 
@@ -366,7 +368,8 @@ fun SonicMusicTheme(
         LocalPlayerColorScheme provides playerColorScheme,
         LocalExpressiveShapes provides DefaultExpressiveShapes,
         LocalExpressiveTypography provides EmphasizedExpressiveTypography,
-        LocalExpressiveMotion provides DefaultExpressiveMotion
+        LocalExpressiveMotion provides DefaultExpressiveMotion,
+        LocalThumbnailShape provides thumbnailShape
     ) {
         MaterialTheme(
             colorScheme = animatedColorScheme,

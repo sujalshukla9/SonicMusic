@@ -14,6 +14,7 @@ import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.ThemeMode
+import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.presentation.ui.theme.DynamicThemeExtractor
 import com.sonicmusic.app.presentation.ui.theme.PlayerColorScheme
 import com.sonicmusic.app.presentation.ui.theme.ColorExtractor
@@ -58,6 +59,9 @@ class ThemeViewModel @Inject constructor(
 
     val dynamicColorIntensity: StateFlow<Int> = settingsDataStore.dynamicColorIntensity
         .stateIn(viewModelScope, SharingStarted.Eagerly, 85)
+
+    val thumbnailShape: StateFlow<ThumbnailShape> = settingsDataStore.thumbnailShape
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ThumbnailShape.ROUNDED_SQUARE)
 
     // Dynamic Scheme State
     private val _playerColorScheme = MutableStateFlow<PlayerColorScheme>(ColorExtractor.fallbackColorScheme(true))

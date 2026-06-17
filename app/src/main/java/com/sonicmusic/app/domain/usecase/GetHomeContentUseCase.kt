@@ -19,6 +19,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 class GetHomeContentUseCase @Inject constructor(
     private val songRepository: SongRepository,
@@ -49,140 +51,143 @@ class GetHomeContentUseCase @Inject constructor(
         )
     }
 
-    suspend operator fun invoke(): Result<HomeContent> {
+    operator fun invoke(forceRefresh: Boolean = false): Flow<HomeContent> = flow {
         val startMs = System.currentTimeMillis()
-        return try {
-            coroutineScope {
-                // ── Existing sections ──
-                val listenAgainDeferred = async {
-                    runCatching {
-                        listenAgainRepository.getListenAgainSongs(HOME_SECTION_LIMIT)
-                    }.getOrDefault(emptyList())
-                }
+        var currentContent = HomeContent()
 
-                val quickPicksDeferred = async {
-                    try {
-                        // Use the new Quick Picks pipeline
-                        val picks = quickPicksRepository.getQuickPicks(HOME_SECTION_LIMIT)
-                        if (picks.isNotEmpty()) picks
-                        else fetchSongsSection { recommendationRepository.getQuickPicks(HOME_SECTION_LIMIT) }
-                    } catch (e: Exception) {
-                        // Fallback to old recommendation repo
-                        fetchSongsSection { recommendationRepository.getQuickPicks(HOME_SECTION_LIMIT) }
-                    }
-                }
-                val newReleasesDeferred = async {
-                    fetchSongsSection { songRepository.getNewReleases(HOME_SECTION_LIMIT) }
-                }
-                val trendingDeferred = async {
-                    fetchSongsSection { songRepository.getTrending(HOME_SECTION_LIMIT) }
-                }
-                val englishHitsDeferred = async {
-                    fetchSongsSection { songRepository.getEnglishHits(HOME_SECTION_LIMIT * 2) }
-                }
-                val artistsDeferred = async {
-                    fetchArtistSection { recommendationRepository.getTopArtistSongs(TOP_ARTIST_SECTION_COUNT) }
-                }
-                val personalizedDeferred = async {
-                    fetchSongsSection {
-                        userTasteRepository.getPersonalizedMix((HOME_SECTION_LIMIT / 2).coerceAtLeast(8))
-                    }
-                }
-                val forgottenDeferred = async {
-                    fetchSongsSection { recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT) }
-                }
-
-                // ── New YTMusic Browse sections ──
-                val trendingAlbumsDeferred = async {
-                    fetchSongsSection { browseRepository.getTrendingAlbums(HOME_SECTION_LIMIT) }
-                }
-                val trendingArtistsDeferred = async {
-                    emptyList<Song>()
-                }
-                val moodGenresDeferred = async {
-                    fetchMoodGenres()
-                }
-                val chartsDeferred = async {
-                    fetchCharts()
-                }
-                val recentlyPlayedDeferred = async {
-                    emptyList<Song>()
-                }
-                val mixedForYouDeferred = async {
-                    fetchSongsSection { browseRepository.getMixedForYou(HOME_SECTION_LIMIT) }
-                }
-
-                // ── Collect existing sections ──
-                val listenAgain = distinctSongs(listenAgainDeferred.await(), HOME_SECTION_LIMIT)
-                val quickPicksRaw = distinctSongs(quickPicksDeferred.await(), HOME_SECTION_LIMIT)
-                val newReleasesRaw = distinctSongs(newReleasesDeferred.await(), HOME_SECTION_LIMIT)
-                val trendingRaw = distinctSongs(trendingDeferred.await(), HOME_SECTION_LIMIT)
-                val englishHitsRaw = distinctSongs(englishHitsDeferred.await(), HOME_SECTION_LIMIT * 2)
-                val personalizedRaw = distinctSongs(personalizedDeferred.await(), HOME_SECTION_LIMIT)
-                val forgottenRaw = distinctSongs(forgottenDeferred.await(), HOME_SECTION_LIMIT)
-                val artistSectionsRaw = artistsDeferred.await()
-
-                // ── Collect new sections ──
-                val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
-                val trendingArtists = distinctSongs(trendingArtistsDeferred.await(), HOME_SECTION_LIMIT)
-                val moodGenres = moodGenresDeferred.await()
-                val charts = chartsDeferred.await()
-                val recentlyPlayed = distinctSongs(recentlyPlayedDeferred.await(), HOME_SECTION_LIMIT)
-                val mixedForYou = distinctSongs(mixedForYouDeferred.await(), HOME_SECTION_LIMIT)
-
-                // ── Post-process existing sections ──
-                val quickPicks = distinctSongs(
-                    songs = if (quickPicksRaw.isNotEmpty()) {
-                        quickPicksRaw
-                    } else {
-                        trendingRaw + newReleasesRaw + listenAgain
-                    },
-                    limit = HOME_SECTION_LIMIT
-                )
-
-                val personalized = distinctSongs(
-                    songs = if (personalizedRaw.isNotEmpty()) personalizedRaw else quickPicks,
-                    limit = HOME_SECTION_LIMIT
-                )
-
-                val englishHits = distinctSongs(
-                    songs = filterLikelyEnglishSongs(englishHitsRaw),
-                    limit = HOME_SECTION_LIMIT
-                )
-
-                val listenAgainIds = listenAgain.asSequence().map { it.id }.toHashSet()
-                val forgottenFavorites = distinctSongs(
-                    songs = forgottenRaw.filterNot { it.id in listenAgainIds },
-                    limit = HOME_SECTION_LIMIT
-                )
-
-                val artistSections = normalizeArtistSections(artistSectionsRaw)
-
-                Result.success(
-                    HomeContent(
-                        listenAgain = listenAgain,
-                        quickPicks = quickPicks,
-                        forgottenFavorites = forgottenFavorites,
-                        newReleases = newReleasesRaw,
-                        trending = trendingRaw,
-                        englishHits = englishHits,
-                        artists = artistSections,
-                        personalizedForYou = personalized,
-                        // New YTMusic Browse sections
-                        trendingAlbums = trendingAlbums,
-                        trendingArtists = trendingArtists,
-                        moodGenres = moodGenres,
-                        charts = charts,
-                        recentlyPlayed = recentlyPlayed,
-                        mixedForYou = mixedForYou
-                    )
-                )
-            }.also {
-                Log.d("GetHomeContent", "⏱️ Home content fetched in ${System.currentTimeMillis() - startMs}ms")
+        // ════════ STAGE 1a: Instant Local DB (Goal: < 50ms) ════════
+        coroutineScope {
+            val listenAgainDeferred = async {
+                runCatching {
+                    listenAgainRepository.getListenAgainSongs(HOME_SECTION_LIMIT)
+                }.getOrDefault(emptyList())
             }
-        } catch (e: Exception) {
-            Log.e("GetHomeContent", "❌ Home content failed in ${System.currentTimeMillis() - startMs}ms", e)
-            Result.failure(e)
+            val recentlyPlayedDeferred = async {
+                fetchRecentlyPlayed()
+            }
+
+            val listenAgain = distinctSongs(listenAgainDeferred.await(), HOME_SECTION_LIMIT)
+            val recentlyPlayed = distinctSongs(recentlyPlayedDeferred.await(), HOME_SECTION_LIMIT)
+
+            currentContent = currentContent.copy(
+                listenAgain = listenAgain,
+                recentlyPlayed = recentlyPlayed
+            )
+            emit(currentContent)
+            Log.d("GetHomeContent", "⚡ Stage 1a (Instant DB) emitted in ${System.currentTimeMillis() - startMs}ms")
+        }
+
+        // ════════ STAGE 1b: Quick Picks (Goal: < 150ms if cached) ════════
+        coroutineScope {
+            val quickPicksDeferred = async {
+                try {
+                    quickPicksRepository.getQuickPicks(HOME_SECTION_LIMIT, forceRefresh = forceRefresh)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+            }
+
+            val quickPicksRaw = distinctSongs(quickPicksDeferred.await(), HOME_SECTION_LIMIT)
+            val quickPicks = distinctSongs(
+                songs = if (quickPicksRaw.isNotEmpty()) quickPicksRaw else currentContent.listenAgain,
+                limit = HOME_SECTION_LIMIT
+            )
+
+            currentContent = currentContent.copy(
+                quickPicks = quickPicks
+            )
+            emit(currentContent)
+            Log.d("GetHomeContent", "⚡ Stage 1b (Quick Picks) emitted in ${System.currentTimeMillis() - startMs}ms")
+        }
+
+        // ════════ STAGE 2: Primary Remote Content (Goal: < 800ms) ════════
+        coroutineScope {
+            val personalizedDeferred = async {
+                fetchSongsSection {
+                    userTasteRepository.getPersonalizedMix((HOME_SECTION_LIMIT / 2).coerceAtLeast(8))
+                }
+            }
+            val trendingDeferred = async {
+                fetchSongsSection { songRepository.getTrending(HOME_SECTION_LIMIT) }
+            }
+            val newReleasesDeferred = async {
+                fetchSongsSection { songRepository.getNewReleases(HOME_SECTION_LIMIT) }
+            }
+            val mixedForYouDeferred = async {
+                fetchSongsSection { browseRepository.getMixedForYou(HOME_SECTION_LIMIT) }
+            }
+
+            val personalizedRaw = distinctSongs(personalizedDeferred.await(), HOME_SECTION_LIMIT)
+            val trendingRaw = distinctSongs(trendingDeferred.await(), HOME_SECTION_LIMIT)
+            val newReleasesRaw = distinctSongs(newReleasesDeferred.await(), HOME_SECTION_LIMIT)
+            val mixedForYou = distinctSongs(mixedForYouDeferred.await(), HOME_SECTION_LIMIT)
+
+            val personalized = distinctSongs(
+                songs = if (personalizedRaw.isNotEmpty()) personalizedRaw else currentContent.quickPicks,
+                limit = HOME_SECTION_LIMIT
+            )
+
+            currentContent = currentContent.copy(
+                personalizedForYou = personalized,
+                trending = trendingRaw,
+                newReleases = newReleasesRaw,
+                mixedForYou = mixedForYou
+            )
+            emit(currentContent)
+            Log.d("GetHomeContent", "⚡ Stage 2 (Primary Network) emitted in ${System.currentTimeMillis() - startMs}ms")
+        }
+
+        // ════════ STAGE 3: Secondary & Lazy Content ════════
+        coroutineScope {
+            val englishHitsDeferred = async {
+                fetchSongsSection { songRepository.getEnglishHits(HOME_SECTION_LIMIT * 2) }
+            }
+            val artistsDeferred = async {
+                fetchArtistSection { recommendationRepository.getTopArtistSongs(TOP_ARTIST_SECTION_COUNT) }
+            }
+            val forgottenDeferred = async {
+                fetchSongsSection { recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT) }
+            }
+            val trendingAlbumsDeferred = async {
+                fetchSongsSection { browseRepository.getTrendingAlbums(HOME_SECTION_LIMIT) }
+            }
+            val moodGenresDeferred = async {
+                fetchMoodGenres()
+            }
+            val chartsDeferred = async {
+                fetchCharts()
+            }
+
+            val englishHitsRaw = distinctSongs(englishHitsDeferred.await(), HOME_SECTION_LIMIT * 2)
+            val artistSectionsRaw = artistsDeferred.await()
+            val forgottenRaw = distinctSongs(forgottenDeferred.await(), HOME_SECTION_LIMIT)
+            val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
+            val moodGenres = moodGenresDeferred.await()
+            val charts = chartsDeferred.await()
+
+            val englishHits = distinctSongs(
+                songs = filterLikelyEnglishSongs(englishHitsRaw),
+                limit = HOME_SECTION_LIMIT
+            )
+
+            val listenAgainIds = currentContent.listenAgain.asSequence().map { it.id }.toHashSet()
+            val forgottenFavorites = distinctSongs(
+                songs = forgottenRaw.filterNot { it.id in listenAgainIds },
+                limit = HOME_SECTION_LIMIT
+            )
+
+            val artistSections = normalizeArtistSections(artistSectionsRaw)
+
+            currentContent = currentContent.copy(
+                forgottenFavorites = forgottenFavorites,
+                englishHits = englishHits,
+                artists = artistSections,
+                trendingAlbums = trendingAlbums,
+                moodGenres = moodGenres,
+                charts = charts
+            )
+            emit(currentContent)
+            Log.d("GetHomeContent", "⚡ Stage 3 (Secondary Network) completed in ${System.currentTimeMillis() - startMs}ms")
         }
     }
 

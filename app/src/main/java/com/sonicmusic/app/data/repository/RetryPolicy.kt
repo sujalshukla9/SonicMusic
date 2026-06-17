@@ -36,7 +36,6 @@ class RetryPolicy(
     private fun Throwable.isRetryable(): Boolean {
         return when (this) {
             is SocketTimeoutException -> true
-            is UnknownHostException -> true  // DNS failures can be transient (WiFi/mobile toggle)
             is InvalidHttpCodeException -> code in setOf(429, 500, 502, 503)
             else -> false
         }

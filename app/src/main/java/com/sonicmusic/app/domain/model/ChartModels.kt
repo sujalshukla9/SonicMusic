@@ -6,7 +6,9 @@ data class ChartSong(
     val artists: List<String>,
     val thumbnailUrl: String,
     val durationText: String?,
-    val rank: Int?
+    val rank: Int?,
+    val albumBrowseId: String? = null,
+    val albumName: String? = null
 )
 
 data class ChartArtist(

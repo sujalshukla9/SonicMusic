@@ -33,6 +33,7 @@ class ChartsRepositoryImpl @Inject constructor(
     private val songCache = ConcurrentHashMap<String, CacheEntry<ChartSong>>()
     private val artistCache = ConcurrentHashMap<String, CacheEntry<ChartArtist>>()
     private val albumCache = ConcurrentHashMap<String, CacheEntry<ChartAlbum>>()
+    private val chartPlaylistIdCache = ConcurrentHashMap<String, CacheEntry<String>>()
 
     override suspend fun getTopSongs(region: String): List<ChartSong> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -43,38 +44,37 @@ class ChartsRepositoryImpl @Inject constructor(
 
         try {
             val language = "en"
-            val requestBody = Innertube.webRemixBody(language, region) {
-                put("browseId", "FEmusic_charts")
-                put("params", Innertube.CHARTS_PARAMS_SONGS)
-            }
-
             val acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
-            val request = Innertube.musicPost(
+
+            // Step 1: Discover the chart playlist browseId from FEmusic_charts
+            val chartPlaylistBrowseId = getChartPlaylistBrowseId(region, language, acceptLanguage)
+            if (chartPlaylistBrowseId == null) {
+                Log.e(TAG, "❌ No chart playlist found for region: $region")
+                return@withContext emptyList()
+            }
+            Log.d(TAG, "🎵 Chart playlist browseId: $chartPlaylistBrowseId for region: $region")
+
+            // Step 2: Browse the chart playlist to get individual songs
+            val playlistBody = Innertube.webRemixBody(language, region) {
+                put("browseId", chartPlaylistBrowseId)
+            }
+            val playlistRequest = Innertube.musicPost(
                 endpoint = "/youtubei/v1/browse",
-                body = requestBody,
+                body = playlistBody,
                 acceptLanguage = acceptLanguage
             )
 
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                Log.e(TAG, "❌ Failed to fetch top songs: HTTP ${response.code}")
+            val playlistResponse = okHttpClient.newCall(playlistRequest).execute()
+            if (!playlistResponse.isSuccessful) {
+                Log.e(TAG, "❌ Failed to fetch chart playlist: HTTP ${playlistResponse.code}")
                 return@withContext emptyList()
             }
 
-            val responseBody = response.body?.string() ?: return@withContext emptyList()
-            try {
-                Log.d(TAG, "📝 Raw response length: ${responseBody.length}")
-                if (responseBody.isNotEmpty()) {
-                    Log.d(TAG, "📝 First 500 chars: ${responseBody.take(500)}")
-                    val countListItem = responseBody.split("musicResponsiveListItemRenderer").size - 1
-                    val countTwoRow = responseBody.split("musicTwoRowItemRenderer").size - 1
-                    Log.d(TAG, "📝 occurrences of musicResponsiveListItemRenderer: $countListItem")
-                    Log.d(TAG, "📝 occurrences of musicTwoRowItemRenderer: $countTwoRow")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to log debug stats", e)
-            }
-            val songs = parseTopSongs(responseBody)
+            val playlistJson = playlistResponse.body?.string() ?: return@withContext emptyList()
+            Log.d(TAG, "📝 Playlist response length: ${playlistJson.length}")
+
+            val songs = parseTopSongs(playlistJson)
+            Log.d(TAG, "✅ Parsed ${songs.size} songs from chart playlist")
             if (songs.isNotEmpty()) {
                 songCache[region] = CacheEntry(songs, now)
             }
@@ -159,6 +159,96 @@ class ChartsRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error loading top albums", e)
             emptyList()
+        }
+    }
+
+    // ══════════════════════════════════════════
+    // CHART PLAYLIST DISCOVERY
+    // ══════════════════════════════════════════
+
+    /**
+     * Fetches the FEmusic_charts page and extracts the first chart playlist browseId.
+     * The charts page returns playlist cards (musicTwoRowItemRenderer) like "Top 100 India",
+     * NOT individual songs. We need the playlist browseId to then browse for actual songs.
+     */
+    private fun getChartPlaylistBrowseId(
+        region: String,
+        language: String,
+        acceptLanguage: String
+    ): String? {
+        val now = System.currentTimeMillis()
+        chartPlaylistIdCache[region]?.takeIf { now - it.cachedAt < CACHE_TTL_MS }?.let {
+            Log.d(TAG, "♻️ Chart playlist ID cache hit for region: $region")
+            return it.data.firstOrNull()
+        }
+
+        val chartBody = Innertube.webRemixBody(language, region) {
+            put("browseId", "FEmusic_charts")
+            put("params", Innertube.CHARTS_PARAMS_SONGS)
+        }
+        val chartRequest = Innertube.musicPost(
+            endpoint = "/youtubei/v1/browse",
+            body = chartBody,
+            acceptLanguage = acceptLanguage
+        )
+
+        val chartResponse = okHttpClient.newCall(chartRequest).execute()
+        if (!chartResponse.isSuccessful) {
+            Log.e(TAG, "❌ Failed to fetch charts page: HTTP ${chartResponse.code}")
+            return null
+        }
+
+        val chartJson = chartResponse.body?.string() ?: return null
+        val browseId = parseChartPlaylistId(chartJson)
+
+        if (browseId != null) {
+            chartPlaylistIdCache[region] = CacheEntry(listOf(browseId), now)
+        }
+
+        return browseId
+    }
+
+    /**
+     * Parses the FEmusic_charts response to find the first chart playlist browseId.
+     * Looks for musicTwoRowItemRenderer items whose browseEndpoint points to a playlist
+     * (browseId starts with "VL"). Prefers PL-style playlists (Top 100) over OLAK (curated).
+     */
+    private fun parseChartPlaylistId(jsonString: String): String? {
+        try {
+            val root = JSONObject(jsonString)
+            val renderers = mutableListOf<JSONObject>()
+            findRenderers(root, "musicTwoRowItemRenderer", renderers)
+            Log.d(TAG, "🔍 parseChartPlaylistId: found ${renderers.size} musicTwoRowItemRenderer nodes")
+
+            val playlistBrowseIds = mutableListOf<String>()
+            for (rendererObj in renderers) {
+                val renderer = rendererObj.optJSONObject("musicTwoRowItemRenderer") ?: continue
+                val browseEndpoint = renderer.optJSONObject("navigationEndpoint")
+                    ?.optJSONObject("browseEndpoint") ?: continue
+                val browseId = browseEndpoint.optString("browseId").orEmpty()
+                val pageType = browseEndpoint
+                    .optJSONObject("browseEndpointContextSupportedConfigs")
+                    ?.optJSONObject("browseEndpointContextMusicConfig")
+                    ?.optString("pageType").orEmpty()
+
+                if (browseId.startsWith("VL") && pageType.contains("PLAYLIST", ignoreCase = true)) {
+                    playlistBrowseIds.add(browseId)
+                }
+            }
+
+            Log.d(TAG, "🔍 Found ${playlistBrowseIds.size} chart playlist browseIds")
+            if (playlistBrowseIds.isNotEmpty()) {
+                playlistBrowseIds.take(3).forEachIndexed { i, id ->
+                    Log.d(TAG, "  playlist[$i]: $id")
+                }
+            }
+
+            // Prefer PL playlists (Top 100 charts) over OLAK (curated/trending playlists)
+            return playlistBrowseIds.firstOrNull { it.startsWith("VLPL") }
+                ?: playlistBrowseIds.firstOrNull()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing chart playlist ID", e)
+            return null
         }
     }
 
@@ -277,6 +367,28 @@ class ChartsRepositoryImpl @Inject constructor(
                         ?.optString("text")
                         ?.toIntOrNull()
 
+                    var albumName: String? = null
+                    var albumBrowseId: String? = null
+                    if (flexColumns.length() > 2) {
+                        val albumColumnRuns = flexColumns.optJSONObject(2)
+                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                            ?.optJSONObject("text")
+                            ?.optJSONArray("runs")
+                        if (albumColumnRuns != null && albumColumnRuns.length() > 0) {
+                            val firstRun = albumColumnRuns.optJSONObject(0)
+                            if (firstRun != null) {
+                                val text = firstRun.optString("text", "").trim()
+                                if (text.isNotEmpty()) {
+                                    albumName = text
+                                    val browseId = firstRun.optJSONObject("navigationEndpoint")
+                                        ?.optJSONObject("browseEndpoint")
+                                        ?.optString("browseId", "")?.trim()
+                                    albumBrowseId = browseId?.takeIf { it.isNotBlank() }
+                                }
+                            }
+                        }
+                    }
+
                     songs.add(
                         ChartSong(
                             videoId = videoId,
@@ -284,7 +396,9 @@ class ChartsRepositoryImpl @Inject constructor(
                             artists = artists,
                             thumbnailUrl = upgradedThumbnail,
                             durationText = durationText,
-                            rank = parsedRank ?: (index + 1)
+                            rank = parsedRank ?: (index + 1),
+                            albumBrowseId = albumBrowseId,
+                            albumName = albumName
                         )
                     )
                 } catch (e: Exception) {
@@ -389,7 +503,7 @@ class ChartsRepositoryImpl @Inject constructor(
                             ?.optString("browseId")
                             ?: return@forEach
 
-                        if (browseId.isBlank() || (!browseId.startsWith("MPRE") && !browseId.startsWith("FEmusic_new_releases"))) return@forEach
+                        if (!isAlbumBrowseId(browseId)) return@forEach
 
                         val title = extractText(twoRow.optJSONObject("title"))
                         if (title.isBlank()) return@forEach
@@ -437,7 +551,7 @@ class ChartsRepositoryImpl @Inject constructor(
                             ?.optString("browseId")
                             ?: return@forEach
 
-                        if (browseId.isBlank() || !browseId.startsWith("MPRE")) return@forEach
+                        if (!isAlbumBrowseId(browseId)) return@forEach
 
                         val flexColumns = renderer.optJSONArray("flexColumns") ?: return@forEach
                         val title = extractTextFromColumn(flexColumns.optJSONObject(0))
@@ -490,6 +604,10 @@ class ChartsRepositoryImpl @Inject constructor(
         }
         Log.d(TAG, "✅ parseTopAlbums: parsed ${albums.size} albums (${albums.distinctBy { it.browseId }.size} unique)")
         return albums.distinctBy { it.browseId }
+    }
+
+    private fun isAlbumBrowseId(browseId: String): Boolean {
+        return browseId.startsWith("MPRE") || browseId.startsWith("MPLA")
     }
 
     private fun findRenderers(json: Any?, targetKey: String, outputList: MutableList<JSONObject>) {

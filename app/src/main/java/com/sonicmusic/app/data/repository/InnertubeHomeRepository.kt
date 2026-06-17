@@ -9,6 +9,9 @@ import com.sonicmusic.app.data.remote.source.HomeContentFilter
 import com.sonicmusic.app.data.remote.source.HomeMapper
 import com.sonicmusic.app.domain.model.HomeSong
 import com.sonicmusic.app.domain.model.HomeSection
+import com.sonicmusic.app.domain.repository.HomeRepository
+import com.sonicmusic.app.domain.repository.QuickPicksRepository
+import com.sonicmusic.app.domain.repository.UserTasteRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -27,8 +30,10 @@ import javax.inject.Singleton
 @Singleton
 class InnertubeHomeRepository @Inject constructor(
     private val okHttpClient: OkHttpClient,
-    private val settingsDataStore: SettingsDataStore
-) {
+    private val settingsDataStore: SettingsDataStore,
+    private val quickPicksRepository: QuickPicksRepository,
+    private val userTasteRepository: UserTasteRepository
+) : HomeRepository {
     companion object {
         private const val TAG = "InnertubeHomeRepo"
         private const val CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
@@ -42,22 +47,65 @@ class InnertubeHomeRepository @Inject constructor(
         val timestamp: Long
     )
 
+    override suspend fun getHomeFeed(customCookies: String?): List<HomeSection> {
+        return getHomeFeedInternal(customCookies, forceRefresh = false)
+    }
+
+    override suspend fun refreshQuickPicks(): HomeSection = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Refreshing Quick Picks from local QuickPicksRepository")
+        val songs = quickPicksRepository.getQuickPicks(limit = 20, forceRefresh = true)
+        val homeSongs = songs.map { song ->
+            HomeSong(
+                videoId = song.id,
+                title = song.title,
+                artists = listOf(song.artist),
+                album = song.albumName ?: song.album,
+                thumbnailUrl = song.thumbnailUrl,
+                durationText = null
+            )
+        }
+        HomeSection("Quick Picks", homeSongs)
+    }
+
+    override suspend fun refreshMadeForYou(): HomeSection = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Refreshing Made for You from local UserTasteRepository")
+        val songsResult = userTasteRepository.getPersonalizedMix(limit = 20)
+        val songs = songsResult.getOrDefault(emptyList())
+        val homeSongs = songs.map { song ->
+            HomeSong(
+                videoId = song.id,
+                title = song.title,
+                artists = listOf(song.artist),
+                album = song.albumName ?: song.album,
+                thumbnailUrl = song.thumbnailUrl,
+                durationText = null
+            )
+        }
+        HomeSection("Made for You", homeSongs)
+    }
+
     /**
      * Executes the pipeline orchestrator:
      * Chains: Fetch raw JSON -> Parse shelves -> Filter song-only & Blacklists -> Drop empty shelves -> Map to HomeSection.
      *
      * @param customCookies Optional session cookies to fetch personalized shelf recommendations.
+     * @param forceRefresh If true, clears the memory cache first.
      * @return List of clean home sections containing official song tracks.
      */
-    suspend fun getHomeFeed(customCookies: String? = null): List<HomeSection> = withContext(Dispatchers.IO) {
+    suspend fun getHomeFeedInternal(customCookies: String? = null, forceRefresh: Boolean = false): List<HomeSection> = withContext(Dispatchers.IO) {
         val region = settingsDataStore.countryCode.first() ?: "US"
         val cacheKey = "$region:${customCookies != null}"
 
-        // 1. CACHING LAYER: Return cached sections if within TTL
-        val cached = feedCache[cacheKey]
-        if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS) {
-            Log.d(TAG, "♻️ Memory cache hit for key: $cacheKey")
-            return@withContext cached.sections
+        if (forceRefresh) {
+            feedCache.remove(cacheKey)
+            Log.d(TAG, "Bypassed and cleared memory cache for key: $cacheKey")
+        } else {
+            // 1. CACHING LAYER: Return cached sections if within TTL
+            val cached = feedCache[cacheKey]
+            if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS) {
+                Log.d(TAG, "♻️ Memory cache hit for key: $cacheKey")
+                return@withContext cached.sections
+            }
         }
 
         try {

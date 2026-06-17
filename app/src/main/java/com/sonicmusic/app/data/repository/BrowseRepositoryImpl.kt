@@ -306,7 +306,12 @@ class BrowseRepositoryImpl @Inject constructor(
 
             // Network fetch from FEmusic_home
             try {
-                val result = youTubeiService.browseHome()
+                val recentSongIds = try {
+                    playbackHistoryDao.getRecentSongIds(15)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+                val result = youTubeiService.browseHome(recentSongIds)
                 result.onSuccess { shelves ->
                     // Collect songs from all shelves and shuffle to create a "mix"
                     val allSongs = shelves.flatMap { it.songs }
@@ -485,6 +490,8 @@ class BrowseRepositoryImpl @Inject constructor(
                 song.artistId?.let { put("artistId", it) }
                 song.category?.let { put("category", it) }
                 song.viewCount?.let { put("viewCount", it) }
+                song.albumBrowseId?.let { put("albumBrowseId", it) }
+                song.albumName?.let { put("albumName", it) }
             }
             array.put(obj)
         }
@@ -495,6 +502,8 @@ class BrowseRepositoryImpl @Inject constructor(
         if (array == null) return emptyList()
         return (0 until array.length()).mapNotNull { i ->
             val obj = array.optJSONObject(i) ?: return@mapNotNull null
+            val albumBrowseId = obj.optString("albumBrowseId", null)?.takeIf { it.isNotBlank() }
+            val albumName = obj.optString("albumName", null)?.takeIf { it.isNotBlank() }
             Song(
                 id = obj.optString("id", ""),
                 title = obj.optString("title", ""),
@@ -508,7 +517,11 @@ class BrowseRepositoryImpl @Inject constructor(
                 },
                 artistId = obj.optString("artistId", null),
                 category = obj.optString("category", null),
-                viewCount = if (obj.has("viewCount")) obj.optLong("viewCount") else null
+                viewCount = if (obj.has("viewCount")) obj.optLong("viewCount") else null,
+                albumId = albumBrowseId,
+                album = albumName,
+                albumBrowseId = albumBrowseId,
+                albumName = albumName
             )
         }
     }

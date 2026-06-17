@@ -1,9 +1,13 @@
 package com.sonicmusic.app.presentation.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.data.downloadmanager.SongDownloadManager
 import com.sonicmusic.app.data.local.entity.FollowedArtistEntity
+import com.sonicmusic.app.data.local.entity.DownloadedSong
+import com.sonicmusic.app.data.local.entity.DownloadStatus
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.sonicmusic.app.data.local.dao.ArtistPlayCount
 import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.domain.model.PlaybackHistory
@@ -32,9 +36,18 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class DownloadedSortType {
+    RECENTLY_DOWNLOADED, TITLE_A_Z, ARTIST_A_Z, FILE_SIZE, DURATION
+}
+
+enum class DownloadedFilterType {
+    ALL, COMPLETED_ONLY, FAILED_ONLY
+}
+
 @OptIn(FlowPreview::class)
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val songRepository: SongRepository,
     private val playlistRepository: PlaylistRepository,
     private val historyRepository: HistoryRepository,
@@ -81,6 +94,28 @@ class LibraryViewModel @Inject constructor(
     private val _isSearchActive = MutableStateFlow(false)
     val isSearchActive: StateFlow<Boolean> = _isSearchActive.asStateFlow()
 
+    // History search filter
+    private val _historySearchQuery = MutableStateFlow("")
+    val historySearchQuery: StateFlow<String> = _historySearchQuery.asStateFlow()
+
+    val fullHistory: StateFlow<List<PlaybackHistory>> = combine(
+        _historySearchQuery,
+        historyRepository.getRecentlyPlayed(500)
+    ) { query, history ->
+        if (query.isBlank()) {
+            history
+        } else {
+            history.filter {
+                it.title.contains(query, ignoreCase = true) ||
+                it.artist.contains(query, ignoreCase = true)
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun setHistorySearchQuery(query: String) {
+        _historySearchQuery.value = query
+    }
+
     // Filtered playlists based on search query
     val filteredPlaylists: StateFlow<List<Playlist>> = combine(
         _playlists, _searchQuery.debounce(300)
@@ -98,6 +133,59 @@ class LibraryViewModel @Inject constructor(
             it.title.contains(query, ignoreCase = true) ||
             it.artist.contains(query, ignoreCase = true)
         }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // --- Downloads Filtering, Sorting, and Searching ---
+    private val _downloadSortType = MutableStateFlow(DownloadedSortType.RECENTLY_DOWNLOADED)
+    val downloadSortType: StateFlow<DownloadedSortType> = _downloadSortType.asStateFlow()
+
+    private val _downloadFilterType = MutableStateFlow(DownloadedFilterType.ALL)
+    val downloadFilterType: StateFlow<DownloadedFilterType> = _downloadFilterType.asStateFlow()
+
+    private val _downloadSearchQuery = MutableStateFlow("")
+    val downloadSearchQuery: StateFlow<String> = _downloadSearchQuery.asStateFlow()
+
+    private val _freeSpaceBytes = MutableStateFlow(Long.MAX_VALUE)
+    val freeSpaceBytes: StateFlow<Long> = _freeSpaceBytes.asStateFlow()
+
+    private val _totalDownloadSize = MutableStateFlow(0L)
+    val totalDownloadSize: StateFlow<Long> = _totalDownloadSize.asStateFlow()
+
+    private val downloadedSongsFlow = songDownloadManager.getDownloadedSongs()
+
+    val filteredDownloadedSongs: StateFlow<List<DownloadedSong>> = combine(
+        downloadedSongsFlow,
+        _downloadSortType,
+        _downloadFilterType,
+        _downloadSearchQuery
+    ) { downloaded, sortType, filterType, query ->
+        var list = downloaded.filter { it.status != com.sonicmusic.app.data.local.entity.DownloadStatus.REMOVED }
+
+        // Filter
+        list = when (filterType) {
+            DownloadedFilterType.ALL -> list
+            DownloadedFilterType.COMPLETED_ONLY -> list.filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
+            DownloadedFilterType.FAILED_ONLY -> list.filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.FAILED }
+        }
+
+        // Search
+        if (query.isNotBlank()) {
+            list = list.filter {
+                it.title.contains(query, ignoreCase = true) ||
+                it.artists.contains(query, ignoreCase = true)
+            }
+        }
+
+        // Sort
+        list = when (sortType) {
+            DownloadedSortType.RECENTLY_DOWNLOADED -> list.sortedByDescending { it.downloadedAt }
+            DownloadedSortType.TITLE_A_Z -> list.sortedBy { it.title.lowercase().removePrefix("a ").removePrefix("an ").removePrefix("the ") }
+            DownloadedSortType.ARTIST_A_Z -> list.sortedBy { it.artists.lowercase() }
+            DownloadedSortType.FILE_SIZE -> list.sortedByDescending { it.fileSizeBytes }
+            DownloadedSortType.DURATION -> list.sortedByDescending { it.durationMs }
+        }
+
+        list
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
@@ -126,6 +214,10 @@ class LibraryViewModel @Inject constructor(
                     _recentlyPlayed.value = history
                 }
             }
+
+            launch {
+                historyRepository.pruneOldHistory(500)
+            }
             
             launch {
                 localMusicRepository.getLocalSongs().collect { songs ->
@@ -141,17 +233,26 @@ class LibraryViewModel @Inject constructor(
 
             launch {
                 songDownloadManager.getDownloadedSongs().collect { downloaded ->
-                    _downloadedSongs.value = downloaded.map { entity ->
-                        Song(
-                            id = entity.songId,
-                            title = entity.title,
-                            artist = entity.artist,
-                            duration = 0,
-                            thumbnailUrl = entity.thumbnailUrl.orEmpty()
-                        )
-                    }
+                    _downloadedSongs.value = downloaded
+                        .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
+                        .map { entity ->
+                            Song(
+                                id = entity.songId,
+                                title = entity.title,
+                                artist = entity.artists,
+                                duration = (entity.durationMs / 1000).toInt(),
+                                thumbnailUrl = entity.thumbnailUrl
+                            )
+                        }
+
+                    _totalDownloadSize.value = downloaded
+                        .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
+                        .sumOf { it.fileSizeBytes }
                 }
             }
+
+            // Initially load storage metrics
+            updateStorageMetrics()
 
             // Dismiss loading spinner once ANY data arrives
             // (all these flows emit immediately from Room)
@@ -188,8 +289,21 @@ class LibraryViewModel @Inject constructor(
         // Navigation handled in UI
     }
 
-    fun onDownloadedSongClick(song: Song) {
-        onSongClick(song)
+    fun onDownloadedSongClick(download: DownloadedSong) {
+        val song = Song(
+            id = download.videoId,
+            title = download.title,
+            artist = download.artists,
+            duration = (download.durationMs / 1000).toInt(),
+            thumbnailUrl = download.thumbnailUrl
+        )
+        val file = java.io.File(download.localFilePath)
+        if (file.exists()) {
+            playerServiceConnection.playSong(song, download.localFilePath)
+        } else {
+            // Fallback to streaming
+            onSongClick(song)
+        }
     }
 
     fun createPlaylist(name: String, description: String? = null) {
@@ -248,6 +362,24 @@ class LibraryViewModel @Inject constructor(
                 .onFailure { exception ->
                     _error.value = "Failed to play: ${exception.message}"
                 }
+        }
+    }
+
+    fun deleteHistoryEntry(id: Long) {
+        viewModelScope.launch {
+            historyRepository.deleteHistoryEntry(id)
+        }
+    }
+
+    fun restoreHistoryEntry(history: PlaybackHistory) {
+        viewModelScope.launch {
+            historyRepository.restoreHistoryEntry(history)
+        }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch {
+            historyRepository.clearHistory()
         }
     }
 
@@ -314,5 +446,70 @@ class LibraryViewModel @Inject constructor(
                 _error.value = "Failed to remove download"
             }
         }
+    }
+
+    fun updateStorageMetrics() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val file = context.getExternalFilesDir(null) ?: context.filesDir
+            _freeSpaceBytes.value = file.usableSpace
+        }
+    }
+
+    fun updateDownloadSort(sortType: DownloadedSortType) {
+        _downloadSortType.value = sortType
+    }
+
+    fun updateDownloadFilter(filterType: DownloadedFilterType) {
+        _downloadFilterType.value = filterType
+    }
+
+    fun updateDownloadSearchQuery(query: String) {
+        _downloadSearchQuery.value = query
+    }
+
+    fun pauseDownload(videoId: String) {
+        songDownloadManager.pauseDownload(videoId)
+    }
+
+    fun resumeDownload(videoId: String) {
+        songDownloadManager.resumeDownload(videoId)
+    }
+
+    fun cancelDownload(videoId: String) {
+        songDownloadManager.cancelDownload(videoId)
+    }
+
+    fun clearAllDownloads() {
+        viewModelScope.launch {
+            val success = songDownloadManager.clearAllDownloads()
+            if (!success) {
+                _error.value = "Failed to clear all downloads"
+            }
+        }
+    }
+
+    fun deleteDownloadsBatch(videoIds: List<String>) {
+        viewModelScope.launch {
+            var allSuccess = true
+            videoIds.forEach { id ->
+                val success = songDownloadManager.deleteDownload(id)
+                if (!success) allSuccess = false
+            }
+            if (!allSuccess) {
+                _error.value = "Failed to delete some downloads"
+            }
+        }
+    }
+
+    fun addSongsToPlaylistBatch(videoIds: List<String>, playlistId: Long, force: Boolean = false) {
+        viewModelScope.launch {
+            videoIds.forEach { videoId ->
+                playlistRepository.addSongToPlaylist(playlistId, videoId, force)
+            }
+        }
+    }
+
+    suspend fun hasAnySongInPlaylist(playlistId: Long, songIds: List<String>): Boolean {
+        return songIds.any { playlistRepository.hasSongInPlaylist(playlistId, it) }
     }
 }

@@ -11,9 +11,12 @@ data class QueueSong(
     val videoId: String,
     val title: String,
     val artists: String,
+    val artistId: String? = null,
     val thumbnailUrl: String,
     val durationMs: Long,
-    val isStreamUrlResolved: Boolean = false
+    val isStreamUrlResolved: Boolean = false,
+    val albumName: String? = null,
+    val albumBrowseId: String? = null
 ) {
     /**
      * Helper to format duration in MM:SS format.
@@ -34,9 +37,12 @@ fun Song.toQueueSong(isResolved: Boolean = false): QueueSong {
         videoId = id,
         title = title,
         artists = artist,
+        artistId = artistId,
         thumbnailUrl = thumbnailUrl,
         durationMs = duration.toLong() * 1000L,
-        isStreamUrlResolved = isResolved
+        isStreamUrlResolved = isResolved,
+        albumName = albumName ?: album,
+        albumBrowseId = albumBrowseId ?: albumId
     )
 }
 
@@ -48,7 +54,12 @@ fun QueueSong.toSong(): Song {
         id = videoId,
         title = title,
         artist = artists,
+        artistId = artistId,
         duration = (durationMs / 1000).toInt(),
-        thumbnailUrl = thumbnailUrl
+        thumbnailUrl = thumbnailUrl,
+        album = albumName,
+        albumId = albumBrowseId,
+        albumName = albumName,
+        albumBrowseId = albumBrowseId
     )
 }

@@ -15,6 +15,8 @@ import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.DarkMode
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.domain.model.PlayerControlStyle
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -56,7 +58,15 @@ class SettingsDataStore @Inject constructor(
         val AUTO_UPDATE_ENABLED = booleanPreferencesKey("auto_update_enabled")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val IS_REGION_FROM_IP = booleanPreferencesKey("is_region_from_ip")
+        val THUMBNAIL_SHAPE = stringPreferencesKey("thumbnail_shape")
+        val PLAYER_CONTROL_STYLE = stringPreferencesKey("player_control_style")
+        val HISTORY_RETENTION = stringPreferencesKey("history_retention")
     }
+
+    val historyRetention: Flow<String> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.HISTORY_RETENTION] ?: "FOREVER"
+        }
 
     val streamQuality: Flow<StreamQuality> = context.dataStore.data
         .map { preferences ->
@@ -201,6 +211,18 @@ class SettingsDataStore @Inject constructor(
     val onboardingCompleted: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.ONBOARDING_COMPLETED] ?: false
+        }
+
+    val thumbnailShape: Flow<ThumbnailShape> = context.dataStore.data
+        .map { preferences ->
+            val shapeString = preferences[PreferencesKeys.THUMBNAIL_SHAPE]
+            ThumbnailShape.fromString(shapeString)
+        }
+
+    val playerControlStyle: Flow<PlayerControlStyle> = context.dataStore.data
+        .map { preferences ->
+            val styleString = preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] ?: PlayerControlStyle.CLASSIC.name
+            PlayerControlStyle.fromString(styleString)
         }
 
     suspend fun setStreamQuality(quality: StreamQuality) {
@@ -360,6 +382,24 @@ class SettingsDataStore @Inject constructor(
     suspend fun setOnboardingCompleted(completed: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.ONBOARDING_COMPLETED] = completed
+        }
+    }
+
+    suspend fun setThumbnailShape(shape: ThumbnailShape) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.THUMBNAIL_SHAPE] = shape.name
+        }
+    }
+
+    suspend fun setPlayerControlStyle(style: PlayerControlStyle) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] = style.name
+        }
+    }
+
+    suspend fun setHistoryRetention(retention: String) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.HISTORY_RETENTION] = retention
         }
     }
 

@@ -10,5 +10,7 @@ data class PlaylistEntity(
     val description: String? = null,
     val coverArtUrl: String? = null,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val isLocal: Boolean = true,
+    val remoteId: String? = null
 )

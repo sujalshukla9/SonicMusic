@@ -58,18 +58,20 @@ class QuickPicksRepositoryImpl @Inject constructor(
     @Volatile
     private var cachedRegionCode: String? = null
 
-    override suspend fun getQuickPicks(limit: Int): List<Song> = withContext(Dispatchers.IO) {
+    override suspend fun getQuickPicks(limit: Int, forceRefresh: Boolean): List<Song> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val regionCode = resolveCacheRegionCode()
 
-        // Return cache only if it's fresh for the active region.
-        cachedPicks?.takeIf {
-            now - cachedAtMs < CACHE_TTL_MS &&
-                it.size >= limit / 2 &&
-                cachedRegionCode == regionCode
-        }?.let {
-            Log.d(TAG, "♻️ Returning cached Quick Picks (${it.size} songs)")
-            return@withContext it.take(limit)
+        // Return cache only if it's fresh for the active region and not force-refreshed.
+        if (!forceRefresh) {
+            cachedPicks?.takeIf {
+                now - cachedAtMs < CACHE_TTL_MS &&
+                    it.size >= limit / 2 &&
+                    cachedRegionCode == regionCode
+            }?.let {
+                Log.d(TAG, "♻️ Returning cached Quick Picks (${it.size} songs)")
+                return@withContext it.take(limit)
+            }
         }
 
         val startMs = System.currentTimeMillis()

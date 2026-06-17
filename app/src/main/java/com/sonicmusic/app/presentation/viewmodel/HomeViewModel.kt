@@ -36,7 +36,11 @@ import javax.inject.Inject
  * - Shuffle and Play support
  */
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
 import com.sonicmusic.app.data.local.entity.DownloadStatus
+import com.sonicmusic.app.data.repository.HomeRefreshManager
+import com.sonicmusic.app.domain.model.ContentType
+import java.util.Locale
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -49,7 +53,8 @@ class HomeViewModel @Inject constructor(
     private val browseRepository: BrowseRepository,
     private val artistRepository: ArtistRepository,
     private val networkMonitor: com.sonicmusic.app.core.network.NetworkMonitor,
-    private val downloadRepository: com.sonicmusic.app.data.repository.DownloadRepository
+    private val downloadRepository: com.sonicmusic.app.data.repository.DownloadRepository,
+    private val homeRefreshManager: HomeRefreshManager
 ) : ViewModel() {
 
     companion object {
@@ -96,6 +101,12 @@ class HomeViewModel @Inject constructor(
     private val _dynamicSections = MutableStateFlow<Map<String, List<Song>>>(emptyMap())
     val dynamicSections: StateFlow<Map<String, List<Song>>> = _dynamicSections.asStateFlow()
 
+    private val _visibleSections = MutableStateFlow<Set<Any>>(emptySet())
+
+    private var pendingQuickPicks: List<Song>? = null
+    private var pendingPersonalized: List<Song>? = null
+    private var isScrollInProgress = false
+
     /** Prevents concurrent load / refresh from racing. */
     private var loadJob: Job? = null
 
@@ -111,6 +122,92 @@ class HomeViewModel @Inject constructor(
     init {
         loadHomeContent()
         observeFollowedArtists()
+        observeHomeRefreshes()
+    }
+
+    private fun applyPendingQuickPicks() {
+        pendingQuickPicks?.let { songs ->
+            _homeContent.value = _homeContent.value.copy(quickPicks = songs)
+            pendingQuickPicks = null
+            Log.d(TAG, "Applied pending Quick Picks update")
+        }
+    }
+
+    private fun applyPendingPersonalized() {
+        pendingPersonalized?.let { songs ->
+            _homeContent.value = _homeContent.value.copy(personalizedForYou = songs)
+            pendingPersonalized = null
+            Log.d(TAG, "Applied pending Made for You update")
+        }
+    }
+
+    private fun applyPendingUpdates() {
+        applyPendingQuickPicks()
+        applyPendingPersonalized()
+    }
+
+    fun onVisibleSectionsChanged(visibleKeys: Set<Any>, isScrollInProgress: Boolean = false) {
+        this.isScrollInProgress = isScrollInProgress
+        _visibleSections.value = visibleKeys
+
+        if (!isScrollInProgress) {
+            applyPendingUpdates()
+        } else {
+            if ("quick_picks" !in visibleKeys && "for_you" !in visibleKeys) {
+                applyPendingQuickPicks()
+            }
+            if ("personalized_for_you" !in visibleKeys) {
+                applyPendingPersonalized()
+            }
+        }
+    }
+
+    private fun observeHomeRefreshes() {
+        viewModelScope.launch {
+            homeRefreshManager.refreshEvents.collect { (title, section) ->
+                Log.d(TAG, "HomeRefreshManager updated section: $title with ${section.songs.size} items")
+                val updatedSongs = section.songs.map { homeSong ->
+                    Song(
+                        id = homeSong.videoId,
+                        title = homeSong.title,
+                        artist = homeSong.artists.firstOrNull() ?: "Unknown Artist",
+                        duration = 0,
+                        thumbnailUrl = homeSong.thumbnailUrl,
+                        album = homeSong.album,
+                        albumBrowseId = null,
+                        albumName = homeSong.album,
+                        contentType = ContentType.SONG
+                    )
+                }
+
+                val currentContent = _homeContent.value
+                val isQuickPicksVisible = "quick_picks" in _visibleSections.value || "for_you" in _visibleSections.value
+                val isPersonalizedVisible = "personalized_for_you" in _visibleSections.value
+
+                when (title.lowercase(Locale.US)) {
+                    "quick picks", "quickpicks" -> {
+                        if (isQuickPicksVisible && isScrollInProgress) {
+                            pendingQuickPicks = updatedSongs
+                            Log.d(TAG, "Delaying Quick Picks update because section is currently visible and scrolling")
+                        } else {
+                            _homeContent.value = currentContent.copy(quickPicks = updatedSongs)
+                            pendingQuickPicks = null
+                            Log.d(TAG, "Applied Quick Picks update immediately (visible=$isQuickPicksVisible, scrolling=$isScrollInProgress)")
+                        }
+                    }
+                    "made for you", "personalized", "mixed for you" -> {
+                        if (isPersonalizedVisible && isScrollInProgress) {
+                            pendingPersonalized = updatedSongs
+                            Log.d(TAG, "Delaying Made for You update because section is currently visible and scrolling")
+                        } else {
+                            _homeContent.value = currentContent.copy(personalizedForYou = updatedSongs)
+                            pendingPersonalized = null
+                            Log.d(TAG, "Applied Made for You update immediately (visible=$isPersonalizedVisible, scrolling=$isScrollInProgress)")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun observeFollowedArtists() {
@@ -159,7 +256,7 @@ class HomeViewModel @Inject constructor(
         loadJob = viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-            fetchHomeContent()
+            fetchHomeContent(forceRefresh = false)
             _isLoading.value = false
         }
     }
@@ -172,7 +269,7 @@ class HomeViewModel @Inject constructor(
             _refreshResult.value = null
             _error.value = null
             try {
-                fetchHomeContent()
+                fetchHomeContent(forceRefresh = true)
                 _refreshResult.value = if (_error.value == null) RefreshResult.SUCCESS else RefreshResult.ERROR
             } catch (_: Exception) {
                 _refreshResult.value = RefreshResult.ERROR
@@ -182,22 +279,25 @@ class HomeViewModel @Inject constructor(
     }
 
     /** Shared loader used by both initial load and refresh. */
-    private suspend fun fetchHomeContent() {
+    private suspend fun fetchHomeContent(forceRefresh: Boolean) {
         val startMs = System.currentTimeMillis()
         try {
             // Ensure IP-based region is initialized before home recommendations load.
             runCatching { regionRepository.initializeRegion() }
                 .onFailure { error -> Log.w(TAG, "Region initialization failed before home load", error) }
 
-            getHomeContentUseCase()
-                .onSuccess { content ->
-                    _homeContent.value = content
-                    Log.d(TAG, "⏱️ Home content loaded in ${System.currentTimeMillis() - startMs}ms")
+            var emissionCount = 0
+            getHomeContentUseCase(forceRefresh).collect { content ->
+                _homeContent.value = content
+                emissionCount++
+                
+                // Progressive loading: dismiss loading indicator as soon as local/cached items are visible.
+                // Emission 1 represents Stage 1a (Instant DB). Emission 2 is Stage 1b (Quick Picks).
+                if (emissionCount >= 2 || content.listenAgain.isNotEmpty() || content.recentlyPlayed.isNotEmpty()) {
+                    _isLoading.value = false
                 }
-                .onFailure { exception ->
-                    _error.value = exception.message ?: "Failed to load content"
-                    Log.w(TAG, "⏱️ Home content failed in ${System.currentTimeMillis() - startMs}ms")
-                }
+            }
+            Log.d(TAG, "⏱️ Home content loaded in ${System.currentTimeMillis() - startMs}ms")
         } catch (e: Exception) {
             Log.e(TAG, "Error loading home content (${System.currentTimeMillis() - startMs}ms)", e)
             _error.value = "Failed to load: ${e.message}"

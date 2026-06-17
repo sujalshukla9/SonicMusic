@@ -15,5 +15,5 @@ interface QuickPicksRepository {
      * @param limit target number of songs (default 25)
      * @return list of scored and interleaved songs
      */
-    suspend fun getQuickPicks(limit: Int = 25): List<Song>
+    suspend fun getQuickPicks(limit: Int = 25, forceRefresh: Boolean = false): List<Song>
 }

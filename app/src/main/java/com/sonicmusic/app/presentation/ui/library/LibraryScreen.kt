@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
@@ -80,6 +81,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.sonicmusic.app.presentation.ui.theme.Dimens
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.PlaybackHistory
@@ -169,51 +171,61 @@ fun LibraryScreen(
                     enter = expandVertically(),
                     exit = shrinkVertically()
                 ) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { viewModel.updateSearchQuery(it) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        placeholder = { Text("Search playlists, songs...") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(28.dp),
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                                    Icon(Icons.Rounded.Close, contentDescription = "Clear")
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { viewModel.updateSearchQuery(it) },
+                            modifier = Modifier
+                                .widthIn(max = Dimens.maxContentWidth)
+                                .fillMaxWidth()
+                                .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+                            placeholder = { Text("Search playlists, songs...") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(28.dp),
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                        Icon(Icons.Rounded.Close, contentDescription = "Clear")
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
     ) { paddingValues ->
         if (isLoading) {
-            LibraryScreenSkeleton(
-                contentPadding = PaddingValues(
-                    top = paddingValues.calculateTopPadding() + 16.dp,
-                    bottom = bottomPadding + 16.dp
-                )
-            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Box(modifier = Modifier.widthIn(max = Dimens.maxContentWidth)) {
+                    LibraryScreenSkeleton(
+                        contentPadding = PaddingValues(
+                            top = paddingValues.calculateTopPadding() + Dimens.screenPadding,
+                            bottom = bottomPadding + Dimens.screenPadding
+                        )
+                    )
+                }
+            }
         } else {
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 340.dp),
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(
-                    top = paddingValues.calculateTopPadding() + 16.dp, 
-                    bottom = bottomPadding + 16.dp
-                ),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 340.dp),
+                    modifier = Modifier
+                        .widthIn(max = Dimens.maxContentWidth)
+                        .fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        top = paddingValues.calculateTopPadding() + Dimens.screenPadding, 
+                        bottom = bottomPadding + Dimens.screenPadding
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                             // Quick Access / Hero Cards
                             item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                                        .padding(start = Dimens.screenPadding, end = Dimens.screenPadding, bottom = 8.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
                         HeroCard(
@@ -243,7 +255,7 @@ fun LibraryScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                                .padding(horizontal = Dimens.screenPadding, vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             FilledTonalButton(
@@ -279,7 +291,7 @@ fun LibraryScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                            .padding(horizontal = Dimens.screenPadding)
                             .clip(RoundedCornerShape(24.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     ) {
@@ -311,7 +323,7 @@ fun LibraryScreen(
                     Row(
                          modifier = Modifier
                              .fillMaxWidth()
-                             .padding(horizontal = 16.dp, vertical = 8.dp),
+                             .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
                          horizontalArrangement = Arrangement.SpaceBetween,
                          verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -328,7 +340,7 @@ fun LibraryScreen(
                 if (playlists.isNotEmpty()) {
                     item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
                         LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             // Create New Playlist Card
@@ -373,7 +385,7 @@ fun LibraryScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -438,7 +450,7 @@ fun LibraryScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -461,7 +473,7 @@ fun LibraryScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onNavigateToArtistDetail(artist.artistName) }
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                                .padding(horizontal = Dimens.screenPadding, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Surface(
@@ -509,6 +521,7 @@ fun LibraryScreen(
             }
         }
     }
+}
 }
 
 @Composable

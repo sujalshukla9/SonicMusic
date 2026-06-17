@@ -194,6 +194,9 @@ dependencies {
     // Image Loading
     implementation(libs.coil.compose)
     
+    // Graphics Shapes for expressive polygons and morphing
+    implementation(libs.androidx.graphics.shapes)
+    
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.core)

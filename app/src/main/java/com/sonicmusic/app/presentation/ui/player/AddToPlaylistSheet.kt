@@ -36,6 +36,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
 
@@ -46,14 +48,17 @@ fun AddToPlaylistSheet(
     playlists: List<Playlist>,
     fallbackArtworkUrl: String?,
     onDismiss: () -> Unit,
-    onSelectPlaylist: (Long) -> Unit,
+    onSelectPlaylist: (Long, Boolean) -> Unit,
     onCreatePlaylistAndAdd: (String) -> Unit,
+    checkDuplicate: (suspend (Long) -> Boolean)? = null,
     modifier: Modifier = Modifier
 ) {
     if (!isVisible) return
 
+    val scope = rememberCoroutineScope()
     var showCreateDialog by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
+    var selectedPlaylistForDuplicate by remember { mutableStateOf<Playlist?>(null) }
     val colorScheme = MaterialTheme.colorScheme
 
     if (showCreateDialog) {
@@ -86,6 +91,31 @@ fun AddToPlaylistSheet(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (selectedPlaylistForDuplicate != null) {
+        AlertDialog(
+            onDismissRequest = { selectedPlaylistForDuplicate = null },
+            title = { Text("Duplicate Song") },
+            text = { Text("This song is already in \"${selectedPlaylistForDuplicate?.name}\". Do you want to add it anyway?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val playlistId = selectedPlaylistForDuplicate!!.id
+                        onSelectPlaylist(playlistId, true)
+                        selectedPlaylistForDuplicate = null
+                        onDismiss()
+                    }
+                ) {
+                    Text("Add anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { selectedPlaylistForDuplicate = null }) {
                     Text("Cancel")
                 }
             }
@@ -142,8 +172,20 @@ fun AddToPlaylistSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                onSelectPlaylist(playlist.id)
-                                onDismiss()
+                                if (checkDuplicate != null) {
+                                    scope.launch {
+                                        val isDuplicate = checkDuplicate(playlist.id)
+                                        if (isDuplicate) {
+                                            selectedPlaylistForDuplicate = playlist
+                                        } else {
+                                            onSelectPlaylist(playlist.id, false)
+                                            onDismiss()
+                                        }
+                                    }
+                                } else {
+                                    onSelectPlaylist(playlist.id, false)
+                                    onDismiss()
+                                }
                             }
                             .padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,

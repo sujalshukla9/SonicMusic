@@ -14,6 +14,8 @@ import com.sonicmusic.app.data.repository.SearchRepositoryImpl
 import com.sonicmusic.app.data.repository.SearchSuggestionRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
 import com.sonicmusic.app.data.repository.ArtistRepositoryImpl
+import com.sonicmusic.app.data.repository.AlbumRepositoryImpl
+import com.sonicmusic.app.domain.repository.AlbumRepository
 import com.sonicmusic.app.data.repository.LyricsRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.ListenAgainRepository
@@ -27,6 +29,10 @@ import com.sonicmusic.app.domain.repository.SearchSuggestionRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.repository.ArtistRepository
 import com.sonicmusic.app.domain.repository.LyricsRepository
+import com.sonicmusic.app.domain.repository.PlayerRepository
+import com.sonicmusic.app.domain.repository.HomeRepository
+import com.sonicmusic.app.data.repository.PlayerRepositoryImpl
+import com.sonicmusic.app.data.repository.InnertubeHomeRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -130,9 +136,27 @@ abstract class RepositoryModule {
 
     @Binds
     @Singleton
+    abstract fun bindAlbumRepository(
+        impl: AlbumRepositoryImpl
+    ): AlbumRepository
+
+    @Binds
+    @Singleton
     abstract fun bindChartsRepository(
         impl: com.sonicmusic.app.data.repository.ChartsRepositoryImpl
     ): com.sonicmusic.app.domain.repository.ChartsRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPlayerRepository(
+        impl: PlayerRepositoryImpl
+    ): PlayerRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindHomeRepository(
+        impl: InnertubeHomeRepository
+    ): HomeRepository
 
     companion object {
         @Provides

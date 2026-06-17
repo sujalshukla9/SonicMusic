@@ -46,6 +46,10 @@ class QueueManager @Inject constructor(
     private var initialVideoId: String? = null
     private var initialPlaylistId: String? = null
 
+    // Propagated album details when radio starts from an album context
+    private var activeAlbumBrowseId: String? = null
+    private var activeAlbumName: String? = null
+
     /**
      * Loads the initial queue for a given videoId and playlistId.
      * Seed song is loaded instantly from Room cache to avoid network latency.
@@ -67,11 +71,30 @@ class QueueManager @Inject constructor(
             initialSeed = cached?.toQueueSong()
         }
 
+        val isFromAlbum = (seedSong?.albumBrowseId != null) || 
+                          (playlistId != null && (playlistId.startsWith("MPRE") || playlistId.startsWith("MPLA")))
+        if (isFromAlbum) {
+            activeAlbumBrowseId = seedSong?.albumBrowseId ?: initialSeed?.albumBrowseId
+            activeAlbumName = seedSong?.albumName ?: initialSeed?.albumName
+            Log.d(TAG, "Queue started from album context: $activeAlbumName ($activeAlbumBrowseId)")
+        } else {
+            activeAlbumBrowseId = null
+            activeAlbumName = null
+        }
+
         if (initialSeed != null) {
+            val finalSeed = if (activeAlbumBrowseId != null) {
+                initialSeed.copy(
+                    albumBrowseId = initialSeed.albumBrowseId ?: activeAlbumBrowseId,
+                    albumName = initialSeed.albumName ?: activeAlbumName
+                )
+            } else {
+                initialSeed
+            }
             // Seed song details are available locally. Update queue instantly to make start of play lag-free.
-            _currentQueue.value = listOf(initialSeed)
+            _currentQueue.value = listOf(finalSeed)
             _currentIndex.value = 0
-            Log.d(TAG, "Instant queue seed loading successful: ${initialSeed.title}")
+            Log.d(TAG, "Instant queue seed loading successful: ${finalSeed.title}")
         }
 
         try {
@@ -102,12 +125,29 @@ class QueueManager @Inject constructor(
                 }
 
                 initialSeed?.let {
-                    queueSongs.add(it)
+                    val finalSeed = if (activeAlbumBrowseId != null) {
+                        it.copy(
+                            albumBrowseId = it.albumBrowseId ?: activeAlbumBrowseId,
+                            albumName = it.albumName ?: activeAlbumName
+                        )
+                    } else {
+                        it
+                    }
+                    queueSongs.add(finalSeed)
                 }
 
                 songs.forEach { song ->
                     if (song.id != videoId) {
-                        queueSongs.add(song.toQueueSong())
+                        val queueSong = song.toQueueSong()
+                        val finalQueueSong = if (activeAlbumBrowseId != null) {
+                            queueSong.copy(
+                                albumBrowseId = queueSong.albumBrowseId ?: activeAlbumBrowseId,
+                                albumName = queueSong.albumName ?: activeAlbumName
+                            )
+                        } else {
+                            queueSong
+                        }
+                        queueSongs.add(finalQueueSong)
                     }
                 }
 
@@ -192,11 +232,20 @@ class QueueManager @Inject constructor(
 
             if (success) {
                 continuationToken = nextContinuation
-                val filteredSongs = resultSongs.map { it.toQueueSong() }
-                    .filter { newSong ->
-                        !_currentQueue.value.any { it.videoId == newSong.videoId } &&
-                        !historySet.contains(newSong.videoId)
+                val filteredSongs = resultSongs.map { song ->
+                    val queueSong = song.toQueueSong()
+                    if (activeAlbumBrowseId != null) {
+                        queueSong.copy(
+                            albumBrowseId = queueSong.albumBrowseId ?: activeAlbumBrowseId,
+                            albumName = queueSong.albumName ?: activeAlbumName
+                        )
+                    } else {
+                        queueSong
                     }
+                }.filter { newSong ->
+                    !_currentQueue.value.any { it.videoId == newSong.videoId } &&
+                    !historySet.contains(newSong.videoId)
+                }
 
                 if (filteredSongs.isNotEmpty()) {
                     _currentQueue.update { current -> current + filteredSongs }

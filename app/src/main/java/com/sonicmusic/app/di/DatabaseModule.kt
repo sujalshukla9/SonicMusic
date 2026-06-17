@@ -28,11 +28,18 @@ object DatabaseModule {
             }
         }
 
+        val migration10to11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE playlists ADD COLUMN isLocal INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE playlists ADD COLUMN remoteId TEXT DEFAULT NULL")
+            }
+        }
+
         val builder = Room.databaseBuilder(
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
-        ).addMigrations(migration9to10)
+        ).addMigrations(migration9to10, migration10to11)
 
         if (com.sonicmusic.app.BuildConfig.DEBUG) {
             builder.setQueryCallback({ sqlQuery, bindArgs ->

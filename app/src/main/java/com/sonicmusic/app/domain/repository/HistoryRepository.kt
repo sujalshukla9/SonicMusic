@@ -11,6 +11,8 @@ interface HistoryRepository {
     fun getAllArtists(): Flow<List<ArtistPlayCount>>
     fun getSongsByArtist(artist: String): Flow<List<PlaybackHistory>>
     suspend fun recordPlayback(song: Song, playDuration: Int = 0, completed: Boolean = false, totalDuration: Int = 0)
+    suspend fun deleteHistoryEntry(id: Long)
+    suspend fun restoreHistoryEntry(history: PlaybackHistory)
     suspend fun clearHistory()
     suspend fun pruneOldHistory(keepCount: Int = 100)
 }

@@ -17,9 +17,17 @@ import com.sonicmusic.app.R
 import com.sonicmusic.app.player.playback.PlaybackService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import android.media.MediaDescription as BrowserMediaDescription
 import android.media.browse.MediaBrowser.MediaItem as BrowserMediaItem
 import androidx.media3.common.Player
+import com.sonicmusic.app.data.repository.DownloadRepository
+import kotlinx.coroutines.flow.first
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import com.sonicmusic.app.player.queue.PlayerController
+import com.sonicmusic.app.domain.repository.SongRepository
 
 /**
  * Media Browser Service for Android Auto, Google Assistant, and Wear OS
@@ -31,11 +39,21 @@ import androidx.media3.common.Player
  * 
  * This creates a bridge between Media3's MediaSession and the legacy MediaBrowserService API.
  */
+@AndroidEntryPoint
 class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     
     companion object {
         private const val TAG = "MediaBrowserService"
     }
+
+    @Inject
+    lateinit var playerController: PlayerController
+
+    @Inject
+    lateinit var songRepository: SongRepository
+
+    @Inject
+    lateinit var downloadRepository: DownloadRepository
     
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private var bound = false
@@ -171,19 +189,84 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     ) {
         Log.d(TAG, "onLoadChildren: $parentId")
         
-        // Return browsable categories
-        result.sendResult(
-            when (MediaId(parentId)) {
-                MediaId.ROOT -> mutableListOf(
-                    createBrowsableItem(MediaId.SONGS, "Songs", R.drawable.ic_notification_small),
-                    createBrowsableItem(MediaId.FAVORITES, "Favorites", R.drawable.ic_notification_small)
+        when (MediaId(parentId)) {
+            MediaId.ROOT -> {
+                result.sendResult(
+                    mutableListOf(
+                        createBrowsableItem(MediaId.SONGS, "Songs", R.drawable.ic_notification_small),
+                        createBrowsableItem(MediaId.FAVORITES, "Favorites", R.drawable.ic_notification_small)
+                    )
                 )
-                
-                // For now, return empty lists - songs are fetched from queue
-                MediaId.SONGS, MediaId.FAVORITES -> mutableListOf()
-                
-                else -> mutableListOf()
             }
+            MediaId.SONGS -> {
+                result.detach()
+                coroutineScope.launch {
+                    try {
+                        val songs = downloadRepository.getDownloadedSongs().first()
+                        val mediaItems = songs.map { song ->
+                            createPlayableItem(
+                                mediaId = song.videoId,
+                                title = song.title,
+                                artist = song.artist,
+                                album = "",
+                                artworkUri = song.thumbnailUrl
+                            )
+                        }.toMutableList()
+                        result.sendResult(mediaItems)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to load downloaded songs", e)
+                        result.sendResult(mutableListOf())
+                    }
+                }
+            }
+            MediaId.FAVORITES -> {
+                result.detach()
+                coroutineScope.launch {
+                    try {
+                        val songs = songRepository.getLikedSongs().first()
+                        val mediaItems = songs.map { song ->
+                            createPlayableItem(
+                                mediaId = song.id,
+                                title = song.title,
+                                artist = song.artist,
+                                album = song.album.orEmpty(),
+                                artworkUri = song.thumbnailUrl
+                            )
+                        }.toMutableList()
+                        result.sendResult(mediaItems)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to load liked songs", e)
+                        result.sendResult(mutableListOf())
+                    }
+                }
+            }
+            else -> {
+                result.sendResult(mutableListOf())
+            }
+        }
+    }
+
+    private fun createPlayableItem(
+        mediaId: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkUri: String
+    ): BrowserMediaItem {
+        val extras = Bundle().apply {
+            putString("albumName", album)
+            putString("artistName", artist)
+        }
+        return BrowserMediaItem(
+            BrowserMediaDescription.Builder()
+                .setMediaId(mediaId)
+                .setTitle(title)
+                .setSubtitle(artist)
+                .setDescription(album)
+                .setIconUri(Uri.parse(artworkUri))
+                .setExtras(extras)
+                .build(),
+            BrowserMediaItem.FLAG_PLAYABLE
         )
     }
 
@@ -296,12 +379,47 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onPlayFromSearch(query: String?, extras: Bundle?) {
             Log.d(TAG, "onPlayFromSearch: $query")
-            // TODO: Implement search functionality
+            if (query.isNullOrBlank()) return
+
+            coroutineScope.launch {
+                val result = songRepository.searchSongs(query, limit = 5)
+                result.onSuccess { songs ->
+                    val firstSong = songs.firstOrNull()
+                    if (firstSong != null) {
+                        Log.d(TAG, "Playing search result for voice query: ${firstSong.title} (${firstSong.id})")
+                        withContext(Dispatchers.Main) {
+                            playerController.playSong(
+                                videoId = firstSong.id,
+                                seedSong = firstSong
+                            )
+                        }
+                    } else {
+                        Log.w(TAG, "No songs found matching voice search query: $query")
+                    }
+                }.onFailure { error ->
+                    Log.e(TAG, "Error playing song from voice search: $query", error)
+                }
+            }
         }
 
         override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
             Log.d(TAG, "onPlayFromMediaId: $mediaId")
-            // Playback is handled by the main UI
+            if (mediaId.isNullOrBlank()) return
+
+            coroutineScope.launch {
+                val result = songRepository.getSongById(mediaId)
+                result.onSuccess { song ->
+                    Log.d(TAG, "Playing song from media ID: ${song.title} (${song.id})")
+                    withContext(Dispatchers.Main) {
+                        playerController.playSong(
+                            videoId = song.id,
+                            seedSong = song
+                        )
+                    }
+                }.onFailure { error ->
+                    Log.e(TAG, "Error playing song from media ID: $mediaId", error)
+                }
+            }
         }
     }
 

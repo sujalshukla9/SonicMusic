@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
@@ -130,7 +132,7 @@ class MainActivity : ComponentActivity() {
     // Notification permission launcher for Android 13+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
+    ) { _ ->
         // Permission result - notification will work if granted
     }
     
@@ -166,7 +168,8 @@ class MainActivity : ComponentActivity() {
                 artworkUrl = currentSong?.thumbnailUrl
             ) {
                 androidx.compose.runtime.CompositionLocalProvider(
-                    com.sonicmusic.app.presentation.ui.components.LocalIsOnline provides isOnline
+                    com.sonicmusic.app.presentation.ui.components.LocalIsOnline provides isOnline,
+                    com.sonicmusic.app.presentation.ui.LocalWindowSizeClass provides windowSizeClass
                 ) {
                     SonicMusicApp(windowSizeClass, settingsViewModel)
                 }
@@ -350,6 +353,7 @@ fun SonicMusicApp(
     Box(modifier = Modifier.fillMaxSize()) {
         if (onboardingCompleted != null && onboardingCompleted != false) {
             val navController = rememberNavController()
+            val context = androidx.compose.ui.platform.LocalContext.current
             var showFullPlayer by remember { mutableStateOf(false) }
             
             // Get current route
@@ -396,7 +400,6 @@ fun SonicMusicApp(
             
             // Show bottom nav on main screens only
             val showBottomNav = bottomNavItems.any { it.route == currentDestination?.route }
-            val isCompact = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Compact
             val isMedium = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
             val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
 
@@ -439,7 +442,7 @@ fun SonicMusicApp(
                     MainScaffoldContent(
                         navController = navController,
                         showFullPlayer = { showFullPlayer = true },
-                        snackbarHostState = snackbarHostState,
+                        isFullPlayerVisible = showFullPlayer,
                         backgroundTop = backgroundTop,
                         backgroundMid = backgroundMid,
                         navBarContainer = navBarContainer,
@@ -484,7 +487,7 @@ fun SonicMusicApp(
                     MainScaffoldContent(
                         navController = navController,
                         showFullPlayer = { showFullPlayer = true },
-                        snackbarHostState = snackbarHostState,
+                        isFullPlayerVisible = showFullPlayer,
                         backgroundTop = backgroundTop,
                         backgroundMid = backgroundMid,
                         navBarContainer = navBarContainer,
@@ -498,7 +501,7 @@ fun SonicMusicApp(
                     containerColor = Color.Transparent,
                     contentWindowInsets = WindowInsets(0),
                     bottomBar = {
-                        if (showBottomNav || currentSong != null) {
+                        if (!showFullPlayer && (showBottomNav || currentSong != null)) {
                             Column {
                                 // MiniPlayer sits above the navigation bar
                                 MiniPlayer(
@@ -564,7 +567,7 @@ fun SonicMusicApp(
                 MainScaffoldContent(
                     navController = navController,
                     showFullPlayer = { showFullPlayer = true },
-                    snackbarHostState = snackbarHostState,
+                    isFullPlayerVisible = showFullPlayer,
                     backgroundTop = backgroundTop,
                     backgroundMid = backgroundMid,
                     navBarContainer = navBarContainer,
@@ -581,6 +584,17 @@ fun SonicMusicApp(
                     onOpenArtist = { artistName, browseId ->
                         showFullPlayer = false
                         navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                    },
+                    onOpenAlbum = { albumId, title, artist, thumbnailUrl ->
+                        showFullPlayer = false
+                        navigateToAlbum(
+                            navController = navController,
+                            context = context,
+                            browseId = albumId,
+                            title = title,
+                            artist = artist,
+                            thumbnailUrl = thumbnailUrl
+                        )
                     }
                 )
             }
@@ -620,7 +634,7 @@ fun SonicMusicApp(
 fun MainScaffoldContent(
     navController: androidx.navigation.NavHostController,
     showFullPlayer: () -> Unit,
-    snackbarHostState: androidx.compose.material3.SnackbarHostState,
+    isFullPlayerVisible: Boolean,
     backgroundTop: Color,
     backgroundMid: Color,
     navBarContainer: Color,
@@ -640,10 +654,14 @@ fun MainScaffoldContent(
                 )
                 drawRect(brush = brush)
             }
-            .padding(if (!isCompact) androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues() else androidx.compose.foundation.layout.PaddingValues(0.dp))
+            .padding(if (!isCompact) androidx.compose.foundation.layout.WindowInsets.safeDrawing.asPaddingValues() else androidx.compose.foundation.layout.PaddingValues(0.dp))
     ) {
         val bottomPadding = paddingValues.calculateBottomPadding()
         val isOnline = LocalIsOnline.current
+        val context = androidx.compose.ui.platform.LocalContext.current
+        
+        val playerViewModel: com.sonicmusic.app.presentation.viewmodel.PlayerViewModel = hiltViewModel()
+        val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
         
         Column(modifier = Modifier.fillMaxSize()) {
             // Offline banner at top of all screens
@@ -716,13 +734,13 @@ fun MainScaffoldContent(
                     },
                     onNavigateToAlbum = { album ->
                         val albumId = album.albumId?.takeIf { it.isNotBlank() } ?: album.id
-                        navController.navigate(
-                            SubScreens.albumDetail(
-                                albumId = albumId,
-                                title = album.title,
-                                artist = album.artist,
-                                thumbnailUrl = album.thumbnailUrl
-                            )
+                        navigateToAlbum(
+                            navController = navController,
+                            context = context,
+                            browseId = albumId,
+                            title = album.title,
+                            artist = album.artist,
+                            thumbnailUrl = album.thumbnailUrl
                         )
                     },
                     onNavigateToTopSongs = {
@@ -892,6 +910,31 @@ fun MainScaffoldContent(
                     thumbnailUrl = thumbnailUrl,
                     onNavigateBack = { navController.popBackStack() },
                     onShowFullPlayer = showFullPlayer,
+                    onNavigateToArtist = { name, browseId ->
+                        navController.navigate(SubScreens.artistDetail(name, browseId))
+                    },
+                    bottomPadding = bottomPadding
+                )
+            }
+            composable(
+                route = "album/{browseId}",
+                arguments = listOf(
+                    navArgument("browseId") { type = NavType.StringType }
+                )
+            ) { backStackEntry ->
+                val browseId = backStackEntry.arguments?.getString("browseId")?.let {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                }.orEmpty()
+                AlbumDetailScreen(
+                    albumId = browseId,
+                    albumTitle = "",
+                    artistName = "",
+                    thumbnailUrl = null,
+                    onNavigateBack = { navController.popBackStack() },
+                    onShowFullPlayer = showFullPlayer,
+                    onNavigateToArtist = { name, artistBrowseId ->
+                        navController.navigate(SubScreens.artistDetail(name, artistBrowseId))
+                    },
                     bottomPadding = bottomPadding
                 )
             }
@@ -955,13 +998,13 @@ fun MainScaffoldContent(
                 TopAlbumsScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onAlbumClick = { album ->
-                        navController.navigate(
-                            SubScreens.albumDetail(
-                                albumId = album.browseId,
-                                title = album.title,
-                                artist = album.artist,
-                                thumbnailUrl = album.thumbnailUrl
-                            )
+                        navigateToAlbum(
+                            navController = navController,
+                            context = context,
+                            browseId = album.browseId,
+                            title = album.title,
+                            artist = album.artist,
+                            thumbnailUrl = album.thumbnailUrl
                         )
                     },
                     bottomPadding = bottomPadding
@@ -969,6 +1012,23 @@ fun MainScaffoldContent(
             }
         } // NavHost
         } // Box(weight)
+        
+        if (!isCompact && currentSong != null && !isFullPlayerVisible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(navBarContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                MiniPlayer(
+                    modifier = Modifier
+                        .widthIn(max = com.sonicmusic.app.presentation.ui.theme.Dimens.maxContentWidth)
+                        .fillMaxWidth(),
+                    backgroundColorOverride = navBarContainer,
+                    onExpand = showFullPlayer
+                )
+            }
+        }
         } // Column
     } // Box(drawBehind)
 }

@@ -61,6 +61,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.presentation.ui.components.SongThumbnail
+import com.sonicmusic.app.presentation.ui.theme.LocalThumbnailShape
+import com.sonicmusic.app.presentation.ui.theme.toComposeShape
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -525,17 +527,18 @@ private fun NowPlayingCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Thumbnail with equalizer overlay
+            val thumbnailShape = LocalThumbnailShape.current.toComposeShape()
             Box(modifier = Modifier.size(56.dp)) {
                 SongThumbnail(
                     artworkUrl = song.thumbnailUrl,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(thumbnailShape)
                 )
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(thumbnailShape)
                         .background(Color.Black.copy(alpha = 0.35f)),
                     contentAlignment = Alignment.Center
                 ) {
@@ -637,7 +640,7 @@ private fun TrackItem(
         // Thumbnail
         Surface(
             modifier = Modifier.size(46.dp),
-            shape = RoundedCornerShape(8.dp),
+            shape = LocalThumbnailShape.current.toComposeShape(),
             color = colorScheme.surfaceContainerHigh
         ) {
             SongThumbnail(
