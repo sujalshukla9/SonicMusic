@@ -14,9 +14,25 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     <!-- App update permissions -->
+    <!-- NOTE: REQUEST_INSTALL_PACKAGES is required for the self-hosted APK update mechanism.
+         This must be declared in your Play Store listing under "Request Install Packages".
+         If distributing exclusively through Play Store, consider migrating to Play In-App Updates API
+         and removing this permission. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Targeted package visibility: replaces QUERY_ALL_PACKAGES.
+         Declares only the specific intents SonicMusic needs to query. -->
+    <queries>
+        <!-- System Equalizer / Audio Effects panel (for Settings → Equalizer) -->
+        <intent>
+            <action android:name="android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL" />
+        </intent>
+        <!-- Download Manager (for APK self-update via DownloadManager) -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
+    </queries>
 
     <application
         android:name=".SonicMusicApplication"
@@ -59,6 +75,7 @@
         <service
             android:name=".player.playback.PlaybackService"
             android:exported="true"
+            android:stopWithTask="false"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />

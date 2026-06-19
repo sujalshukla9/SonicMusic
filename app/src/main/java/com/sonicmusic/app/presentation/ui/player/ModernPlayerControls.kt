@@ -163,12 +163,6 @@ fun ModernPlayerControls(
                     builder.append(name)
                     builder.pop()
                 }
-                if (albumState is AlbumLinkState.Available) {
-                    builder.append(" • ")
-                    builder.pushStringAnnotation("album", albumState.browseId)
-                    builder.append(albumState.name)
-                    builder.pop()
-                }
                 builder.toAnnotatedString()
             }
 
@@ -423,7 +417,12 @@ private fun getOnAccentColor(accentColor: Color): Color {
 
 private fun formatDuration(seconds: Int): String {
     if (seconds < 0) return "0:00"
-    val minutes = seconds / 60
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
     val secs = seconds % 60
-    return String.format("%d:%02d", minutes, secs)
+    return if (hours > 0) {
+        String.format("%d:%02d:%02d", hours, minutes, secs)
+    } else {
+        String.format("%d:%02d", minutes, secs)
+    }
 }

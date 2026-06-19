@@ -41,11 +41,11 @@ import javax.inject.Singleton
  * 
  * Professional-grade audio processing pipeline inspired by Apple Music:
  *
- * 🎵 AUDIO QUALITY TIERS (Apple Music-Style)
+ * 🎵 AUDIO QUALITY TIERS (AAC-First, Apple Music-Style)
  * ├─ Data Saver       → ≤64 kbps, any codec
- * ├─ High Efficiency  → 128 kbps AAC-HE  
- * ├─ High Quality     → 256 kbps AAC (Apple Music standard)
- * └─ High-Res         → OPUS at highest available bitrate
+ * ├─ High Efficiency  → AAC 128 kbps · cellular-optimised
+ * ├─ High Quality     → AAC 256 kbps (Apple Music standard)
+ * └─ Best Available   → AAC 256 kbps (primary); OPUS fallback if no AAC
  *
  * 📊 STREAM METADATA TRACKING
  * - Real-time codec, bitrate, sample rate, bit depth info
@@ -86,8 +86,7 @@ class AudioEngine @Inject constructor(
         private val KEY_CROSSFADE_DURATION = intPreferencesKey("crossfade_duration_ms")
         private val KEY_SOUND_CHECK = booleanPreferencesKey("sound_check_enabled")
         private val KEY_LOUDNESS_TARGET = floatPreferencesKey("loudness_target_db")
-        private val KEY_BASS_BOOST_ENABLED = booleanPreferencesKey("bass_boost_enabled")
-        private val KEY_BASS_BOOST_STRENGTH = intPreferencesKey("bass_boost_strength")
+
         private val KEY_SPATIAL_AUDIO = booleanPreferencesKey("spatial_audio_enabled")
         private val KEY_SPATIAL_STRENGTH = intPreferencesKey("spatial_strength")
         private val KEY_EQ_ENABLED = booleanPreferencesKey("eq_enabled")
@@ -103,10 +102,7 @@ class AudioEngine @Inject constructor(
         // Default Values
         const val DEFAULT_CROSSFADE_DURATION = 3000
         const val DEFAULT_LOUDNESS_TARGET = -16f  // Apple Music standard (-16 LUFS)
-        const val DEFAULT_BASS_BOOST_STRENGTH = 600
-        const val MAX_BASS_BOOST_STRENGTH = 1000
         const val MAX_VIRTUALIZER_STRENGTH = 1000
-        private const val JAMES_DSP_BASS_MAX_SHELF_GAIN_MB = 1000
         private const val JAMES_DSP_MUD_CUT_MAX_MB = 180
         private const val JAMES_DSP_PRESENCE_RECOVERY_MAX_MB = 90
         private const val JAMES_DSP_HEADROOM_MAX_MB = 260
@@ -235,77 +231,20 @@ class AudioEngine @Inject constructor(
     }
     
     private fun initializeLoudnessEnhancer(audioSessionId: Int) {
-        try {
-            loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply {
-                enabled = false
-            }
-            Log.d(TAG, "✅ Loudness Enhancer initialized")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to init loudness enhancer", e)
-        }
+        Log.d(TAG, "Loudness Enhancer is disabled (Dolby Atmos-only mode)")
     }
     
     private fun initializeVirtualizer(audioSessionId: Int) {
-        if (!isEffectTypeSupported(AudioEffect.EFFECT_TYPE_VIRTUALIZER)) {
-            virtualizer = null
-            Log.w(TAG, "Virtualizer is not supported on this device")
-            return
-        }
-        try {
-            virtualizer = Virtualizer(0, audioSessionId).apply {
-                enabled = false
-                if (strengthSupported) {
-                    Log.d(TAG, "✅ Virtualizer (Spatial Audio) initialized")
-                }
-            }
-        } catch (e: RuntimeException) {
-            virtualizer = null
-            Log.w(TAG, "Virtualizer is not supported on this device")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to init virtualizer", e)
-        }
+        Log.d(TAG, "Virtualizer is disabled (Dolby Atmos-only mode)")
     }
     
     private fun initializeEqualizer(audioSessionId: Int) {
-        if (!isEffectTypeSupported(AudioEffect.EFFECT_TYPE_EQUALIZER)) {
-            equalizer = null
-            _eqBands.value = emptyList()
-            Log.w(TAG, "Equalizer is not supported on this device")
-            return
-        }
-        try {
-            equalizer = Equalizer(0, audioSessionId).apply {
-                enabled = false
-            }
-            Log.d(TAG, "✅ Equalizer initialized with ${equalizer?.numberOfBands} bands")
-            updateEqBands()
-        } catch (e: RuntimeException) {
-            equalizer = null
-            _eqBands.value = emptyList()
-            Log.w(TAG, "Equalizer is not supported on this device")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to init equalizer", e)
-        }
+        Log.d(TAG, "Equalizer is disabled (Dolby Atmos-only mode)")
+        _eqBands.value = emptyList()
     }
     
     private fun initializeReverb(audioSessionId: Int) {
-        if (!isEffectTypeSupported(AudioEffect.EFFECT_TYPE_PRESET_REVERB)) {
-            reverb = null
-            Log.w(TAG, "Preset reverb is not supported on this device")
-            return
-        }
-        try {
-            reverb = PresetReverb(0, audioSessionId).apply {
-                enabled = false
-            }
-            Log.d(TAG, "✅ Reverb initialized")
-        } catch (e: RuntimeException) {
-            // Common on devices/ROMs where PresetReverb effect UUID isn't available.
-            reverb = null
-            Log.w(TAG, "Preset reverb is not supported on this device")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to init reverb", e)
-        }
+        Log.d(TAG, "Preset Reverb is disabled (Dolby Atmos-only mode)")
     }
 
     private fun isEffectTypeSupported(effectType: UUID): Boolean {
@@ -327,8 +266,7 @@ class AudioEngine @Inject constructor(
             crossfadeDuration = prefs[KEY_CROSSFADE_DURATION] ?: DEFAULT_CROSSFADE_DURATION,
             soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: true,
             loudnessTarget = prefs[KEY_LOUDNESS_TARGET] ?: DEFAULT_LOUDNESS_TARGET,
-            bassBoostEnabled = prefs[KEY_BASS_BOOST_ENABLED] ?: false,
-            bassBoostStrength = prefs[KEY_BASS_BOOST_STRENGTH] ?: DEFAULT_BASS_BOOST_STRENGTH,
+
             spatialAudioEnabled = prefs[KEY_SPATIAL_AUDIO] ?: false,
             spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800,
             eqEnabled = prefs[KEY_EQ_ENABLED] ?: false,
@@ -346,7 +284,7 @@ class AudioEngine @Inject constructor(
     
     private fun applyCurrentState(state: AudioEngineState) {
         setSoundCheck(state.soundCheckEnabled, state.loudnessTarget)
-        setBassBoost(state.bassBoostEnabled, state.bassBoostStrength)
+
         setSpatialAudio(state.spatialAudioEnabled, state.spatialStrength)
         setEqualizer(state.eqEnabled, state.eqPreset)
         setReverb(state.reverbEnabled, state.reverbPreset)
@@ -614,63 +552,11 @@ class AudioEngine @Inject constructor(
         }
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // GLOBAL BASS TUNING
-    // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * Set song bass intensity as part of the normal EQ path (not a separate effect mode).
-     * @param strength 0-1000 (0% to 100%)
-     */
-    fun setBassBoost(enabled: Boolean, strength: Int = DEFAULT_BASS_BOOST_STRENGTH) {
-        val clampedStrength = strength.coerceIn(0, MAX_BASS_BOOST_STRENGTH)
-
-        _audioEngineState.value = _audioEngineState.value.copy(
-            bassBoostEnabled = enabled,
-            bassBoostStrength = clampedStrength,
-        )
-
-        scope.launch {
-            context.audioPrefs.edit {
-                it[KEY_BASS_BOOST_ENABLED] = enabled
-                it[KEY_BASS_BOOST_STRENGTH] = clampedStrength
-            }
-        }
-
-        applyEqSettings()
-
-        Log.d(
-            TAG,
-            if (enabled) {
-                "🔊 Song bass ON: ${(clampedStrength / 10)}% (integrated in EQ)"
-            } else {
-                "🔇 Song bass OFF"
-            }
-        )
-    }
-
-    fun setSimpleBass(enabled: Boolean) {
-        val strength = _audioEngineState.value.bassBoostStrength
-            .takeIf { it > 0 }
-            ?: DEFAULT_BASS_BOOST_STRENGTH
-        setBassBoost(enabled, strength)
-    }
-
-    /**
-     * Simple bass amount control (0-100%) using JamesDSP-style bass shaping.
-     * Setting above 0 enables integrated bass automatically.
-     */
-    fun setSimpleBassStrength(percent: Int) {
-        val clampedPercent = percent.coerceIn(0, 100)
-        val strength = ((clampedPercent / 100f) * MAX_BASS_BOOST_STRENGTH).roundToInt()
-        setBassBoost(enabled = clampedPercent > 0, strength = strength)
-    }
-
     private fun applyEqSettings() {
         val state = _audioEngineState.value
         equalizer?.let { eq ->
             try {
-                applyEqCurveWithGlobalBass(
+                applyEqCurve(
                     eq = eq,
                     preset = state.eqPreset,
                     applyPreset = state.eqEnabled
@@ -681,27 +567,15 @@ class AudioEngine @Inject constructor(
         }
     }
 
-    private fun applyEqCurveWithGlobalBass(
+    private fun applyEqCurve(
         eq: Equalizer,
         preset: String,
         applyPreset: Boolean
     ) {
         val presetGains = eqPresets[preset] ?: eqPresets["flat"]!!
         val numBands = minOf(eq.numberOfBands.toInt(), presetGains.size)
-        val state = _audioEngineState.value
-        val bassRatio = if (state.bassBoostEnabled) {
-            state.bassBoostStrength
-                .coerceIn(0, MAX_BASS_BOOST_STRENGTH) / MAX_BASS_BOOST_STRENGTH.toFloat()
-        } else {
-            0f
-        }
-        val bassIntensity = jamesDspBassIntensity(bassRatio)
-        val headroomCompensationMb = bassHeadroomCompensation(bassIntensity)
 
         for (band in 0 until numBands) {
-            val centerFreqHz = runCatching {
-                eq.getCenterFreq(band.toShort()) / 1000f
-            }.getOrDefault(0f)
             val baseGainMb = if (applyPreset && preset == "flat") {
                 customBandLevels[band].toInt()
             } else if (applyPreset) {
@@ -709,87 +583,13 @@ class AudioEngine @Inject constructor(
             } else {
                 0
             }
-            val bassGain = bassBandOffset(centerFreqHz, bassIntensity)
-            val mudCut = mudControlCut(centerFreqHz, bassIntensity)
-            val presenceRecovery = presenceRecoveryGain(centerFreqHz, bassIntensity)
-            val finalGain = (baseGainMb + bassGain - mudCut + presenceRecovery - headroomCompensationMb)
+            val finalGain = baseGainMb
                 .coerceIn(eq.bandLevelRange[0].toInt(), eq.bandLevelRange[1].toInt())
             eq.setBandLevel(band.toShort(), finalGain.toShort())
         }
 
-        // Keep EQ active whenever either custom EQ or integrated bass is enabled.
-        eq.enabled = applyPreset || state.bassBoostEnabled
+        eq.enabled = applyPreset
         updateEqBands()
-    }
-
-    private fun jamesDspBassIntensity(bassRatio: Float): Float {
-        val ratio = bassRatio.coerceIn(0f, 1f)
-        if (ratio <= 0f) return 0f
-        val normalized = (1f - exp(-2.4f * ratio)) / (1f - exp(-2.4f))
-        return normalized.coerceIn(0f, 1f)
-    }
-
-    private fun bassBandOffset(centerFreqHz: Float, bassIntensity: Float): Int {
-        if (bassIntensity <= 0f) return 0
-        return (JAMES_DSP_BASS_MAX_SHELF_GAIN_MB *
-            bassIntensity *
-            jamesDspShelfWeight(centerFreqHz)).roundToInt()
-    }
-
-    private fun mudControlCut(centerFreqHz: Float, bassIntensity: Float): Int {
-        if (bassIntensity <= 0f) return 0
-        return (JAMES_DSP_MUD_CUT_MAX_MB *
-            bassIntensity *
-            mudZoneWeight(centerFreqHz)).roundToInt()
-    }
-
-    private fun presenceRecoveryGain(centerFreqHz: Float, bassIntensity: Float): Int {
-        if (bassIntensity <= 0f) return 0
-        return (JAMES_DSP_PRESENCE_RECOVERY_MAX_MB *
-            bassIntensity *
-            presenceZoneWeight(centerFreqHz)).roundToInt()
-    }
-
-    private fun bassHeadroomCompensation(bassIntensity: Float): Int {
-        if (bassIntensity <= 0f) return 0
-        val curved = (0.5f * bassIntensity) + (0.5f * bassIntensity * bassIntensity)
-        return (JAMES_DSP_HEADROOM_MAX_MB * curved).roundToInt()
-    }
-
-    private fun jamesDspShelfWeight(centerFreqHz: Float): Float {
-        return when {
-            centerFreqHz <= 80f -> 1.0f
-            centerFreqHz <= 140f -> lerp(1.0f, 0.88f, (centerFreqHz - 80f) / 60f)
-            centerFreqHz <= 240f -> lerp(0.88f, 0.62f, (centerFreqHz - 140f) / 100f)
-            centerFreqHz <= 420f -> lerp(0.62f, 0.28f, (centerFreqHz - 240f) / 180f)
-            centerFreqHz <= 820f -> lerp(0.28f, 0.04f, (centerFreqHz - 420f) / 400f)
-            else -> 0f
-        }
-    }
-
-    private fun mudZoneWeight(centerFreqHz: Float): Float {
-        return when {
-            centerFreqHz <= 120f -> 0f
-            centerFreqHz <= 220f -> lerp(0f, 0.45f, (centerFreqHz - 120f) / 100f)
-            centerFreqHz <= 380f -> lerp(0.45f, 1.0f, (centerFreqHz - 220f) / 160f)
-            centerFreqHz <= 700f -> lerp(1.0f, 0f, (centerFreqHz - 380f) / 320f)
-            else -> 0f
-        }
-    }
-
-    private fun presenceZoneWeight(centerFreqHz: Float): Float {
-        return when {
-            centerFreqHz <= 700f -> 0f
-            centerFreqHz <= 1200f -> lerp(0f, 0.5f, (centerFreqHz - 700f) / 500f)
-            centerFreqHz <= 2600f -> lerp(0.5f, 1.0f, (centerFreqHz - 1200f) / 1400f)
-            centerFreqHz <= 5200f -> lerp(1.0f, 0f, (centerFreqHz - 2600f) / 2600f)
-            else -> 0f
-        }
-    }
-
-    private fun lerp(start: Float, end: Float, amount: Float): Float {
-        val t = amount.coerceIn(0f, 1f)
-        return start + (end - start) * t
     }
     
     // ═══════════════════════════════════════════════════════════════
@@ -988,7 +788,6 @@ class AudioEngine @Inject constructor(
         setCellularQualityTier(StreamQuality.HIGH)
         setDownloadQualityTier(StreamQuality.BEST)
         setEqualizer(false)
-        setBassBoost(false)
         setSpatialAudio(false)
         setReverb(false)
         setCrossfade(false)
@@ -1067,9 +866,7 @@ data class AudioEngineState(
     // Sound Check
     val soundCheckEnabled: Boolean = true,
     val loudnessTarget: Float = AudioEngine.DEFAULT_LOUDNESS_TARGET,
-    // Bass Boost
-    val bassBoostEnabled: Boolean = false,
-    val bassBoostStrength: Int = AudioEngine.DEFAULT_BASS_BOOST_STRENGTH,
+
     // Spatial Audio
     val spatialAudioEnabled: Boolean = false,
     val spatialStrength: Int = 800,

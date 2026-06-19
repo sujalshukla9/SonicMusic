@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Splash screen background color (dark) — referenced by Theme.SonicMusic.Starting -->
+    <color name="splash_bg_dark">#0A0A0A</color>
 </resources>

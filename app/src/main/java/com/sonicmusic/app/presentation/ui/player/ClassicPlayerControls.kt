@@ -1,5 +1,6 @@
 package com.sonicmusic.app.presentation.ui.player
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -8,7 +9,13 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -183,7 +190,7 @@ fun ClassicPlayerControls(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // Control Buttons Row
         Row(
@@ -193,17 +200,36 @@ fun ClassicPlayerControls(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Like
+            // Like — AnimatedContent so the heart pops in with a spring scale
             IconButton(
                 onClick = onToggleLike,
                 modifier = Modifier.size(48.dp)
             ) {
-                Icon(
-                    imageVector = if (isLiked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                    contentDescription = "Like",
-                    modifier = Modifier.size(24.dp),
-                    tint = if (isLiked) colorScheme.error else colorScheme.onSurfaceVariant
-                )
+                AnimatedContent(
+                    targetState = isLiked,
+                    transitionSpec = {
+                        if (targetState) {
+                            // Filling the heart: spring pop-in
+                            (scaleIn(
+                                animationSpec = spring(dampingRatio = 0.55f, stiffness = 600f),
+                                initialScale = 0.6f
+                            ) + fadeIn(tween(120)))
+                                .togetherWith(scaleOut(tween(80)) + fadeOut(tween(80)))
+                        } else {
+                            // Unfilling: simple crossfade
+                            (fadeIn(tween(120)) + scaleIn(initialScale = 0.85f, animationSpec = tween(120)))
+                                .togetherWith(fadeOut(tween(80)) + scaleOut(targetScale = 0.85f, animationSpec = tween(80)))
+                        }
+                    },
+                    label = "like_icon_morph"
+                ) { liked ->
+                    Icon(
+                        imageVector = if (liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = if (liked) "Unlike" else "Like",
+                        modifier = Modifier.size(24.dp),
+                        tint = if (liked) colorScheme.error else colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             // Previous
@@ -226,7 +252,7 @@ fun ClassicPlayerControls(
                 )
             }
 
-            // Play/Pause - circular expressive button
+            // Play/Pause — AnimatedContent morph between play and pause icons
             Box(modifier = Modifier.size(Dimens.playButtonSize), contentAlignment = Alignment.Center) {
                 if (state.isBuffering) {
                     CircularProgressIndicator(
@@ -244,11 +270,24 @@ fun ClassicPlayerControls(
                             contentColor = onAccentColor
                         )
                     ) {
-                        Icon(
-                            imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                            contentDescription = if (state.isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(Dimens.playIconSize)
-                        )
+                        AnimatedContent(
+                            targetState = state.isPlaying,
+                            transitionSpec = {
+                                (fadeIn(animationSpec = tween(200, delayMillis = 60)) +
+                                        scaleIn(initialScale = 0.85f, animationSpec = tween(200, delayMillis = 60)))
+                                    .togetherWith(
+                                        fadeOut(animationSpec = tween(80)) +
+                                                scaleOut(targetScale = 0.85f, animationSpec = tween(80))
+                                    )
+                            },
+                            label = "classic_play_pause_morph"
+                        ) { isPlaying ->
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                modifier = Modifier.size(Dimens.playIconSize)
+                            )
+                        }
                     }
                 }
             }
@@ -273,7 +312,7 @@ fun ClassicPlayerControls(
                 )
             }
 
-            // Repeat
+            // Repeat — contentDescription describes current state for TalkBack
             IconButton(
                 onClick = onToggleRepeat,
                 modifier = Modifier.size(48.dp)
@@ -284,7 +323,11 @@ fun ClassicPlayerControls(
                         Player.REPEAT_MODE_ALL -> Icons.Filled.Repeat
                         else -> Icons.Outlined.Repeat
                     },
-                    contentDescription = "Repeat",
+                    contentDescription = when (repeatMode) {
+                        Player.REPEAT_MODE_ONE -> "Repeat one — tap to turn off"
+                        Player.REPEAT_MODE_ALL -> "Repeat all — tap to repeat one"
+                        else -> "Repeat off — tap to repeat all"
+                    },
                     modifier = Modifier.size(24.dp),
                     tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
                         accentColor
@@ -409,7 +452,12 @@ fun PlayerSeekTrack(
 
 private fun formatDuration(seconds: Int): String {
     if (seconds < 0) return "0:00"
-    val minutes = seconds / 60
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
     val secs = seconds % 60
-    return String.format("%d:%02d", minutes, secs)
+    return if (hours > 0) {
+        String.format("%d:%02d:%02d", hours, minutes, secs)
+    } else {
+        String.format("%d:%02d", minutes, secs)
+    }
 }

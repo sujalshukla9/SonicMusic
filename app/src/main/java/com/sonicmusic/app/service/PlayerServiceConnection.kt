@@ -1000,6 +1000,21 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     /**
+     * Force skip to previous track ignoring restart threshold
+     */
+    fun forceSkipToPrevious() {
+        mediaController?.let { controller ->
+            pendingSeekIndex = null
+            isWaitingForNextTrack = false
+            if (controller.hasPreviousMediaItem()) {
+                controller.seekToPrevious()
+            } else {
+                controller.seekTo(0)
+            }
+        }
+    }
+
+    /**
      * Seek to position (0.0 to 1.0)
      * Uses cached duration for more reliable seeking
      */

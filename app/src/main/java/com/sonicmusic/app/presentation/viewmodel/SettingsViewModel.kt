@@ -70,21 +70,6 @@ class SettingsViewModel @Inject constructor(
         .map { it.soundCheckEnabled }
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
-    val bassBoostEnabled = audioEngine.audioEngineState
-        .map { it.bassBoostEnabled }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    val songBassEnabled = bassBoostEnabled
-
-    val songBassStrengthPercent = audioEngine.audioEngineState
-        .map { state ->
-            ((state.bassBoostStrength.coerceIn(0, AudioEngine.MAX_BASS_BOOST_STRENGTH) * 100f) /
-                AudioEngine.MAX_BASS_BOOST_STRENGTH).toInt()
-        }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
-
-
-
     val crossfadeDuration = audioEngine.audioEngineState
         .map { state ->
             if (state.crossfadeEnabled) {
@@ -253,20 +238,6 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.setNormalizeVolume(enabled)
         }
     }
-
-    fun setBassBoostEnabled(enabled: Boolean) {
-        audioEngine.setSimpleBass(enabled)
-    }
-
-    fun setSongBassEnabled(enabled: Boolean) {
-        audioEngine.setSimpleBass(enabled)
-    }
-
-    fun setSongBassStrength(percent: Int) {
-        audioEngine.setSimpleBassStrength(percent)
-    }
-
-
 
     fun setGaplessPlayback(enabled: Boolean) {
         viewModelScope.launch {
@@ -564,27 +535,41 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun backupDatabase(outputStream: java.io.OutputStream, onSuccess: () -> Unit, onError: (String) -> Unit) {
+    fun backupDatabase(uri: android.net.Uri, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
-            databaseBackupManager.backupDatabase(outputStream)
-                .onSuccess {
-                    withContext(Dispatchers.Main) { onSuccess() }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        databaseBackupManager.backupDatabase(output).getOrThrow()
+                    } ?: throw Exception("Failed to open output stream")
                 }
-                .onFailure { error ->
+            }.fold(
+                onSuccess = {
+                    withContext(Dispatchers.Main) { onSuccess() }
+                },
+                onFailure = { error ->
                     withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
                 }
+            )
         }
     }
 
-    fun restoreDatabase(inputStream: java.io.InputStream, onSuccess: () -> Unit, onError: (String) -> Unit) {
+    fun restoreDatabase(uri: android.net.Uri, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
-            databaseBackupManager.restoreDatabase(inputStream)
-                .onSuccess {
-                    withContext(Dispatchers.Main) { onSuccess() }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        databaseBackupManager.restoreDatabase(input).getOrThrow()
+                    } ?: throw Exception("Failed to open input stream")
                 }
-                .onFailure { error ->
+            }.fold(
+                onSuccess = {
+                    withContext(Dispatchers.Main) { onSuccess() }
+                },
+                onFailure = { error ->
                     withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
                 }
+            )
         }
     }
 }

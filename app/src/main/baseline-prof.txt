@@ -1,0 +1,49 @@
+# SonicMusic Baseline Profile
+# Generated: 2026-06-19  |  Version: 1.5.2
+#
+# HOW TO REGENERATE:
+#   1. Add the :macrobenchmark module with BaselineProfileRule
+#   2. Run: ./gradlew :macrobenchmark:generateBaselineProfile
+#   3. Copy generated baseline-prof.txt here
+#
+# This starter profile covers the critical cold-start paths manually.
+# It ensures ART compiles these classes ahead-of-time on install.
+
+# ─── App Entry Point ───────────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/SonicMusicApplication;->onCreate()V
+HSPLcom/sonicmusic/app/SonicMusicApplication;->attachBaseContext(Landroid/content/Context;)V
+
+# ─── Main Activity ─────────────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/presentation/ui/MainActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/sonicmusic/app/presentation/ui/MainActivity;->setContent(Lkotlin/jvm/functions/Function0;)V
+
+# ─── Theme / Color System ──────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/presentation/ui/theme/ThemeKt;->SonicMusicTheme(Lcom/sonicmusic/app/presentation/viewmodel/ThemeViewModel;Ljava/lang/String;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;II)V
+HSPLcom/sonicmusic/app/presentation/ui/theme/AnimatedColorSchemeKt;->animated(Landroidx/compose/material3/ColorScheme;ILandroidx/compose/animation/core/Easing;Landroidx/compose/runtime/Composer;II)Landroidx/compose/material3/ColorScheme;
+HSPLcom/sonicmusic/app/presentation/ui/theme/ColorExtractor;->fallbackColorScheme(Z)Lcom/sonicmusic/app/presentation/ui/theme/PlayerColorScheme;
+HSPLcom/sonicmusic/app/presentation/ui/theme/DynamicColorSchemeFactory;->generateColorScheme(IZLcom/sonicmusic/app/domain/model/PaletteStyle;)Landroidx/compose/material3/ColorScheme;
+
+# ─── ViewModel Layer ───────────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/presentation/viewmodel/ThemeViewModel;-><init>(Landroidx/datastore/core/DataStore;Landroidx/lifecycle/SavedStateHandle;)V
+HSPLcom/sonicmusic/app/presentation/viewmodel/PlayerViewModel;-><init>(Lcom/sonicmusic/app/service/PlayerServiceConnection;Lcom/sonicmusic/app/domain/usecase/ToggleLikeUseCase;Landroidx/lifecycle/SavedStateHandle;)V
+HSPLcom/sonicmusic/app/presentation/viewmodel/HomeViewModel;-><init>(Lcom/sonicmusic/app/domain/usecase/GetHomeContentUseCase;Landroidx/lifecycle/SavedStateHandle;)V
+
+# ─── Player Service ────────────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/player/playback/PlaybackService;->onCreate()V
+HSPLcom/sonicmusic/app/service/PlayerServiceConnection;-><init>(Landroid/content/Context;)V
+HSPLcom/sonicmusic/app/service/PlayerServiceConnection;->connect()V
+
+# ─── Room Database ─────────────────────────────────────────────────────────────
+HSPLcom/sonicmusic/app/data/local/database/SonicMusicDatabase;->getInstance(Landroid/content/Context;)Lcom/sonicmusic/app/data/local/database/SonicMusicDatabase;
+
+# ─── Compose Runtime Hot Path ──────────────────────────────────────────────────
+HSPLandroidx/compose/runtime/ComposerImpl;->recompose()Z
+HSPLandroidx/compose/runtime/RecomposerKt;->runRecomposeAndApplyChanges()V
+HSPLandroidx/compose/material3/MaterialThemeKt;->MaterialTheme(Landroidx/compose/material3/ColorScheme;Landroidx/compose/material3/Shapes;Landroidx/compose/material3/Typography;Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;II)V
+
+# ─── Navigation ────────────────────────────────────────────────────────────────
+HSPLandroidx/navigation/compose/NavHostKt;->NavHost(Landroidx/navigation/NavHostController;Ljava/lang/String;Landroidx/compose/ui/Modifier;Ljava/lang/String;Lkotlin/jvm/functions/Function1;Landroidx/compose/runtime/Composer;II)V
+
+# ─── Hilt DI ───────────────────────────────────────────────────────────────────
+HSPLdagger/hilt/android/internal/lifecycle/HiltViewModelFactory;->create(Ljava/lang/Class;)Landroidx/lifecycle/ViewModel;
+HSPLcom/sonicmusic/app/SonicMusicApplication_HiltComponents$SingletonC;-><init>()V

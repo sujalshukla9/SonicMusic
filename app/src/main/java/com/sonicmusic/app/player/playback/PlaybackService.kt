@@ -505,7 +505,7 @@ class PlaybackService : MediaSessionService() {
                     val completed = totalDurationSecs > 0 && 
                             playDurationSecs.toFloat() / totalDurationSecs >= 0.8f
 
-                    if (playDurationSecs >= 30 || completed) {
+                    if (playDurationSecs >= 1 || completed) {
                         val song = Song(
                             id = prevSongId,
                             title = prevItem.mediaMetadata.title?.toString() ?: "Unknown",
@@ -783,8 +783,7 @@ class PlaybackService : MediaSessionService() {
                 stopSelf()
             }
         }
-        // Bug 4 fix: START_STICKY keeps the service alive when the app is swiped from recents
-        return android.app.Service.START_STICKY
+        return android.app.Service.START_NOT_STICKY
     }
     
 
@@ -794,12 +793,36 @@ class PlaybackService : MediaSessionService() {
     }
     
     override fun onTaskRemoved(rootIntent: Intent?) {
-        android.util.Log.d(TAG, "🟡 onTaskRemoved — isPlaying=${player?.isPlaying}")
-        // Keep playback alive if currently playing
-        if (player?.isPlaying != true) {
-            stopSelf()
-        }
+        android.util.Log.d(TAG, "🟡 onTaskRemoved — swiped away, stopping playback and service")
+        
         super.onTaskRemoved(rootIntent)
+        
+        // Stop and release players
+        player1?.stop()
+        player2?.stop()
+        player1?.release()
+        player2?.release()
+        player1 = null
+        player2 = null
+        player = null
+        
+        // Release MediaSession
+        mediaSession?.release()
+        mediaSession = null
+        
+        // Stop foreground
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        
+        // Stop service
+        stopSelf()
+        
+        // Terminate the app process immediately
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     override fun onDestroy() {

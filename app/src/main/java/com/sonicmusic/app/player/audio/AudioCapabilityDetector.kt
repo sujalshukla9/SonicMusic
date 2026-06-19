@@ -6,6 +6,8 @@ import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.MediaCodecList
+import android.media.Spatializer
 import android.media.audiofx.AudioEffect
 import android.os.Build
 import android.os.Handler
@@ -126,6 +128,11 @@ class AudioCapabilityDetector @Inject constructor(
         val hasDolbyEffect: Boolean = false,
         /** Method (c): OEM Dolby app installed (e.g. com.dolby.daxservice) */
         val hasDolbyApp: Boolean = false,
+        /** Method (d): Dolby audio codecs supported by system decoders */
+        val hasDolbyCodec: Boolean = false,
+        /** Method (e): Android Spatializer is active and enabled */
+        val hasSpatializer: Boolean = false,
+        val spatializerEnabled: Boolean = false,
         /** Resolved display label: "Dolby Atmos" / "Dolby Audio" / null */
         val dolbyLabel: String? = null,
         /** Dolby AudioEffect Descriptor, if found */
@@ -162,6 +169,7 @@ class AudioCapabilityDetector @Inject constructor(
     val capability: StateFlow<AudioCapability> = _capability.asStateFlow()
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var spatializerListener: Any? = null
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -180,6 +188,8 @@ class AudioCapabilityDetector @Inject constructor(
         refresh()
         // Register callback for output device changes (headphones, Bluetooth, USB DAC, etc.)
         audioManager.registerAudioDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
+        // Register Spatializer listener for dynamic updates on API 32+
+        registerSpatializerListener()
     }
 
     /**
@@ -202,6 +212,8 @@ class AudioCapabilityDetector @Inject constructor(
         val dolbyFeature = detectDolbySystemFeature()
         val dolbyEffect = detectDolbyEffect()
         val dolbyApp = detectDolbyApp()
+        val dolbyCodec = detectDolbyCodecSupport()
+        val spatializerResult = detectSpatializerSupport()
 
         val dtsDecoder = detectDtsDecoderSupport()
         val dtsEffect = detectDtsEffect()
@@ -214,8 +226,18 @@ class AudioCapabilityDetector @Inject constructor(
         // ── Resolve Dolby label ────────────────────────────────────
         // Show badge ONLY if hardware or software actually confirms Dolby.
         // No Dolby detected = no badge. Simple.
-        val hasAtmosEvidence = dolbyDecoder.hasAtmos || dolbyFeature.isAtmos || dolbyEffect.isAtmos || dolbyApp.isAtmos
-        val hasAnyDolby = dolbyDecoder.hasAny || dolbyFeature.found || dolbyEffect.found || dolbyApp.found
+        val hasAtmosEvidence = dolbyDecoder.hasAtmos || 
+                dolbyFeature.isAtmos || 
+                dolbyEffect.isAtmos || 
+                dolbyApp.isAtmos ||
+                (spatializerResult.isAvailable && spatializerResult.immersiveLevel != 0)
+
+        val hasAnyDolby = dolbyDecoder.hasAny || 
+                dolbyFeature.found || 
+                dolbyEffect.found || 
+                dolbyApp.found ||
+                dolbyCodec ||
+                spatializerResult.isAvailable
 
         val dolbyLabel = when {
             hasAtmosEvidence -> "Dolby Atmos"
@@ -237,6 +259,9 @@ class AudioCapabilityDetector @Inject constructor(
             hasDolbySystemFeature = dolbyFeature.found,
             hasDolbyEffect = dolbyEffect.found,
             hasDolbyApp = dolbyApp.found,
+            hasDolbyCodec = dolbyCodec,
+            hasSpatializer = spatializerResult.isAvailable,
+            spatializerEnabled = spatializerResult.isEnabled,
             dolbyLabel = dolbyLabel,
             dolbyEffectDescriptor = dolbyEffect.descriptor,
             hasDts = hasDts,
@@ -543,6 +568,68 @@ class AudioCapabilityDetector @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "  External DAC check failed", e)
+            false
+        }
+    }
+
+    private data class SpatializerResult(
+        val isAvailable: Boolean = false,
+        val isEnabled: Boolean = false,
+        val immersiveLevel: Int = 0
+    )
+
+    private fun detectSpatializerSupport(): SpatializerResult {
+        if (Build.VERSION.SDK_INT < 32) return SpatializerResult()
+        return try {
+            val spatializer = audioManager.spatializer
+            val isAvail = spatializer.isAvailable
+            val isEnabled = spatializer.isEnabled
+            val level = spatializer.immersiveAudioLevel
+            Log.d(TAG, "  (spatializer) available=$isAvail, enabled=$isEnabled, level=$level")
+            SpatializerResult(isAvail, isEnabled, level)
+        } catch (e: Exception) {
+            Log.w(TAG, "  (spatializer) check failed", e)
+            SpatializerResult()
+        }
+    }
+
+    private fun registerSpatializerListener() {
+        if (Build.VERSION.SDK_INT >= 32) {
+            try {
+                val spatializer = audioManager.spatializer
+                val listener = object : Spatializer.OnSpatializerStateChangedListener {
+                    override fun onSpatializerEnabledChanged(spatializer: Spatializer, enabled: Boolean) {
+                        Log.d(TAG, "🔔 Spatializer enabled changed: $enabled")
+                        refresh()
+                    }
+
+                    override fun onSpatializerAvailableChanged(spatializer: Spatializer, available: Boolean) {
+                        Log.d(TAG, "🔔 Spatializer availability changed: $available")
+                        refresh()
+                    }
+                }
+                spatializer.addOnSpatializerStateChangedListener(
+                    { command -> Handler(Looper.getMainLooper()).post(command) },
+                    listener
+                )
+                spatializerListener = listener
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to register spatializer listener", e)
+            }
+        }
+    }
+
+    private fun detectDolbyCodecSupport(): Boolean {
+        return try {
+            val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
+            val atmosMimes = setOf("audio/eac3", "audio/eac3-joc", "audio/ac4")
+            val hasCodec = codecList.codecInfos.any { info ->
+                !info.isEncoder && info.supportedTypes.any { it.lowercase() in atmosMimes }
+            }
+            Log.d(TAG, "  (codec) Dolby codec support: $hasCodec")
+            hasCodec
+        } catch (e: Exception) {
+            Log.w(TAG, "  (codec) Dolby codec check failed", e)
             false
         }
     }

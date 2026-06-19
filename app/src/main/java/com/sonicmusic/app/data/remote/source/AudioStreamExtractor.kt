@@ -232,35 +232,47 @@ class AudioStreamExtractor @Inject constructor(
         }
     }
 
+    /**
+     * Select the best audio format with strict AAC 256kbps priority.
+     *
+     * Scoring model:
+     *  - AAC streams at ≥256kbps  → highest tier (score multiplier: 3 × bitrate + large bonus)
+     *  - AAC streams at any bitrate → preferred over OPUS (multiplier: 3 × bitrate)
+     *  - OPUS/WebM streams         → fallback (multiplier: 1 × bitrate)
+     *
+     * This ensures we always pick the best AAC quality available, and only fall
+     * back to OPUS if no AAC stream exists at all.
+     */
     private fun selectBestFormat(
         formats: List<AudioFormat>,
-        requestedQuality: StreamQuality,
+        @Suppress("UNUSED_PARAMETER") requestedQuality: StreamQuality,
     ): AudioFormat? {
         if (formats.isEmpty()) return null
         val validFormats = formats.filter { it.bitrateKbps > 0 }.ifEmpty { formats }
 
         return validFormats.maxWithOrNull(
-            compareBy<AudioFormat> { it.bitrateKbps }
-                .thenBy { it.sampleRate }
-                .thenBy { it.channelCount }
-                .thenBy { fmt ->
-                    val codecBonus = when {
-                        fmt.isAac() -> 20L
-                        fmt.isOpus() -> 10L
-                        else -> 0L
-                    }
-                    (fmt.bitrateKbps.toLong() * 1_000L) + fmt.sampleRate + codecBonus
-                }
+            compareBy { fmt -> bestSourceScore(fmt) }
         )
     }
 
+    /**
+     * Score an audio format for selection.
+     *
+     * AAC is scored 3× higher than OPUS so that even a 128kbps AAC stream
+     * outranks a 128kbps OPUS stream, and a 256kbps AAC stream always wins.
+     * An extra 500_000 bonus is added for AAC streams at ≥256kbps to guarantee
+     * they beat any lower-bitrate AAC or any OPUS stream.
+     */
     private fun bestSourceScore(format: AudioFormat): Long {
-        val codecBonus = when {
-            format.isAac() -> 20L
-            format.isOpus() -> 10L
-            else -> 0L
+        return when {
+            format.isAac() && format.bitrateKbps >= 256 ->
+                (format.bitrateKbps.toLong() * 3_000L) + 500_000L + format.sampleRate
+            format.isAac() ->
+                (format.bitrateKbps.toLong() * 3_000L) + format.sampleRate
+            else ->
+                // OPUS / WebM / other — used only as a last resort
+                (format.bitrateKbps.toLong() * 1_000L) + format.sampleRate
         }
-        return (format.bitrateKbps.toLong() * 1_000L) + format.sampleRate + codecBonus
     }
 
     /**

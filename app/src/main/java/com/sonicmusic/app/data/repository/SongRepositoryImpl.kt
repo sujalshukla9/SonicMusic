@@ -474,8 +474,8 @@ class SongRepositoryImpl @Inject constructor(
         container: String? = null
     ): AudioStreamInfo {
         val bitrate = when (quality) {
-            StreamQuality.BEST -> 192
-            StreamQuality.HIGH -> 160
+            StreamQuality.BEST -> 256
+            StreamQuality.HIGH -> 256
             StreamQuality.MEDIUM -> 128
             StreamQuality.LOW -> 64
         }
@@ -489,6 +489,7 @@ class SongRepositoryImpl @Inject constructor(
             isEnhanced = false
         )
     }
+
 
     /** Shared artist → genre map for scoring engines. */
     private val ARTIST_GENRE_MAP = mapOf(

@@ -340,15 +340,7 @@ fun SonicMusicApp(
         }
     }
 
-    var showSplash by remember { mutableStateOf(true) }
 
-    // Dismiss the splash as soon as settings are loaded — no artificial
-    // delay. The 500ms fade-out below keeps the transition smooth.
-    androidx.compose.runtime.LaunchedEffect(onboardingCompleted) {
-        if (onboardingCompleted != null) {
-            showSplash = false
-        }
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (onboardingCompleted != null && onboardingCompleted != false) {
@@ -606,27 +598,7 @@ fun SonicMusicApp(
             )
         }
 
-        // Custom Adaptive Splash Screen Overlay
-        androidx.compose.animation.AnimatedVisibility(
-            visible = showSplash,
-            exit = androidx.compose.animation.fadeOut(
-                animationSpec = tween(durationMillis = 500)
-            )
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface),
-                contentAlignment = Alignment.Center
-            ) {
-                androidx.compose.foundation.Image(
-                    painter = androidx.compose.ui.res.painterResource(id = com.sonicmusic.app.R.drawable.splash_background),
-                    contentDescription = "Splash Screen",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                )
-            }
-        }
+
     }
 }
 

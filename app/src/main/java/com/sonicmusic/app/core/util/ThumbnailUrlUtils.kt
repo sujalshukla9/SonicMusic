@@ -27,13 +27,14 @@ object ThumbnailUrlUtils {
             }
 
             var upgraded = cleanedUrl
-            if (upgraded.contains("googleusercontent.com", ignoreCase = true)) {
+            if (upgraded.contains("googleusercontent.com", ignoreCase = true) ||
+                upgraded.contains("ggpht.com", ignoreCase = true)
+            ) {
                 // Keep Innertube-selected URL and bump render size hints for higher detail.
                 upgraded = upgraded
                     .replace(Regex("=w\\d+-h\\d+[^&]*"), "=w1080-h1080-l90-rj")
                     .replace(Regex("=s\\d+[^&]*"), "=s1080")
-                    .replace("w120-h120", "w1080-h1080")
-                    .replace("w60-h60", "w1080-h1080")
+                    .replace(Regex("w\\d+-h\\d+"), "w1080-h1080")
             }
             return upgraded
         }
@@ -101,12 +102,13 @@ object ThumbnailUrlUtils {
                 return "https://i.ytimg.com/vi/$matchedId/hqdefault.jpg"
             }
 
-            if (cleanedUrl.contains("googleusercontent.com", ignoreCase = true)) {
+            if (cleanedUrl.contains("googleusercontent.com", ignoreCase = true) ||
+                cleanedUrl.contains("ggpht.com", ignoreCase = true)
+            ) {
                 return cleanedUrl
                     .replace(Regex("=w\\d+-h\\d+[^&]*"), "=w640-h640-l90-rj")
                     .replace(Regex("=s\\d+[^&]*"), "=s640")
-                    .replace("w120-h120", "w640-h640")
-                    .replace("w60-h60", "w640-h640")
+                    .replace(Regex("w\\d+-h\\d+"), "w640-h640")
             }
 
             return cleanedUrl

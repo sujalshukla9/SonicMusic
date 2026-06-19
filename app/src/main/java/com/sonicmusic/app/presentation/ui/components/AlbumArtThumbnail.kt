@@ -22,6 +22,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material3.Icon
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.size.Size
@@ -68,7 +74,7 @@ fun AlbumArtThumbnail(
             .diskCachePolicy(CachePolicy.ENABLED)
             .networkCachePolicy(CachePolicy.ENABLED)
             .placeholder(android.R.color.transparent)
-            .error(android.R.drawable.ic_media_play)
+            .error(android.R.color.transparent)
             .build()
     }
 
@@ -91,13 +97,19 @@ fun AlbumArtThumbnail(
     }
 
     // Build the morphing Compose Shape
-    val morphingShape = remember(previousShape, targetShape, animProgress.value) {
+    val morph = remember(previousShape, targetShape) {
         if (previousShape == targetShape) {
+            null
+        } else {
+            Morph(previousShape.toRoundedPolygon(), targetShape.toRoundedPolygon())
+        }
+    }
+
+    val morphingShape = remember(morph, targetShape, animProgress.value) {
+        if (morph == null) {
             targetShape.toComposeShape()
         } else {
-            val startPoly = previousShape.toRoundedPolygon()
-            val endPoly = targetShape.toRoundedPolygon()
-            MorphComposeShape(Morph(startPoly, endPoly), animProgress.value)
+            MorphComposeShape(morph, animProgress.value)
         }
     }
 
@@ -113,19 +125,31 @@ fun AlbumArtThumbnail(
         label = "thumbnailPadding"
     )
 
-    AsyncImage(
-        model = imageRequest,
-        contentDescription = contentDescription,
+    Box(
         modifier = modifier
             .padding(animatedPadding)
             .shadow(shadowElevation, morphingShape)
             .background(backgroundColor, morphingShape)
             .clip(morphingShape),
-        contentScale = contentScale,
-        onError = {
-            if (candidateIndex < candidateUrls.lastIndex) {
-                candidateIndex += 1
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Default.MusicNote,
+            contentDescription = null,
+            tint = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+            modifier = Modifier.fillMaxSize(0.35f)
+        )
+
+        AsyncImage(
+            model = imageRequest,
+            contentDescription = contentDescription,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = contentScale,
+            onError = {
+                if (candidateIndex < candidateUrls.lastIndex) {
+                    candidateIndex += 1
+                }
             }
-        }
-    )
+        )
+    }
 }

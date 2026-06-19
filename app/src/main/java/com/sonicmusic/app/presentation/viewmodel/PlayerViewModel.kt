@@ -627,6 +627,8 @@ class PlayerViewModel @Inject constructor(
     
     fun skipToPrevious() = playerServiceConnection.skipToPrevious()
     
+    fun forceSkipToPrevious() = playerServiceConnection.forceSkipToPrevious()
+    
     fun seekTo(progress: Float) = playerServiceConnection.seekTo(progress)
     
     fun seekToPosition(positionMs: Long) = playerServiceConnection.seekToPosition(positionMs)
@@ -738,9 +740,6 @@ class PlayerViewModel @Inject constructor(
     fun setEqBandLevel(band: Int, level: Short) = playerServiceConnection.audioEngine.setEqBandLevel(band, level)
     fun getEqBands() = playerServiceConnection.audioEngine.getEqBandInfo()
     fun getEqPresets() = playerServiceConnection.audioEngine.getEqPresets()
-
-    // Bass Boost
-    fun setBassBoost(enabled: Boolean, strength: Int) = playerServiceConnection.audioEngine.setBassBoost(enabled, strength)
 
     // Spatial Audio (Virtualizer)
     fun setSpatialAudio(enabled: Boolean, strength: Int) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)

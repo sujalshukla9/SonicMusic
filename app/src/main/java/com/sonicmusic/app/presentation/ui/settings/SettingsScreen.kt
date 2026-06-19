@@ -67,27 +67,19 @@ fun SettingsScreen(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
         onResult = { uri ->
             if (uri != null) {
-                runCatching {
-                    context.contentResolver.openOutputStream(uri)?.use { output ->
-                        viewModel.backupDatabase(
-                            outputStream = output,
-                            onSuccess = {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Database backup created successfully")
-                                }
-                            },
-                            onError = { error ->
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Backup failed: $error")
-                                }
-                            }
-                        )
+                viewModel.backupDatabase(
+                    uri = uri,
+                    onSuccess = {
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Database backup created successfully")
+                        }
+                    },
+                    onError = { error ->
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Backup failed: $error")
+                        }
                     }
-                }.onFailure { error ->
-                    scope.launch {
-                        snackbarHostState.showSnackbar("Failed to open output file: ${error.localizedMessage}")
-                    }
-                }
+                )
             }
         }
     )
@@ -113,25 +105,17 @@ fun SettingsScreen(
                 TextButton(
                     onClick = {
                         showRestoreConfirmation = null
-                        runCatching {
-                            context.contentResolver.openInputStream(restoreUri)?.use { input ->
-                                viewModel.restoreDatabase(
-                                    inputStream = input,
-                                    onSuccess = {
-                                        android.os.Process.killProcess(android.os.Process.myPid())
-                                    },
-                                    onError = { error ->
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("Restore failed: $error")
-                                        }
-                                    }
-                                )
+                        viewModel.restoreDatabase(
+                            uri = restoreUri,
+                            onSuccess = {
+                                android.os.Process.killProcess(android.os.Process.myPid())
+                            },
+                            onError = { error ->
+                                scope.launch {
+                                    snackbarHostState.showSnackbar("Restore failed: $error")
+                                }
                             }
-                        }.onFailure { error ->
-                            scope.launch {
-                                snackbarHostState.showSnackbar("Failed to read backup file: ${error.localizedMessage}")
-                            }
-                        }
+                        )
                     }
                 ) {
                     Text("Restore")
@@ -162,9 +146,6 @@ fun SettingsScreen(
     val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
     val autoQueueSimilar by viewModel.autoQueueSimilar.collectAsStateWithLifecycle()
     
-    // Bass states
-    val songBassEnabled by viewModel.songBassEnabled.collectAsStateWithLifecycle()
-    val songBassStrengthPercent by viewModel.songBassStrengthPercent.collectAsStateWithLifecycle()
     
     // Cache States
     val cacheSize by viewModel.cacheSize.collectAsStateWithLifecycle()
@@ -369,24 +350,6 @@ fun SettingsScreen(
                         checked = skipSilence,
                         onCheckedChange = { viewModel.setSkipSilence(it) }
                     )
-                    SettingsDivider()
-                    SettingsSwitchItem(
-                        title = "Bass Boost",
-                        subtitle = "Enhance lower audio frequencies dynamically",
-                        checked = songBassEnabled,
-                        onCheckedChange = { viewModel.setSongBassEnabled(it) }
-                    )
-                    if (songBassEnabled) {
-                        SettingsDivider()
-                        SettingsSliderItem(
-                            title = "Bass Strength",
-                            value = songBassStrengthPercent.toFloat(),
-                            onValueChange = { viewModel.setSongBassStrength(it.toInt()) },
-                            valueRange = 0f..100f,
-                            steps = 100,
-                            valueText = "$songBassStrengthPercent%"
-                        )
-                    }
                     SettingsDivider()
                     SettingsActionItem(
                         title = "Device Equalizer",

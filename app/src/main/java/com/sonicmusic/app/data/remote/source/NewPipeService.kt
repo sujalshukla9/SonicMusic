@@ -172,35 +172,62 @@ class NewPipeService @Inject constructor() {
     }
 
     /**
-     * Select the best audio stream based on quality preference.
-     * 
-     * Codec-aware selection:
-     * - BEST: OPUS preferred, then highest bitrate
-     * - HIGH: AAC/M4A preferred at 256kbps (compatibility)
-     * - MEDIUM: Any codec at ~128kbps
-     * - LOW: Lowest available
+     * Select the best audio stream with strict AAC 256kbps priority.
+     *
+     * Scoring model (mirrors AudioStreamExtractor.bestSourceScore):
+     *  - AAC streams at ≥256kbps  → highest tier (3× bitrate + 500k bonus)
+     *  - AAC streams at any bitrate → preferred over OPUS (3× bitrate)
+     *  - OPUS/WebM and other codecs → last resort (1× bitrate)
+     *
+     * The quality parameter is honoured for DATA_SAVER/LOW: in that case
+     * we pick the stream closest to the target bitrate without exceeding it.
      */
     private fun selectBestAudioStream(streams: List<AudioStream>, quality: StreamQuality): AudioStream? {
         if (streams.isEmpty()) return null
-        
-        val validStreams = streams.filter { it.content.isNotEmpty() }
+
+        val validStreams = streams.filter { !it.content.isNullOrEmpty() }
         if (validStreams.isEmpty()) return null
-        
+
+        // For DATA_SAVER (LOW), pick the stream closest to ≤ target bitrate.
+        if (quality == StreamQuality.LOW) {
+            val targetKbps = quality.bitrate
+            val below = validStreams.filter { it.averageBitrate in 1..targetKbps }
+            val pool = below.ifEmpty { validStreams }
+            return pool.minByOrNull { kotlin.math.abs(it.averageBitrate - targetKbps) }
+        }
+
+        // For all other tiers (MEDIUM / HIGH / BEST) always retrieve the highest
+        // available quality and let the bitrate determine the tier automatically.
         return validStreams.maxWithOrNull(
-            compareBy<AudioStream> { it.averageBitrate }
-                .thenBy { bestSourceScore(it) }
+            compareBy { stream -> bestSourceScore(stream) }
         )
     }
 
+    /**
+     * Score an audio stream for selection.
+     *
+     * AAC is scored 3× higher than OPUS so that even a 128kbps AAC stream
+     * outranks a 128kbps OPUS stream, and a 256kbps AAC stream always wins.
+     * An extra 500_000 bonus is added for AAC streams at ≥256kbps.
+     */
     private fun bestSourceScore(stream: AudioStream): Long {
         val mimeType = stream.format?.mimeType ?: stream.format?.name.orEmpty()
-        val codecBonus = when {
-            mimeType.contains("m4a", true) || mimeType.contains("mp4", true) || mimeType.contains("aac", true) || mimeType.contains("mp4a", true) -> 20L
-            mimeType.contains("opus", true) || mimeType.contains("webm", true) -> 10L
-            else -> 0L
+        val isAac = mimeType.contains("m4a", true) ||
+            mimeType.contains("mp4", true) ||
+            mimeType.contains("aac", true) ||
+            mimeType.contains("mp4a", true)
+        val bitrateKbps = stream.averageBitrate
+        return when {
+            isAac && bitrateKbps >= 256 ->
+                (bitrateKbps.toLong() * 3_000L) + 500_000L
+            isAac ->
+                (bitrateKbps.toLong() * 3_000L)
+            else ->
+                // OPUS / WebM / Vorbis — last resort
+                (bitrateKbps.toLong() * 1_000L)
         }
-        return (stream.averageBitrate.toLong() * 1_000L) + codecBonus
     }
+
 
     /**
      * Get song details from video ID

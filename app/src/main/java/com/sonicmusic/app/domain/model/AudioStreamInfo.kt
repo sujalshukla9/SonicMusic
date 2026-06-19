@@ -24,17 +24,22 @@ data class AudioStreamInfo(
 
     /**
      * Human-readable quality badge like Apple Music shows
-     * e.g., "Hi-Res", "AAC", "Enhanced"
+     * e.g., "AAC 256", "AAC", "Hi-Res"
      */
     val qualityBadge: String
         get() = when {
             isEnhanced && isHighRes -> "Enhanced · Hi-Res"
             isEnhanced -> "Enhanced"
-            isHighRes -> "Hi-Res"
-            codec.equals("AAC", true) || codec.equals("AAC-LC", true) -> "AAC"
+            // AAC at 256kbps (our primary best quality)
+            (codec.equals("AAC", true) || codec.equals("AAC-LC", true)) && bitrate >= 256 -> "AAC 256"
             codec.equals("AAC-HE", true) -> "HE-AAC"
+            codec.equals("AAC", true) || codec.equals("AAC-LC", true) -> "AAC"
+            // OPUS only shown when it's actually selected (last resort)
+            codec.equals("OPUS", true) && bitrate >= 256 -> "Hi-Res"
+            codec.equals("OPUS", true) -> "OPUS"
             else -> codec.uppercase()
         }
+
 
     /**
      * Full quality description for settings/info display
@@ -84,14 +89,25 @@ data class AudioStreamInfo(
         }
 
         /**
-         * Determine quality tier from stream parameters
+         * Determine quality tier from stream parameters.
+         *
+         * AAC ≥256kbps → BEST  (our primary quality target)
+         * AAC ≥128kbps → HIGH
+         * OPUS ≥256kbps → HIGH (high-quality but not our preferred codec)
+         * others        → MEDIUM / LOW by bitrate
          */
         fun qualityTierFromStream(codec: String, bitrate: Int): StreamQuality = when {
-            codec.equals("OPUS", true) && bitrate >= 128 -> StreamQuality.BEST
+            codec.equals("AAC-LC", true) && bitrate >= 256 -> StreamQuality.BEST
+            codec.equals("AAC", true) && bitrate >= 256 -> StreamQuality.BEST
+            codec.equals("AAC-LC", true) && bitrate >= 128 -> StreamQuality.HIGH
+            codec.equals("AAC", true) && bitrate >= 128 -> StreamQuality.HIGH
+            codec.equals("AAC-HE", true) && bitrate >= 64 -> StreamQuality.HIGH
+            codec.equals("OPUS", true) && bitrate >= 256 -> StreamQuality.HIGH
             bitrate >= 256 -> StreamQuality.HIGH
             bitrate >= 128 -> StreamQuality.MEDIUM
             else -> StreamQuality.LOW
         }
+
 
         /**
          * Estimate sample rate from itag

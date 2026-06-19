@@ -3,17 +3,25 @@ package com.sonicmusic.app.domain.model
 /**
  * Audio Quality Tiers
  *
- * - DATA_SAVER: Minimal data usage
- * - HIGH_EFFICIENCY: AAC-HE, good quality at low bitrate
- * - HIGH_QUALITY: AAC 256kbps, standard quality
- * - BEST: OPUS at highest available bitrate (default)
+ * The pipeline always prioritises AAC streams. Codec labels reflect what
+ * will actually be selected from YouTube's adaptive formats:
+ *
+ * - LOW:    Data-saver mode — ≤64 kbps, any codec
+ * - MEDIUM: AAC 128 kbps (cellular-optimised)
+ * - HIGH:   AAC 256 kbps — best available AAC (default for Wi-Fi)
+ * - BEST:   Best available AAC, and if no AAC is available at all, OPUS
+ *           is used as a last resort at the highest bitrate offered
+ *
+ * In practice BEST and HIGH resolve to the same stream (AAC 256kbps) because
+ * the stream-selection scoring always picks the highest-bitrate AAC format.
+ * BEST is kept for API compatibility and to signal "no ceiling".
  */
 enum class StreamQuality(
     val bitrate: Int,
     val displayName: String,
     val description: String,
     val isHighRes: Boolean = false,
-    val preferredCodec: String = "any",
+    val preferredCodec: String = "aac",
 ) {
     LOW(
         bitrate = 64,
@@ -35,10 +43,10 @@ enum class StreamQuality(
     ),
     BEST(
         bitrate = 256,
-        displayName = "Very High (Opus)",
-        description = "OPUS 256 kbps · Best available audio quality",
+        displayName = "Best Available",
+        description = "AAC 256 kbps · Best quality (AAC preferred, OPUS fallback)",
         isHighRes = true,
-        preferredCodec = "opus",
+        preferredCodec = "aac",
     );
 
     /**
@@ -60,7 +68,7 @@ enum class StreamQuality(
             LOW -> "LOW"
             MEDIUM -> "AAC"
             HIGH -> "AAC"
-            BEST -> "OPUS"
+            BEST -> "AAC"
         }
 
     companion object {

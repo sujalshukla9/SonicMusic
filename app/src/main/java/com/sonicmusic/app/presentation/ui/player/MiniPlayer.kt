@@ -1,9 +1,16 @@
 package com.sonicmusic.app.presentation.ui.player
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -137,8 +144,16 @@ fun MiniPlayer(
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             when {
-                                offsetX.value < -swipeThreshold -> viewModel.skipToNext()
-                                offsetX.value > swipeThreshold -> viewModel.skipToPrevious()
+                                offsetX.value < -swipeThreshold -> {
+                                    if (viewModel.playerUiState.value.canSkipNext) {
+                                        viewModel.skipToNext()
+                                    }
+                                }
+                                offsetX.value > swipeThreshold -> {
+                                    if (viewModel.playerUiState.value.canSkipPrevious) {
+                                        viewModel.forceSkipToPrevious()
+                                    }
+                                }
                             }
                             swipeScope.launch {
                                 offsetX.animateTo(0f, tween(durationMillis = 150, easing = FastOutSlowInEasing))
@@ -207,10 +222,10 @@ fun MiniPlayer(
 
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        // Like Button
+                        // Like Button — AnimatedContent with spring pop for heart fill
                         FilledTonalIconButton(
                             onClick = { viewModel.toggleLike() },
-                            modifier = Modifier.size(34.dp),
+                            modifier = Modifier.size(40.dp),
                             colors = IconButtonDefaults.filledTonalIconButtonColors(
                                 containerColor = if (isLiked) {
                                     colorScheme.errorContainer
@@ -224,16 +239,33 @@ fun MiniPlayer(
                                 }
                             )
                         ) {
-                            Icon(
-                                imageVector = if (isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                contentDescription = if (isLiked) "Unlike" else "Like",
-                                modifier = Modifier.size(18.dp)
-                            )
+                            AnimatedContent(
+                                targetState = isLiked,
+                                transitionSpec = {
+                                    if (targetState) {
+                                        (scaleIn(
+                                            animationSpec = spring(dampingRatio = 0.55f, stiffness = 600f),
+                                            initialScale = 0.6f
+                                        ) + fadeIn(tween(100)))
+                                            .togetherWith(scaleOut(tween(70)) + fadeOut(tween(70)))
+                                    } else {
+                                        (fadeIn(tween(100)) + scaleIn(initialScale = 0.85f, animationSpec = tween(100)))
+                                            .togetherWith(fadeOut(tween(70)) + scaleOut(targetScale = 0.85f, animationSpec = tween(70)))
+                                    }
+                                },
+                                label = "mini_like_icon_morph"
+                            ) { liked ->
+                                Icon(
+                                    imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    contentDescription = if (liked) "Unlike" else "Like",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.width(6.dp))
 
-                        // Play/Pause Button - Large M3 FAB style
+                        // Play/Pause Button — AnimatedContent crossfade
                         Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                             if (isBuffering) {
                                 CircularProgressIndicator(
@@ -250,11 +282,24 @@ fun MiniPlayer(
                                         contentColor = onAccentColor
                                     )
                                 ) {
-                                    Icon(
-                                        imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                        contentDescription = if (isPlaying) "Pause" else "Play",
-                                        modifier = Modifier.size(28.dp)
-                                    )
+                                    AnimatedContent(
+                                        targetState = isPlaying,
+                                        transitionSpec = {
+                                            (fadeIn(animationSpec = tween(180, delayMillis = 50)) +
+                                                    scaleIn(initialScale = 0.85f, animationSpec = tween(180, delayMillis = 50)))
+                                                .togetherWith(
+                                                    fadeOut(animationSpec = tween(70)) +
+                                                            scaleOut(targetScale = 0.85f, animationSpec = tween(70))
+                                                )
+                                        },
+                                        label = "mini_play_pause_morph"
+                                    ) { playing ->
+                                        Icon(
+                                            imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                            contentDescription = if (playing) "Pause" else "Play",
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
