@@ -93,6 +93,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -166,7 +167,6 @@ fun FullPlayerScreen(
     val currentSong by viewModel.currentSong.collectAsStateWithLifecycle()
     val audioCapability by viewModel.audioCapability.collectAsStateWithLifecycle()
     val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsStateWithLifecycle()
-    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
     val albumArtBlurEnabled by viewModel.albumArtBlurEnabled.collectAsStateWithLifecycle()
     val thumbnailShape by viewModel.thumbnailShape.collectAsStateWithLifecycle()
     val playerControlStyle by viewModel.playerControlStyle.collectAsStateWithLifecycle()
@@ -311,39 +311,43 @@ fun FullPlayerScreen(
     val baseColorScheme = MaterialTheme.colorScheme
     val colorScheme = baseColorScheme
     val isSystemDark = !baseColorScheme.background.luminance().let { it > 0.5f }
-    val localColorScheme = LocalPlayerColorScheme.current
-    val playerColorScheme = remember(localColorScheme, dynamicColorsEnabled, isSystemDark) {
-        if (dynamicColorsEnabled) {
-            localColorScheme
-        } else {
-            ColorExtractor.fallbackColorScheme(isSystemDark)
-        }
-    }
 
     val accentColor by animateColorAsState(
-        targetValue = playerColorScheme.primary,
+        targetValue = baseColorScheme.primary,
         animationSpec = tween(durationMillis = 1000),
         label = "full_player_accent"
     )
     val onAccentColor by animateColorAsState(
-        targetValue = playerColorScheme.onSurface,
+        targetValue = baseColorScheme.onPrimary,
         animationSpec = tween(durationMillis = 1000),
         label = "full_player_on_accent"
     )
+
+    // Calculate dynamic top/mid container tints derived from Material 3 Expressive theme
+    val containerColor = remember(baseColorScheme, isSystemDark) {
+        lerp(
+            start = baseColorScheme.surfaceContainerLow,
+            stop = baseColorScheme.primaryContainer,
+            fraction = if (isSystemDark) 0.30f else 0.22f
+        )
+    }
+    val containerSoftColor = remember(baseColorScheme, isSystemDark) {
+        lerp(
+            start = baseColorScheme.surfaceContainerLowest,
+            stop = baseColorScheme.surfaceContainerHigh,
+            fraction = if (isSystemDark) 0.44f else 0.30f
+        )
+    }
+
     val backgroundTopTint by animateColorAsState(
-        targetValue = playerColorScheme.backgroundStops.getOrElse(0) { Color.Transparent },
+        targetValue = containerSoftColor,
         animationSpec = tween(durationMillis = 1000),
         label = "full_player_bg_top_tint"
     )
     val backgroundMidTint by animateColorAsState(
-        targetValue = playerColorScheme.backgroundStops.getOrElse(1) { Color.Transparent },
+        targetValue = containerColor,
         animationSpec = tween(durationMillis = 1000),
         label = "full_player_bg_mid_tint"
-    )
-    val backgroundBottomTint by animateColorAsState(
-        targetValue = playerColorScheme.backgroundStops.getOrElse(2) { Color.Transparent },
-        animationSpec = tween(durationMillis = 1000),
-        label = "full_player_bg_bottom_tint"
     )
 
     Surface(
@@ -388,7 +392,7 @@ fun FullPlayerScreen(
                 enableArtworkBlur = albumArtBlurEnabled,
                 topColor = backgroundTopTint,
                 midColor = backgroundMidTint,
-                bottomColor = backgroundBottomTint,
+                bottomColor = colorScheme.surface,
                 blurAlpha = blurAlpha,
                 modifier = Modifier.fillMaxSize()
             )
