@@ -683,7 +683,13 @@ fun MainScaffoldContent(
                         navController.navigate(SubScreens.RECENTLY_PLAYED)
                     },
                     onNavigateToSettings = { 
-                        navController.navigate(SubScreens.SETTINGS)
+                        navController.navigate(Screen.Settings.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     },
                     onNavigateToArtist = { name, browseId ->
                         navController.navigate(SubScreens.artistDetail(name, browseId))
