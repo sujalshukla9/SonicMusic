@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/app_icon.png" alt="Sonic Music Logo" width="120" height="120">
+  <img src="app/src/main/res/drawable/ic_splash_logo.png" alt="Sonic Music Logo" width="120" height="120">
   <h1>Sonic Music 🎵</h1>
   <p><b>A modern, expressive, and lightning-fast Android music streaming app.</b></p>
   
