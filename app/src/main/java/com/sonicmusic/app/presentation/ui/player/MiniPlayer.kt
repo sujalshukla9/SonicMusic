@@ -90,8 +90,6 @@ fun MiniPlayer(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val isBuffering by viewModel.isBuffering.collectAsStateWithLifecycle()
     val isLiked by viewModel.isLiked.collectAsStateWithLifecycle()
-    val dynamicColorsEnabled by viewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
-    val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
     val thumbnailShape by viewModel.thumbnailShape.collectAsStateWithLifecycle()
 
     if (currentSong == null) return
@@ -106,40 +104,20 @@ fun MiniPlayer(
     val swipeScope = rememberCoroutineScope()
     
     val swipeThreshold = 120f
-    val artworkPalette = rememberPlayerArtworkPalette(
-        artworkUrl = currentSong?.thumbnailUrl,
-        fallbackColorScheme = MaterialTheme.colorScheme,
-        enabled = dynamicColorsEnabled,
-        intensity = dynamicColorIntensity / 100f
-    )
-    MaterialTheme(colorScheme = artworkPalette.colorScheme) {
-        val colorScheme = MaterialTheme.colorScheme
-        val accentColor by animateColorAsState(
-            targetValue = artworkPalette.accent,
-            animationSpec = tween(1000),
-            label = "miniAccent"
-        )
-        val onAccentColor by animateColorAsState(
-            targetValue = artworkPalette.onAccent,
-            animationSpec = tween(1000),
-            label = "miniOnAccent"
-        )
+    val colorScheme = MaterialTheme.colorScheme
+    val accentColor = colorScheme.primary
+    val onAccentColor = colorScheme.onPrimary
+    val backgroundColor = backgroundColorOverride ?: colorScheme.surfaceContainerHigh
 
-        val backgroundColor by animateColorAsState(
-            targetValue = backgroundColorOverride ?: colorScheme.surfaceContainerHigh,
-            animationSpec = tween(1000),
-            label = "bgColor"
-        )
-
-        Box(
-            modifier = modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            Surface(
-                modifier = Modifier
-                    .widthIn(max = Dimens.maxContentWidth)
-                    .fillMaxWidth()
-                    .height(miniHeight)
+    Box(
+        modifier = modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            modifier = Modifier
+                .widthIn(max = Dimens.maxContentWidth)
+                .fillMaxWidth()
+                .height(miniHeight)
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
@@ -313,8 +291,7 @@ fun MiniPlayer(
                 }
             }
         } // Surface
-        } // Box (centering container)
-    } // MaterialTheme
+    } // Box (centering container)
 }
 
 @Composable

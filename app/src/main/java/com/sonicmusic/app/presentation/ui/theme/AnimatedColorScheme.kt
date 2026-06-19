@@ -1,59 +1,70 @@
 package com.sonicmusic.app.presentation.ui.theme
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+
+private class ColorSchemeTransitionState(
+    val start: ColorScheme,
+    val end: ColorScheme,
+    var current: ColorScheme
+)
 
 @Composable
 fun ColorScheme.animated(
     durationMillis: Int = 1000,
     easing: Easing = FastOutSlowInEasing
 ): ColorScheme {
-    val spec = tween<Color>(durationMillis = durationMillis, easing = easing)
+    val target = this
     
-    @Composable
-    fun Color.a(): Color = animateColorAsState(this, spec, label = "color_anim").value
+    // Remember the transition state containing the start, target, and current color scheme
+    val transitionState = remember {
+        mutableStateOf<ColorSchemeTransitionState?>(null)
+    }
     
-    return this.copy(
-        primary = primary.a(),
-        onPrimary = onPrimary.a(),
-        primaryContainer = primaryContainer.a(),
-        onPrimaryContainer = onPrimaryContainer.a(),
-        inversePrimary = inversePrimary.a(),
-        secondary = secondary.a(),
-        onSecondary = onSecondary.a(),
-        secondaryContainer = secondaryContainer.a(),
-        onSecondaryContainer = onSecondaryContainer.a(),
-        tertiary = tertiary.a(),
-        onTertiary = onTertiary.a(),
-        tertiaryContainer = tertiaryContainer.a(),
-        onTertiaryContainer = onTertiaryContainer.a(),
-        background = background.a(),
-        onBackground = onBackground.a(),
-        surface = surface.a(),
-        onSurface = onSurface.a(),
-        surfaceVariant = surfaceVariant.a(),
-        onSurfaceVariant = onSurfaceVariant.a(),
-        surfaceTint = surfaceTint.a(),
-        inverseSurface = inverseSurface.a(),
-        inverseOnSurface = inverseOnSurface.a(),
-        error = error.a(),
-        onError = onError.a(),
-        errorContainer = errorContainer.a(),
-        onErrorContainer = onErrorContainer.a(),
-        outline = outline.a(),
-        outlineVariant = outlineVariant.a(),
-        scrim = scrim.a(),
-        surfaceBright = surfaceBright.a(),
-        surfaceDim = surfaceDim.a(),
-        surfaceContainer = surfaceContainer.a(),
-        surfaceContainerHigh = surfaceContainerHigh.a(),
-        surfaceContainerHighest = surfaceContainerHighest.a(),
-        surfaceContainerLow = surfaceContainerLow.a(),
-        surfaceContainerLowest = surfaceContainerLowest.a(),
-    )
+    // Remember the animator progress (0f to 1f)
+    val progress = remember { Animatable(0f) }
+    
+    val currentState = transitionState.value
+    
+    if (currentState == null) {
+        // Initial setup on first composition
+        transitionState.value = ColorSchemeTransitionState(
+            start = target,
+            end = target,
+            current = target
+        )
+    } else if (currentState.end != target) {
+        // The target color scheme changed (either a new song, or user toggled dark/light mode)
+        // Set the start scheme to the currently displayed (partially interpolated) scheme.
+        transitionState.value = ColorSchemeTransitionState(
+            start = currentState.current,
+            end = target,
+            current = currentState.current
+        )
+    }
+    
+    // Reset and launch a fresh animation unconditionally whenever target changes
+    LaunchedEffect(target) {
+        progress.snapTo(0f)
+        progress.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = durationMillis, easing = easing)
+        )
+    }
+    
+    val activeState = transitionState.value
+    return if (activeState != null && progress.value > 0f) {
+        val interpolated = blendColorScheme(activeState.start, activeState.end, progress.value)
+        activeState.current = interpolated
+        interpolated
+    } else {
+        activeState?.current ?: target
+    }
 }

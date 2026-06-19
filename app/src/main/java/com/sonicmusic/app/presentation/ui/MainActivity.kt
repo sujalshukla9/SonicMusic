@@ -361,26 +361,10 @@ fun SonicMusicApp(
             val dynamicState = LocalDynamicThemeState.current
             val colorScheme = MaterialTheme.colorScheme
             
-            val backgroundTop by animateColorAsState(
-                targetValue = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f)),
-                animationSpec = tween(durationMillis = 1000),
-                label = "app_background_top"
-            )
-            val backgroundMid by animateColorAsState(
-                targetValue = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f)),
-                animationSpec = tween(durationMillis = 1000),
-                label = "app_background_mid"
-            )
-            val navBarContainer by animateColorAsState(
-                targetValue = colorScheme.surfaceContainerHigh,
-                animationSpec = tween(durationMillis = 1000),
-                label = "app_nav_bar_container"
-            )
-            val navBarIndicator by animateColorAsState(
-                targetValue = colorScheme.secondaryContainer,
-                animationSpec = tween(durationMillis = 1000),
-                label = "app_nav_bar_indicator"
-            )
+            val backgroundTop = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f))
+            val backgroundMid = Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f))
+            val navBarContainer = colorScheme.surfaceContainerHigh
+            val navBarIndicator = colorScheme.secondaryContainer
 
             androidx.compose.runtime.LaunchedEffect(playbackError, playerError) {
                 val errorMsg = playbackError ?: playerError
