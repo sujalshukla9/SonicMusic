@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.webp" alt="Sonic Music Logo" width="120" height="120">
+  <img src="assets/app_icon.png" alt="Sonic Music Logo" width="120" height="120">
   <h1>Sonic Music 🎵</h1>
   <p><b>A modern, expressive, and lightning-fast Android music streaming app.</b></p>
   
@@ -63,7 +63,7 @@ Engineered using the latest Android development standards and best practices:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/SonicMusic.git
+   git clone https://github.com/sujalshukla9/SonicMusic.git
    ```
 2. Open the project in Android Studio.
 3. Sync the project with Gradle files.
