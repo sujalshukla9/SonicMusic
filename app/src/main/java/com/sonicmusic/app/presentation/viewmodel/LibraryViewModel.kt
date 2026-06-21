@@ -448,6 +448,12 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    fun restoreDownloadedSong(song: DownloadedSong) {
+        viewModelScope.launch {
+            songDownloadManager.restoreDownloadedSong(song)
+        }
+    }
+
     fun updateStorageMetrics() {
         viewModelScope.launch(Dispatchers.IO) {
             val file = context.getExternalFilesDir(null) ?: context.filesDir

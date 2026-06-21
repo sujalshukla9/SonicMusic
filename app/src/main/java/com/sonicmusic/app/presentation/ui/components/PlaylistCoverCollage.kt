@@ -30,13 +30,15 @@ fun PlaylistCoverCollage(
             .clip(shape)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
-        if (!playlist.coverArtUrl.isNullOrBlank() && playlist.songs.isEmpty()) {
+        if (!playlist.coverArtUrl.isNullOrBlank()) {
+            // Explicit cover art always takes priority
             SongThumbnail(
                 artworkUrl = playlist.coverArtUrl,
                 modifier = Modifier.fillMaxSize(),
                 contentDescription = null
             )
         } else if (playlist.songs.size >= 4) {
+            // 4-song collage grid
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(modifier = Modifier.weight(1f)) {
                     Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -56,12 +58,14 @@ fun PlaylistCoverCollage(
                 }
             }
         } else if (playlist.songs.isNotEmpty()) {
+            // 1–3 songs: show first song's art
             SongThumbnail(
                 artworkUrl = playlist.songs.first().thumbnailUrl,
                 modifier = Modifier.fillMaxSize(),
                 contentDescription = null
             )
         } else {
+            // Empty playlist: show placeholder icon
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center

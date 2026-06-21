@@ -28,8 +28,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -56,6 +59,10 @@ class SongDownloadManager @Inject constructor(
 
     private val _activeDownloads = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
     val activeDownloads: StateFlow<Map<String, DownloadProgress>> = _activeDownloads.asStateFlow()
+
+    /** One-shot error messages for the UI layer (e.g. storage full, network errors). */
+    private val _downloadErrors = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val downloadErrors: SharedFlow<String> = _downloadErrors.asSharedFlow()
 
     // Track download requests and their metadata in memory to handle completions and titles
     private val downloadMetadata = ConcurrentHashMap<String, DownloadMetadata>()
@@ -125,7 +132,7 @@ class SongDownloadManager @Inject constructor(
     /**
      * Download a song using Media3 DownloadManager.
      */
-    fun downloadSong(song: Song, quality: StreamQuality = StreamQuality.HIGH) {
+    fun downloadSong(song: Song, quality: StreamQuality = StreamQuality.BEST) {
         scope.launch {
             val videoId = song.id
             Log.d(TAG, "📥 Requesting download: ${song.title}")
@@ -134,9 +141,7 @@ class SongDownloadManager @Inject constructor(
             val destMusicDir = File(context.getExternalFilesDir(null), "Music").apply { mkdirs() }
             if (destMusicDir.usableSpace < 104_857_600L) { // 100 MB
                 Log.w(TAG, "❌ Disk space too low for download: ${destMusicDir.usableSpace} bytes available")
-                withContext(Dispatchers.Main) {
-                    android.widget.Toast.makeText(context, "Storage space too low for downloads", android.widget.Toast.LENGTH_LONG).show()
-                }
+                _downloadErrors.tryEmit("Storage space too low for downloads")
                 return@launch
             }
 
@@ -227,7 +232,7 @@ class SongDownloadManager @Inject constructor(
             Log.d(TAG, "▶️ Resuming download: $videoId")
             // Re-resolve URL to ensure it hasn't expired before resuming
             updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
-            val metadata = downloadMetadata[videoId] ?: return@launch
+            val _metadata = downloadMetadata[videoId] ?: return@launch
             
             val streamResult = audioStreamExtractor.extractAudioStream(videoId, StreamQuality.BEST)
             if (streamResult.isFailure) {
@@ -281,6 +286,21 @@ class SongDownloadManager @Inject constructor(
      * Expose downloads flow.
      */
     fun getDownloadedSongs() = downloadedSongDao.getAllDownloadedSongs()
+
+    /**
+     * Restore a previously deleted [DownloadedSong] by re-inserting its DB record.
+     * Used by the Undo action after a delete. The physical file is preserved if it
+     * hasn't been cleaned up yet — if the file is missing, the next play will fall
+     * back to streaming automatically.
+     */
+    suspend fun restoreDownloadedSong(song: DownloadedSong) = withContext(Dispatchers.IO) {
+        try {
+            downloadedSongDao.insertDownloadedSong(song)
+            Log.d(TAG, "↩️ Restored deleted download record: ${song.videoId}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to restore download record: ${song.videoId}", e)
+        }
+    }
 
     /**
      * Delete downloaded files and DB records.
@@ -565,7 +585,7 @@ class SongDownloadManager @Inject constructor(
             val loader = ImageLoader(context)
             val request = ImageRequest.Builder(context)
                 .data(url)
-                .size(300, 300)
+                .size(640, 640)
                 .allowHardware(false) // Required to export to bitmap
                 .build()
             val result = loader.execute(request)
@@ -581,7 +601,7 @@ class SongDownloadManager @Inject constructor(
                     @Suppress("DEPRECATION")
                     Bitmap.CompressFormat.WEBP
                 }
-                bitmap.compress(format, 80, out)
+                bitmap.compress(format, 95, out)
             }
             destFile
         } catch (e: Exception) {

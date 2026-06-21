@@ -103,7 +103,8 @@ fun DownloadedSongsScreen(
     fun formatSize(bytes: Long): String {
         if (bytes <= 0) return "0 B"
         val units = arrayOf("B", "KB", "MB", "GB", "TB")
-        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+        val digitGroups = ((Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt())
+            .coerceIn(0, units.lastIndex)
         return String.format(
             "%.1f %s",
             bytes / Math.pow(1024.0, digitGroups.toDouble()),
@@ -139,32 +140,17 @@ fun DownloadedSongsScreen(
 
     // Handle delete with undo
     fun handleDeleteSong(song: DownloadedSong) {
-        val originalStatus = song.status
         viewModel.removeDownloadedSong(song.videoId)
 
         coroutineScope.launch {
             val result = snackbarHostState.showSnackbar(
-                message = "Removed download: ${song.title}",
+                message = "Removed: ${song.title}",
                 actionLabel = "Undo",
                 duration = SnackbarDuration.Short
             )
             if (result == SnackbarResult.ActionPerformed) {
-                // Restore downloaded song
-                // (For simplicity in this local-only mode, we re-insert the completed song record)
-                // Note: The file wasn't physically deleted immediately if we introduce a delayed cleanup,
-                // or we re-trigger/restore in database. Since deleteDownload is immediate on disk in current manager,
-                // we prompt to re-download or if file remains cached in media3, restore it.
-                // To keep it simple and robust, let's inform the user we are restoring.
-                Toast.makeText(context, "Restoring download...", Toast.LENGTH_SHORT).show()
-                viewModel.onSongClick(
-                    Song(
-                        id = song.videoId,
-                        title = song.title,
-                        artist = song.artists,
-                        duration = (song.durationMs / 1000).toInt(),
-                        thumbnailUrl = song.thumbnailUrl
-                    )
-                )
+                // Re-insert the original DownloadedSong record to restore it
+                viewModel.restoreDownloadedSong(song)
             }
         }
     }

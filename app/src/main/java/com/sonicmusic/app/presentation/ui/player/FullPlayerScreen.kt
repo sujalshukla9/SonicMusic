@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -199,7 +200,7 @@ fun FullPlayerScreen(
 
     val morphingShape = remember(morph, targetShape, animProgress.value) {
         if (morph == null) {
-            targetShape.toComposeShape()
+            targetShape.toComposeShape(isLarge = true)
         } else {
             MorphComposeShape(morph, animProgress.value)
         }
@@ -390,19 +391,100 @@ fun FullPlayerScreen(
             FullPlayerBackground(
                 artworkUrl = currentSong?.thumbnailUrl,
                 enableArtworkBlur = albumArtBlurEnabled,
-                topColor = backgroundTopTint,
-                midColor = backgroundMidTint,
-                bottomColor = colorScheme.surface,
                 blurAlpha = blurAlpha,
                 modifier = Modifier.fillMaxSize()
             )
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+            ) {
+                val availableHeight = maxHeight
+                val availableWidth = maxWidth
+                val isCompactHeight = availableHeight < 600.dp
+
+                // ViTune-style: album art is as large as possible — fill up to 88% of width
+                // or up to ~52% of available height (portrait), whichever is smaller.
+                // This gives a large, dominant artwork just like ViTune.
+                val maxArtWidth = availableWidth * 0.88f
+                val maxArtFromHeight = when {
+                    availableHeight >= 800.dp -> availableHeight * 0.52f
+                    availableHeight >= 680.dp -> availableHeight * 0.50f
+                    availableHeight >= 580.dp -> availableHeight * 0.47f
+                    else -> availableHeight * 0.44f
+                }
+                val artworkSize = minOf(maxArtWidth, maxArtFromHeight).coerceAtLeast(160.dp)
+
+                // Spacing above artwork — tight like ViTune
+                val topSpacer = when {
+                    availableHeight >= 800.dp -> 20.dp
+                    availableHeight >= 680.dp -> 12.dp
+                    availableHeight >= 580.dp -> 6.dp
+                    else -> 2.dp
+                }
+
+                val badgeSpacer = when {
+                    availableHeight >= 800.dp -> 16.dp
+                    availableHeight >= 680.dp -> 10.dp
+                    availableHeight >= 580.dp -> 6.dp
+                    else -> 2.dp
+                }
+                val badgeRow = 24.dp
+
+                // Spacing between artwork and controls — ViTune keeps this tight
+                val artworkSpacing = when {
+                    availableHeight >= 800.dp -> 28.dp
+                    availableHeight >= 680.dp -> 16.dp
+                    availableHeight >= 580.dp -> 8.dp
+                    else -> 4.dp
+                }
+
+                // Get the navigation bar padding dynamically
+                val navBarPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                val isBottomCompact = isCompactHeight || availableWidth < 360.dp
+                val bottomActionsBar = (if (isBottomCompact) 72.dp else 92.dp) + navBarPadding
+
+                // controlsHeight kept for landscape layout reference (not used in portrait art sizing now)
+                val controlsHeight = if (playerControlStyle == PlayerControlStyle.CLASSIC) {
+                    val songInfoTop = when {
+                        availableHeight >= 800.dp -> 32.dp
+                        availableHeight >= 680.dp -> 20.dp
+                        availableHeight >= 580.dp -> 10.dp
+                        else -> 4.dp
+                    }
+                    val controlsTop = when {
+                        availableHeight >= 800.dp -> 12.dp
+                        availableHeight >= 680.dp -> 8.dp
+                        availableHeight >= 580.dp -> 4.dp
+                        else -> 2.dp
+                    }
+                    val textAndSlider = 104.dp
+                    val buttonRow = if (isCompactHeight) 56.dp else 80.dp
+                    songInfoTop + controlsTop + textAndSlider + buttonRow
+                } else {
+                    val spacing = when {
+                        availableHeight >= 800.dp -> 16.dp
+                        availableHeight >= 680.dp -> 12.dp
+                        availableHeight >= 580.dp -> 6.dp
+                        else -> 4.dp
+                    }
+                    val textSp = when {
+                        availableHeight >= 800.dp -> 16.dp
+                        availableHeight >= 680.dp -> 12.dp
+                        availableHeight >= 580.dp -> 6.dp
+                        else -> 4.dp
+                    }
+                    val songInfo = 50.dp
+                    val playRow = if (isCompactHeight) 56.dp else 80.dp
+                    val seekRow = if (isCompactHeight) 48.dp else 80.dp
+                    songInfo + textSp + playRow + seekRow + (spacing * 2)
+                }
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.statusBars),
+                    modifier = Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(if (isCompactHeight) 8.dp else 16.dp))
                     // No internet banner
                     val isOnline = com.sonicmusic.app.presentation.ui.components.LocalIsOnline.current
                     com.sonicmusic.app.presentation.ui.components.NoInternetBanner(isVisible = !isOnline)
@@ -500,7 +582,10 @@ fun FullPlayerScreen(
                                     onDoubleTapBackwardChange = { showDoubleTapBackwardIndicator = it },
                                     useLandscapeLayout = true,
                                     colorScheme = colorScheme,
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier.fillMaxSize(),
+                                    isCompactHeight = isCompactHeight,
+                                    artworkSize = artworkSize,
+                                    availableHeight = availableHeight
                                 )
                             }
 
@@ -514,6 +599,7 @@ fun FullPlayerScreen(
                                 verticalArrangement = Arrangement.Center,
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                val isLandscapeCompact = (availableWidth * (1.2f / 2.2f)) < 360.dp
                                 PlaybackControlsSection(
                                     currentSong = currentSong,
                                     albumLinkState = albumLinkState,
@@ -527,10 +613,13 @@ fun FullPlayerScreen(
                                     colorScheme = colorScheme,
                                     onOpenArtist = onOpenArtist,
                                     onOpenAlbum = onOpenAlbum,
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth(),
+                                    isCompactHeight = isCompactHeight,
+                                    isCompactWidth = isLandscapeCompact,
+                                    availableHeight = availableHeight
                                 )
 
-                                Spacer(modifier = Modifier.height(24.dp))
+                                Spacer(modifier = Modifier.height(if (isCompactHeight) 12.dp else 24.dp))
 
                                 Surface(
                                     modifier = Modifier.fillMaxWidth(),
@@ -547,7 +636,11 @@ fun FullPlayerScreen(
                                         colorScheme = colorScheme,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                                            .padding(
+                                                horizontal = if (isLandscapeCompact) 12.dp else 16.dp,
+                                                vertical = if (isLandscapeCompact) 8.dp else 12.dp
+                                            ),
+                                        isCompactWidth = isLandscapeCompact
                                     )
                                 }
                             }
@@ -634,14 +727,12 @@ fun FullPlayerScreen(
                                 onDoubleTapBackwardChange = { showDoubleTapBackwardIndicator = it },
                                 useLandscapeLayout = false,
                                 colorScheme = colorScheme,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                isCompactHeight = isCompactHeight,
+                                artworkSize = artworkSize,
+                                availableHeight = availableHeight
                             )
 
-                            val artworkSpacing = if (playerControlStyle == PlayerControlStyle.CLASSIC) {
-                                Dimens.playerArtworkSpacing / 2
-                            } else {
-                                Dimens.playerArtworkSpacing
-                            }
                             Spacer(modifier = Modifier.height(artworkSpacing))
 
                             PlaybackControlsSection(
@@ -657,7 +748,10 @@ fun FullPlayerScreen(
                                 colorScheme = colorScheme,
                                 onOpenArtist = onOpenArtist,
                                 onOpenAlbum = onOpenAlbum,
-                                modifier = Modifier.fillMaxWidth()
+                                modifier = Modifier.fillMaxWidth(),
+                                isCompactHeight = isCompactHeight,
+                                isCompactWidth = isBottomCompact,
+                                availableHeight = availableHeight
                             )
                         }
 
@@ -705,14 +799,14 @@ fun FullPlayerScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Spacer(modifier = Modifier.height(if (isBottomCompact) 6.dp else 10.dp))
                                     Box(
                                         modifier = Modifier
                                             .size(width = 32.dp, height = 4.dp)
                                             .clip(CircleShape)
                                             .background(colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
                                     )
-                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Spacer(modifier = Modifier.height(if (isBottomCompact) 4.dp else 6.dp))
 
                                     BottomActionsSection(
                                         sleepTimerActive = sleepTimerActive,
@@ -724,7 +818,11 @@ fun FullPlayerScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .windowInsetsPadding(WindowInsets.navigationBars)
-                                            .padding(horizontal = 24.dp, vertical = 12.dp)
+                                            .padding(
+                                                horizontal = if (isBottomCompact) 16.dp else 24.dp,
+                                                vertical = if (isBottomCompact) 6.dp else 12.dp
+                                            ),
+                                        isCompactWidth = isBottomCompact
                                     )
                                 }
                             }
@@ -732,6 +830,7 @@ fun FullPlayerScreen(
                     }
                 }
             }
+        }
 
         // ═══════════════════════════════════════════════════════════════
         // SHEETS — State is only collected when the sheet is visible.
@@ -949,9 +1048,6 @@ private fun openDeviceEqualizerPanel(context: Context): Boolean {
 private fun FullPlayerBackground(
     artworkUrl: String?,
     enableArtworkBlur: Boolean,
-    topColor: Color,
-    midColor: Color,
-    bottomColor: Color,
     blurAlpha: Float,
     modifier: Modifier = Modifier
 ) {
@@ -970,20 +1066,8 @@ private fun FullPlayerBackground(
                 highQuality = false
             )
         }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            topColor.copy(alpha = if (enableArtworkBlur && blurAlpha > 0f) 0.54f * blurAlpha + 0.40f * (1f - blurAlpha) else 0.85f),
-                            midColor.copy(alpha = if (enableArtworkBlur && blurAlpha > 0f) 0.36f * blurAlpha + 0.22f * (1f - blurAlpha) else 0.60f),
-                            bottomColor
-                        )
-                    )
-                )
-        )
+        // No tinted gradient overlay — keep the surface clean so the album art
+        // thumbnail is displayed without any colour layer on top of it.
     }
 }
 
@@ -1062,14 +1146,23 @@ private fun ArtworkSection(
     onDoubleTapBackwardChange: (Boolean) -> Unit,
     useLandscapeLayout: Boolean,
     colorScheme: androidx.compose.material3.ColorScheme,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isCompactHeight: Boolean = false,
+    artworkSize: androidx.compose.ui.unit.Dp = Dimens.albumArtSize,
+    availableHeight: androidx.compose.ui.unit.Dp = 640.dp
 ) {
     Column(
         modifier = modifier.padding(horizontal = Dimens.screenPadding),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         if (!useLandscapeLayout) {
-            Spacer(modifier = Modifier.height(Dimens.playerTopSpacing))
+            val topSpacer = when {
+                availableHeight >= 800.dp -> 20.dp
+                availableHeight >= 680.dp -> 12.dp
+                availableHeight >= 580.dp -> 6.dp
+                else -> 2.dp
+            }
+            Spacer(modifier = Modifier.height(topSpacer))
         }
 
         // Album art card with ViTune swipe physics
@@ -1080,8 +1173,7 @@ private fun ArtworkSection(
                     .aspectRatio(1f)
             } else {
                 Modifier
-                    .fillMaxWidth(0.92f)
-                    .widthIn(max = Dimens.albumArtSize)
+                    .size(artworkSize)
                     .aspectRatio(1f)
             })
                 .graphicsLayer {
@@ -1197,15 +1289,16 @@ private fun ArtworkSection(
                     SongThumbnail(
                         artworkUrl = displayedSong?.thumbnailUrl,
                         shape = thumbnailShape,
-                        shadowElevation = 12.dp,
-                        backgroundColor = colorScheme.surfaceContainerHigh,
+                        shadowElevation = 0.dp,
+                        backgroundColor = Color.Transparent,
                         modifier = Modifier.fillMaxSize(),
                         contentDescription = displayedSong?.let { "${it.title} by ${it.artist}" }
                             ?: "Album Art",
                         contentScale = ContentScale.Crop,
                         crossfade = true,
                         highQuality = true,
-                        targetSizePx = 1080
+                        targetSizePx = 1080,
+                        isLarge = true
                     )
 
                     Box(
@@ -1319,7 +1412,13 @@ private fun ArtworkSection(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        val badgeSpacer = when {
+            availableHeight >= 800.dp -> 16.dp
+            availableHeight >= 680.dp -> 10.dp
+            availableHeight >= 580.dp -> 6.dp
+            else -> 2.dp
+        }
+        Spacer(modifier = Modifier.height(badgeSpacer))
         
         AudioBadgeRow(capability = audioCapability)
     }
@@ -1339,7 +1438,10 @@ private fun PlaybackControlsSection(
     colorScheme: androidx.compose.material3.ColorScheme,
     onOpenArtist: (String, String?) -> Unit,
     onOpenAlbum: (String, String, String, String?) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isCompactHeight: Boolean = false,
+    isCompactWidth: Boolean = false,
+    availableHeight: androidx.compose.ui.unit.Dp = 640.dp
 ) {
     // Collect here — not at FullPlayerScreen level — so only this sub-tree recomposes on position ticks.
     val uiState by viewModel.playerUiState.collectAsStateWithLifecycle()
@@ -1358,14 +1460,20 @@ private fun PlaybackControlsSection(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 24.dp),
+                            .padding(horizontal = if (isCompactWidth) 12.dp else 24.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Spacer(modifier = Modifier.height(48.dp))
+                        val songInfoTop = when {
+                            availableHeight >= 800.dp -> 32.dp
+                            availableHeight >= 680.dp -> 20.dp
+                            availableHeight >= 580.dp -> 10.dp
+                            else -> 4.dp
+                        }
+                        Spacer(modifier = Modifier.height(songInfoTop))
                         CenteredScrollableContainer(modifier = Modifier.fillMaxWidth()) {
                             Text(
                                 text = currentSong?.title ?: "",
-                                style = MaterialTheme.typography.titleLarge.copy(
+                                style = (if (isCompactHeight) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge).copy(
                                     fontWeight = FontWeight.Bold,
                                     textAlign = TextAlign.Center
                                 ),
@@ -1407,7 +1515,7 @@ private fun PlaybackControlsSection(
                             @Suppress("DEPRECATION")
                             androidx.compose.foundation.text.ClickableText(
                                 text = subtitleAnnotated,
-                                style = MaterialTheme.typography.bodyMedium.copy(
+                                style = (if (isCompactHeight) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium).copy(
                                     color = colorScheme.onSurface.copy(alpha = 0.6f),
                                     textAlign = TextAlign.Center
                                 ),
@@ -1434,7 +1542,13 @@ private fun PlaybackControlsSection(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
+                    val controlsTop = when {
+                        availableHeight >= 800.dp -> 12.dp
+                        availableHeight >= 680.dp -> 8.dp
+                        availableHeight >= 580.dp -> 4.dp
+                        else -> 2.dp
+                    }
+                    Spacer(modifier = Modifier.height(controlsTop))
 
                     ClassicPlayerControls(
                         state = uiState,
@@ -1446,13 +1560,21 @@ private fun PlaybackControlsSection(
                         accentColor = accentColor,
                         onAccentColor = onAccentColor,
                         fullPlayerStyle = fullPlayerStyle,
+                        isCompactHeight = isCompactHeight,
+                        isCompactWidth = isCompactWidth,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
             PlayerControlStyle.MODERN -> {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Spacer(modifier = Modifier.height(16.dp))
+                    val modernSpacing = when {
+                        availableHeight >= 800.dp -> 16.dp
+                        availableHeight >= 680.dp -> 12.dp
+                        availableHeight >= 580.dp -> 6.dp
+                        else -> 4.dp
+                    }
+                    Spacer(modifier = Modifier.height(modernSpacing))
                     ModernPlayerControls(
                         state = uiState,
                         actions = viewModel,
@@ -1464,7 +1586,14 @@ private fun PlaybackControlsSection(
                         onOpenAlbum = onOpenAlbum,
                         thumbnailUrl = currentSong?.thumbnailUrl,
                         fullPlayerStyle = fullPlayerStyle,
-                        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp)
+                        isCompactHeight = isCompactHeight,
+                        isCompactWidth = isCompactWidth,
+                        availableHeight = availableHeight,
+                        modifier = Modifier.padding(
+                            start = if (isCompactWidth) 12.dp else 24.dp,
+                            end = if (isCompactWidth) 12.dp else 24.dp,
+                            top = if (isCompactHeight) 8.dp else 16.dp
+                        )
                     )
                 }
             }
@@ -1480,11 +1609,12 @@ private fun BottomActionsSection(
     onSleepTimerClick: () -> Unit,
     onMoreClick: () -> Unit,
     colorScheme: androidx.compose.material3.ColorScheme,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isCompactWidth: Boolean = false
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = if (isCompactWidth) Arrangement.SpaceAround else Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Left side: Queue icon + "Next Up"
@@ -1492,7 +1622,7 @@ private fun BottomActionsSection(
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
                 .clickable { onQueueClick() }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = if (isCompactWidth) 8.dp else 12.dp, vertical = if (isCompactWidth) 6.dp else 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -1502,20 +1632,26 @@ private fun BottomActionsSection(
                 modifier = Modifier.size(22.dp),
                 tint = colorScheme.onSurfaceVariant
             )
-            Text(
-                text = "Next Up",
-                style = MaterialTheme.typography.labelLarge,
-                color = colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
+            if (!isCompactWidth) {
+                Text(
+                    text = "Next Up",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
 
         // Middle: Sleep Timer Countdown / Indicator
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
+                .background(
+                    if (sleepTimerActive) colorScheme.primaryContainer.copy(alpha = 0.4f)
+                    else Color.Transparent
+                )
                 .clickable { onSleepTimerClick() }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = if (isCompactWidth) 8.dp else 12.dp, vertical = if (isCompactWidth) 6.dp else 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -1525,16 +1661,18 @@ private fun BottomActionsSection(
                 modifier = Modifier.size(20.dp),
                 tint = if (sleepTimerActive) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
             )
-            Text(
-                text = if (sleepTimerActive && sleepTimerRemaining != null) {
-                    formatSleepTimerDuration(sleepTimerRemaining)
-                } else {
-                    "Sleep"
-                },
-                style = MaterialTheme.typography.labelLarge,
-                color = if (sleepTimerActive) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                fontWeight = FontWeight.Medium
-            )
+            if (!isCompactWidth) {
+                Text(
+                    text = if (sleepTimerActive && sleepTimerRemaining != null) {
+                        formatSleepTimerDuration(sleepTimerRemaining)
+                    } else {
+                        "Sleep"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (sleepTimerActive) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
 
         // Right side: 3 dots + "Option"
@@ -1542,7 +1680,7 @@ private fun BottomActionsSection(
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
                 .clickable { onMoreClick() }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = if (isCompactWidth) 8.dp else 12.dp, vertical = if (isCompactWidth) 6.dp else 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -1552,12 +1690,14 @@ private fun BottomActionsSection(
                 modifier = Modifier.size(22.dp),
                 tint = colorScheme.onSurfaceVariant
             )
-            Text(
-                text = "Option",
-                style = MaterialTheme.typography.labelLarge,
-                color = colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
+            if (!isCompactWidth) {
+                Text(
+                    text = "Option",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
     }
 }

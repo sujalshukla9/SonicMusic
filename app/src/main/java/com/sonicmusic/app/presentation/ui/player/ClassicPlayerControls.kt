@@ -81,7 +81,9 @@ fun ClassicPlayerControls(
     accentColor: Color,
     onAccentColor: Color,
     fullPlayerStyle: FullPlayerStyle,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isCompactHeight: Boolean = false,
+    isCompactWidth: Boolean = false
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -118,17 +120,27 @@ fun ClassicPlayerControls(
         animatedProgress
     }
 
+    val isCompact = isCompactHeight || isCompactWidth
+    val spacingHeight = if (isCompact) 4.dp else 8.dp
+    val trackHeight = if (isCompact) 16.dp else 24.dp
+    val secondaryBtnSize = if (isCompact) 40.dp else 48.dp
+    val secondaryIconSize = if (isCompact) 20.dp else 24.dp
+    val skipBtnSize = if (isCompact) 40.dp else Dimens.skipButtonSize
+    val skipIcnSize = if (isCompact) 20.dp else Dimens.skipIconSize
+    val playBtnSize = if (isCompact) 56.dp else Dimens.playButtonSize
+    val playIcnSize = if (isCompact) 28.dp else Dimens.playIconSize
+
     Column(modifier = modifier) {
         // Seeker Bar Row
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
+                .padding(horizontal = if (isCompactWidth) 12.dp else 20.dp)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                    .padding(horizontal = if (isCompactWidth) 4.dp else 10.dp, vertical = 2.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 PlayerSeekTrack(
@@ -137,7 +149,8 @@ fun ClassicPlayerControls(
                     isPlaying = state.isPlaying,
                     activeColor = colorScheme.onSurface,
                     inactiveColor = colorScheme.onSurface.copy(alpha = 0.28f),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    trackHeight = trackHeight
                 )
 
                 Slider(
@@ -190,20 +203,20 @@ fun ClassicPlayerControls(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(spacingHeight))
 
         // Control Buttons Row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = if (isCompactWidth) 12.dp else 24.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Like — AnimatedContent so the heart pops in with a spring scale
             IconButton(
                 onClick = onToggleLike,
-                modifier = Modifier.size(48.dp)
+                modifier = Modifier.size(secondaryBtnSize)
             ) {
                 AnimatedContent(
                     targetState = isLiked,
@@ -226,7 +239,7 @@ fun ClassicPlayerControls(
                     Icon(
                         imageVector = if (liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                         contentDescription = if (liked) "Unlike" else "Like",
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(secondaryIconSize),
                         tint = if (liked) colorScheme.error else colorScheme.onSurfaceVariant
                     )
                 }
@@ -236,7 +249,7 @@ fun ClassicPlayerControls(
             FilledIconButton(
                 onClick = { actions.onSkipPrevious() },
                 enabled = state.canSkipPrevious,
-                modifier = Modifier.size(Dimens.skipButtonSize),
+                modifier = Modifier.size(skipBtnSize),
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = accentColor.copy(alpha = 0.2f),
@@ -248,22 +261,22 @@ fun ClassicPlayerControls(
                 Icon(
                     imageVector = Icons.Default.SkipPrevious,
                     contentDescription = "Previous",
-                    modifier = Modifier.size(Dimens.skipIconSize)
+                    modifier = Modifier.size(skipIcnSize)
                 )
             }
 
             // Play/Pause — AnimatedContent morph between play and pause icons
-            Box(modifier = Modifier.size(Dimens.playButtonSize), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.size(playBtnSize), contentAlignment = Alignment.Center) {
                 if (state.isBuffering) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(Dimens.playIconSize * 1.2f),
+                        modifier = Modifier.size(playIcnSize * 1.2f),
                         color = accentColor,
                         strokeWidth = 4.dp
                     )
                 } else {
                     FilledIconButton(
                         onClick = { actions.onPlayPause() },
-                        modifier = Modifier.size(Dimens.playButtonSize),
+                        modifier = Modifier.size(playBtnSize),
                         shape = CircleShape,
                         colors = IconButtonDefaults.filledIconButtonColors(
                             containerColor = accentColor,
@@ -285,7 +298,7 @@ fun ClassicPlayerControls(
                             Icon(
                                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                 contentDescription = if (isPlaying) "Pause" else "Play",
-                                modifier = Modifier.size(Dimens.playIconSize)
+                                modifier = Modifier.size(playIcnSize)
                             )
                         }
                     }
@@ -296,7 +309,7 @@ fun ClassicPlayerControls(
             FilledIconButton(
                 onClick = { actions.onSkipNext() },
                 enabled = state.canSkipNext,
-                modifier = Modifier.size(Dimens.skipButtonSize),
+                modifier = Modifier.size(skipBtnSize),
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = accentColor.copy(alpha = 0.2f),
@@ -308,14 +321,14 @@ fun ClassicPlayerControls(
                 Icon(
                     imageVector = Icons.Default.SkipNext,
                     contentDescription = "Next",
-                    modifier = Modifier.size(Dimens.skipIconSize)
+                    modifier = Modifier.size(skipIcnSize)
                 )
             }
 
             // Repeat — contentDescription describes current state for TalkBack
             IconButton(
                 onClick = onToggleRepeat,
-                modifier = Modifier.size(48.dp)
+                modifier = Modifier.size(secondaryBtnSize)
             ) {
                 Icon(
                     imageVector = when (repeatMode) {
@@ -328,7 +341,7 @@ fun ClassicPlayerControls(
                         Player.REPEAT_MODE_ALL -> "Repeat all — tap to repeat one"
                         else -> "Repeat off — tap to repeat all"
                     },
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(secondaryIconSize),
                     tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
                         accentColor
                     } else {
@@ -347,7 +360,8 @@ fun PlayerSeekTrack(
     isPlaying: Boolean,
     activeColor: Color,
     inactiveColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    trackHeight: androidx.compose.ui.unit.Dp = 24.dp
 ) {
     val isWavyStyle = style == FullPlayerStyle.WAVY
     val wavePhase = if (isWavyStyle && isPlaying) {
@@ -374,15 +388,16 @@ fun PlayerSeekTrack(
     )
 
     Canvas(
-        modifier = modifier.height(24.dp)
+        modifier = modifier.height(trackHeight)
     ) {
         val centerY = size.height / 2f
-        val trackStroke = 5.dp.toPx()
-        val thumbStroke = 7.dp.toPx()
-        val thumbHeight = 18.dp.toPx()
+        val isCompact = trackHeight < 24.dp
+        val trackStroke = if (isCompact) 3.dp.toPx() else 5.dp.toPx()
+        val thumbStroke = if (isCompact) 5.dp.toPx() else 7.dp.toPx()
+        val thumbHeight = if (isCompact) 12.dp.toPx() else 18.dp.toPx()
         val clampedProgress = progress.coerceIn(0f, 1f)
         val activeEndX = size.width * clampedProgress
-        val waveAmplitude = 2.8.dp.toPx() * waveAmplitudeScale
+        val waveAmplitude = (if (isCompact) 1.8.dp.toPx() else 2.8.dp.toPx()) * waveAmplitudeScale
         val wavelength = 34.dp.toPx()
         val waveStep = 2.dp.toPx()
 

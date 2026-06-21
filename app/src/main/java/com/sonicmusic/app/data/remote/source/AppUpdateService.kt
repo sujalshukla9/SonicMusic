@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import org.json.JSONArray
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
@@ -18,6 +19,15 @@ class AppUpdateService @Inject constructor(
         val isUpdateAvailable: Boolean,
         val currentVersion: String,
         val latestVersion: String,
+        val downloadUrl: String?
+    )
+
+    data class GitHubRelease(
+        val tagName: String,
+        val name: String,
+        val publishedAt: String,
+        val body: String,
+        val htmlUrl: String,
         val downloadUrl: String?
     )
 
@@ -88,6 +98,69 @@ class AppUpdateService @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to check app updates", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getReleases(): Result<List<GitHubRelease>> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url("https://api.github.com/repos/sujalshukla9/SonicMusic/releases")
+                .get()
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "SonicMusic-Android")
+                .build()
+
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(
+                        IllegalStateException("Failed to fetch releases (HTTP ${response.code})")
+                    )
+                }
+
+                val body = response.body?.string()
+                    ?: return@withContext Result.failure(IllegalStateException("Empty releases response"))
+                
+                val jsonArray = JSONArray(body)
+                val releases = mutableListOf<GitHubRelease>()
+                
+                for (i in 0 until jsonArray.length()) {
+                    val json = jsonArray.getJSONObject(i)
+                    val tagName = json.optString("tag_name", "")
+                    val name = json.optString("name", tagName)
+                    val publishedAt = json.optString("published_at", "")
+                    val releaseBody = json.optString("body", "")
+                    val htmlUrl = json.optString("html_url", "")
+                    
+                    var downloadUrl: String? = null
+                    val assets = json.optJSONArray("assets")
+                    if (assets != null) {
+                        for (j in 0 until assets.length()) {
+                            val asset = assets.getJSONObject(j)
+                            val assetName = asset.optString("name", "")
+                            if (assetName.endsWith(".apk")) {
+                                downloadUrl = asset.optString("browser_download_url")
+                                break
+                            }
+                        }
+                    }
+                    
+                    releases.add(
+                        GitHubRelease(
+                            tagName = tagName,
+                            name = name,
+                            publishedAt = publishedAt,
+                            body = releaseBody,
+                            htmlUrl = htmlUrl,
+                            downloadUrl = downloadUrl
+                        )
+                    )
+                }
+                
+                Result.success(releases)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch releases list", e)
             Result.failure(e)
         }
     }

@@ -409,7 +409,7 @@ class UserTasteRepositoryImpl @Inject constructor(
         
         // Trending/discovery
         queries.add("trending songs in $countryName ${RegionalRecommendationHelper.currentYear()}")
-        queries.add("${RegionalRecommendationHelper.regionalKeywords(countryCode).first()} songs")
+        queries.add("${RegionalRecommendationHelper.regionalKeywords(countryCode).firstOrNull() ?: "popular"} songs")
         
         return queries
     }

@@ -12,16 +12,16 @@ import com.sonicmusic.app.presentation.ui.LocalWindowSizeClass
  */
 object Dimens {
 
-    /** Preferred album art size for the full player */
+    /** Preferred album art size for the full player — ViTune style: fills most of screen width */
     val albumArtSize: Dp
         @Composable
         get() {
             val windowSize = LocalWindowSizeClass.current
             return when (windowSize.widthSizeClass) {
-                WindowWidthSizeClass.Compact -> 360.dp
-                WindowWidthSizeClass.Medium -> 440.dp
-                WindowWidthSizeClass.Expanded -> 520.dp
-                else -> 360.dp
+                WindowWidthSizeClass.Compact -> 380.dp
+                WindowWidthSizeClass.Medium -> 460.dp
+                WindowWidthSizeClass.Expanded -> 540.dp
+                else -> 380.dp
             }
         }
 
@@ -181,7 +181,7 @@ object Dimens {
     /** Maximum width constraint for player panels and list contents on large screens */
     val maxContentWidth: Dp
         @Composable
-        get() = 600.dp
+        get() = 700.dp
 
     /** Top padding above artwork in FullPlayerScreen */
     val playerTopSpacing: Dp

@@ -181,10 +181,10 @@ val ArchShape = GenericShape { size, _ ->
  * Extension helper to directly convert a ThumbnailShape into a Compose Shape.
  * Uses native Shapes for standard items and polygon shapes for expressive morphs.
  */
-fun ThumbnailShape.toComposeShape(): Shape {
+fun ThumbnailShape.toComposeShape(isLarge: Boolean = false): Shape {
     return when (this) {
         ThumbnailShape.SQUARE -> RoundedCornerShape(0.dp)
-        ThumbnailShape.ROUNDED_SQUARE -> RoundedCornerShape(12.dp)
+        ThumbnailShape.ROUNDED_SQUARE -> RoundedCornerShape(if (isLarge) 28.dp else 12.dp)
         ThumbnailShape.CIRCLE -> CircleShape
         ThumbnailShape.PILL -> RoundedCornerShape(50)
         ThumbnailShape.ARCH -> ArchShape

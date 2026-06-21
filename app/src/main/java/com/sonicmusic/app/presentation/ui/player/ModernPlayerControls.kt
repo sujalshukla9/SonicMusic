@@ -78,7 +78,10 @@ fun ModernPlayerControls(
     onOpenAlbum: (String, String, String, String?) -> Unit,
     thumbnailUrl: String?,
     modifier: Modifier = Modifier,
-    fullPlayerStyle: FullPlayerStyle = FullPlayerStyle.NORMAL
+    fullPlayerStyle: FullPlayerStyle = FullPlayerStyle.NORMAL,
+    isCompactHeight: Boolean = false,
+    isCompactWidth: Boolean = false,
+    availableHeight: androidx.compose.ui.unit.Dp = 640.dp
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val onSurfaceColor = colorScheme.onSurface
@@ -115,21 +118,40 @@ fun ModernPlayerControls(
         animatedProgress
     }
 
+    val isCompact = isCompactHeight || isCompactWidth
+    val spacingHeight = when {
+        isCompactWidth -> 6.dp
+        availableHeight >= 800.dp -> 20.dp
+        availableHeight >= 680.dp -> 16.dp
+        availableHeight >= 580.dp -> 8.dp
+        else -> 4.dp
+    }
+    val textSpPadding = when {
+        isCompactWidth -> 8.dp
+        availableHeight >= 800.dp -> 24.dp
+        availableHeight >= 680.dp -> 16.dp
+        availableHeight >= 580.dp -> 8.dp
+        else -> 4.dp
+    }
+    val seekHeight = if (isCompact) 16.dp else 24.dp
+    val controlBtnSize = if (isCompact) 56.dp else Dimens.modernControlButtonSize
+    val skipBtnSize = if (isCompact) 48.dp else Dimens.modernControlButtonSize
+
     Column(
         modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(spacingHeight)
     ) {
         // Song Info Centered Header
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = if (isCompactWidth) 4.dp else 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             CenteredScrollableContainer(modifier = Modifier.fillMaxWidth()) {
                 Text(
                     text = state.title,
-                    style = MaterialTheme.typography.titleLarge.copy(
+                    style = (if (isCompactHeight) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge).copy(
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     ),
@@ -170,7 +192,7 @@ fun ModernPlayerControls(
                 @Suppress("DEPRECATION")
                 ClickableText(
                     text = artistAnnotated,
-                    style = MaterialTheme.typography.bodyMedium.copy(
+                    style = (if (isCompactHeight) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium).copy(
                         color = onSurfaceColor.copy(alpha = 0.6f),
                         textAlign = TextAlign.Center
                     ),
@@ -196,13 +218,13 @@ fun ModernPlayerControls(
                     }
                 )
             }
-            Spacer(modifier = Modifier.height(16.dp)) // padding between artist name and modern player controls
+            Spacer(modifier = Modifier.height(textSpPadding)) // padding between artist name and modern player controls
         }
 
         // Row 1: Play/Pause Pill (~70% width) + Skip Next Squircle (~30% width)
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (isCompactWidth) 10.dp else 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Play/Pause pill
@@ -212,7 +234,7 @@ fun ModernPlayerControls(
             Box(
                 modifier = Modifier
                     .weight(0.7f)
-                    .height(Dimens.modernControlButtonSize)
+                    .height(controlBtnSize)
                     .modernScaleOnPress(playPauseInteractionSource, targetScale = 0.96f)
                     .clip(RoundedCornerShape(percent = 50))
                     .background(accentColor)
@@ -239,7 +261,7 @@ fun ModernPlayerControls(
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                         contentDescription = if (isPlaying) "Pause" else "Play",
-                        modifier = Modifier.size(Dimens.modernControlButtonSize * 0.44f),
+                        modifier = Modifier.size(controlBtnSize * 0.44f),
                         tint = onAccentColor
                     )
                 }
@@ -247,7 +269,7 @@ fun ModernPlayerControls(
                 // Buffering overlay (non-blocking)
                 if (isBuffering) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(Dimens.modernControlButtonSize * 0.66f),
+                        modifier = Modifier.size(controlBtnSize * 0.66f),
                         color = onAccentColor.copy(alpha = 0.5f),
                         strokeWidth = 3.dp
                     )
@@ -260,7 +282,7 @@ fun ModernPlayerControls(
 
             Box(
                 modifier = Modifier
-                    .size(Dimens.modernControlButtonSize)
+                    .size(skipBtnSize)
                     .modernScaleOnPress(nextInteractionSource, targetScale = 0.96f)
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 36.dp, bottomEnd = 36.dp, bottomStart = 16.dp))
                     .background(accentColor.copy(alpha = if (nextEnabled) 0.15f else 0.06f))
@@ -275,7 +297,7 @@ fun ModernPlayerControls(
                 Icon(
                     imageVector = Icons.Filled.SkipNext,
                     contentDescription = "Next",
-                    modifier = Modifier.size(Dimens.modernControlButtonSize * 0.38f),
+                    modifier = Modifier.size(skipBtnSize * 0.38f),
                     tint = if (nextEnabled) accentColor else accentColor.copy(alpha = 0.38f)
                 )
             }
@@ -285,8 +307,8 @@ fun ModernPlayerControls(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(Dimens.modernControlButtonSize),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                .height(skipBtnSize),
+            horizontalArrangement = Arrangement.spacedBy(if (isCompactWidth) 10.dp else 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Skip Previous button
@@ -295,7 +317,7 @@ fun ModernPlayerControls(
 
             Box(
                 modifier = Modifier
-                    .size(Dimens.modernControlButtonSize)
+                    .size(skipBtnSize)
                     .modernScaleOnPress(prevInteractionSource, targetScale = 0.96f)
                     .clip(RoundedCornerShape(topStart = 36.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 36.dp))
                     .background(accentColor.copy(alpha = if (prevEnabled) 0.15f else 0.06f))
@@ -310,7 +332,7 @@ fun ModernPlayerControls(
                 Icon(
                     imageVector = Icons.Filled.SkipPrevious,
                     contentDescription = "Previous",
-                    modifier = Modifier.size(Dimens.modernControlButtonSize * 0.38f),
+                    modifier = Modifier.size(skipBtnSize * 0.38f),
                     tint = if (prevEnabled) accentColor else accentColor.copy(alpha = 0.38f)
                 )
             }
@@ -333,7 +355,8 @@ fun ModernPlayerControls(
                         isPlaying = state.isPlaying,
                         activeColor = onSurfaceColor,
                         inactiveColor = onSurfaceColor.copy(alpha = 0.2f),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        trackHeight = seekHeight
                     )
 
                     Slider(

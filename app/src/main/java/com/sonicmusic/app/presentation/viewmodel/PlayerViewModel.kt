@@ -293,6 +293,13 @@ class PlayerViewModel @Inject constructor(
         // Connect to PlaybackService
         playerServiceConnection.connect()
 
+        // Forward download manager error events (e.g. storage full) to the UI error state.
+        viewModelScope.launch {
+            songDownloadManager.downloadErrors.collect { message ->
+                _error.value = message
+            }
+        }
+
         // Keep infinite recommendations aligned with setting.
         viewModelScope.launch {
             settingsRepository.autoQueueSimilar.collect { enabled ->

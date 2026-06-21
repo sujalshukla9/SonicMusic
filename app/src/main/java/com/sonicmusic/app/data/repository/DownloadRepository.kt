@@ -20,7 +20,10 @@ class DownloadRepository @Inject constructor(
 ) {
     val activeDownloads = songDownloadManager.activeDownloads
 
-    fun downloadSong(song: Song, quality: StreamQuality = StreamQuality.HIGH) {
+    /** One-shot error messages from the download manager (e.g. "Storage space too low"). */
+    val downloadErrors = songDownloadManager.downloadErrors
+
+    fun downloadSong(song: Song, quality: StreamQuality = StreamQuality.BEST) {
         songDownloadManager.downloadSong(song, quality)
     }
 

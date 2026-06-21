@@ -24,7 +24,8 @@ fun SongThumbnail(
     highQuality: Boolean = false,
     shape: ThumbnailShape = LocalThumbnailShape.current,
     shadowElevation: Dp = 0.dp,
-    backgroundColor: Color = Color.Transparent
+    backgroundColor: Color = Color.Transparent,
+    isLarge: Boolean = false
 ) {
     AlbumArtThumbnail(
         imageUrl = artworkUrl,
@@ -36,6 +37,7 @@ fun SongThumbnail(
         targetSizePx = targetSizePx,
         highQuality = highQuality,
         shadowElevation = shadowElevation,
-        backgroundColor = backgroundColor
+        backgroundColor = backgroundColor,
+        isLarge = isLarge
     )
 }

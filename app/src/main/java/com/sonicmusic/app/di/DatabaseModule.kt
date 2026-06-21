@@ -40,7 +40,6 @@ object DatabaseModule {
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
         ).addMigrations(migration9to10, migration10to11)
-            .fallbackToDestructiveMigration()
 
         if (com.sonicmusic.app.BuildConfig.DEBUG) {
             builder.setQueryCallback({ sqlQuery, bindArgs ->

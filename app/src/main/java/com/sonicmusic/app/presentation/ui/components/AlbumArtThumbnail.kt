@@ -53,7 +53,8 @@ fun AlbumArtThumbnail(
     targetSizePx: Int = 320,
     highQuality: Boolean = false,
     shadowElevation: Dp = 0.dp,
-    backgroundColor: Color = Color.Transparent
+    backgroundColor: Color = Color.Transparent,
+    isLarge: Boolean = false
 ) {
     val context = LocalContext.current
 
@@ -105,9 +106,9 @@ fun AlbumArtThumbnail(
         }
     }
 
-    val morphingShape = remember(morph, targetShape, animProgress.value) {
+    val morphingShape = remember(morph, targetShape, animProgress.value, isLarge) {
         if (morph == null) {
-            targetShape.toComposeShape()
+            targetShape.toComposeShape(isLarge)
         } else {
             MorphComposeShape(morph, animProgress.value)
         }
