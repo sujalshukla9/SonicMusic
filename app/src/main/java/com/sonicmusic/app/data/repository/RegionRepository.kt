@@ -96,11 +96,6 @@ class RegionRepository @Inject constructor(
     }
 
     private suspend fun fetchAndSaveRegion() {
-        val innertubeResponse = runCatching { youTubeiService.detectCountryFromInnertube() }.getOrNull()
-        if (innertubeResponse != null && saveRegionFromInnertube(innertubeResponse)) {
-            return
-        }
-
         val primaryResponse = runCatching { regionApi.getRegion() }.getOrNull()
         if (primaryResponse != null && saveRegionFromResponse(primaryResponse)) {
             return
@@ -113,6 +108,11 @@ class RegionRepository @Inject constructor(
 
         val tertiaryResponse = runCatching { regionApi.getRegionByUrl(TERTIARY_REGION_URL) }.getOrNull()
         if (tertiaryResponse != null && saveRegionFromResponse(tertiaryResponse)) {
+            return
+        }
+
+        val innertubeResponse = runCatching { youTubeiService.detectCountryFromInnertube() }.getOrNull()
+        if (innertubeResponse != null && saveRegionFromInnertube(innertubeResponse)) {
             return
         }
 
