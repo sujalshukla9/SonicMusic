@@ -94,14 +94,14 @@ class ChartsRepositoryImpl @Inject constructor(
 
         try {
             val language = "en"
-            val requestBody = Innertube.webRemixBody(language, region) {
-                put("browseId", "FEmusic_charts")
+            val requestBody = Innertube.buildYtmContext(language, region) {
+                put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.Charts.value)
                 put("params", Innertube.CHARTS_PARAMS_ARTISTS)
             }
 
             val acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
             val request = Innertube.musicPost(
-                endpoint = "/youtubei/v1/browse",
+                endpoint = Innertube.BROWSE,
                 body = requestBody,
                 acceptLanguage = acceptLanguage
             )
@@ -133,13 +133,13 @@ class ChartsRepositoryImpl @Inject constructor(
 
         try {
             val language = "en"
-            val requestBody = Innertube.webRemixBody(language, region) {
-                put("browseId", "FEmusic_new_releases_albums")
+            val requestBody = Innertube.buildYtmContext(language, region) {
+                put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.NewReleasesAlbums.value)
             }
 
             val acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
             val request = Innertube.musicPost(
-                endpoint = "/youtubei/v1/browse",
+                endpoint = Innertube.BROWSE,
                 body = requestBody,
                 acceptLanguage = acceptLanguage
             )
@@ -182,12 +182,12 @@ class ChartsRepositoryImpl @Inject constructor(
             return it.data.firstOrNull()
         }
 
-        val chartBody = Innertube.webRemixBody(language, region) {
-            put("browseId", "FEmusic_charts")
+        val chartBody = Innertube.buildYtmContext(language, region) {
+            put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.Charts.value)
             put("params", Innertube.CHARTS_PARAMS_SONGS)
         }
         val chartRequest = Innertube.musicPost(
-            endpoint = "/youtubei/v1/browse",
+            endpoint = Innertube.BROWSE,
             body = chartBody,
             acceptLanguage = acceptLanguage
         )
@@ -290,7 +290,7 @@ class ChartsRepositoryImpl @Inject constructor(
                             ?.optJSONObject("watchEndpoint")
                             ?.optString("videoId")
                             ?: run {
-                                Log.w(TAG, "⚠️ Song item $index: no videoId found (playlistItemData=${renderer.has("playlistItemData")}, overlay=${renderer.has("overlay")})")
+                                Log.w(TAG, "⚠️ Song item $index: no videoId found (playlistItemData=${renderer.has(" playlistItemData")}, overlay=${renderer.has(" overlay")})")
                                 return@forEachIndexed
                             }
                     
@@ -643,7 +643,7 @@ class ChartsRepositoryImpl @Inject constructor(
 
     private fun upgradeThumbQuality(url: String, videoId: String): String {
         if (url.isEmpty()) return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.ggpht.com")) {
+        if (url.contains("lh3.googleusercontent.com") || url.contains(" yt3.ggpht.com")) {
             return url.replace(Regex("=w\\d+-h\\d+"), "=w540-h540")
         }
         if (url.contains("i.ytimg.com")) {
@@ -651,10 +651,6 @@ class ChartsRepositoryImpl @Inject constructor(
         }
         return url
     }
-
-    // ══════════════════════════════════════════
-    // DEBUG HELPER
-    // ══════════════════════════════════════════
 
     /**
      * Diagnostic function: fetches charts for a region, logs raw response
@@ -672,18 +668,18 @@ class ChartsRepositoryImpl @Inject constructor(
             val language = "en"
 
             // ── 1. Songs request ──
-            val songsBody = Innertube.webRemixBody(language, region) {
-                put("browseId", "FEmusic_charts")
+            val songsBody = Innertube.buildYtmContext(language, region) {
+                put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.Charts.value)
                 put("params", Innertube.CHARTS_PARAMS_SONGS)
             }
             sb.appendLine("\n── Songs Request ──")
-            sb.appendLine("browseId: FEmusic_charts")
+            sb.appendLine("browseId: ${com.sonicmusic.app.data.remote.source.YtmBrowseId.Charts.value}")
             sb.appendLine("params: ${Innertube.CHARTS_PARAMS_SONGS}")
             sb.appendLine("gl: $region")
             sb.appendLine("Request body (first 300 chars): ${songsBody.toString().take(300)}")
 
             val songsRequest = Innertube.musicPost(
-                endpoint = "/youtubei/v1/browse",
+                endpoint = Innertube.BROWSE,
                 body = songsBody,
                 acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
             )
@@ -705,21 +701,21 @@ class ChartsRepositoryImpl @Inject constructor(
                 val parsed = parseTopSongs(songsJson)
                 sb.appendLine("Parsed songs count: ${parsed.size}")
                 parsed.take(3).forEachIndexed { i, s ->
-                    sb.appendLine("  Song $i: '${s.title}' by ${s.artists} (${s.videoId})")
+                    sb.appendLine(" Song $i: '${s.title}' by ${s.artists} (${s.videoId})")
                 }
             } else {
                 sb.appendLine("ERROR: HTTP ${songsResponse.code} - ${songsResponse.message}")
             }
 
             // ── 2. Albums request ──
-            val albumsBody = Innertube.webRemixBody(language, region) {
-                put("browseId", "FEmusic_new_releases_albums")
+            val albumsBody = Innertube.buildYtmContext(language, region) {
+                put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.NewReleasesAlbums.value)
             }
             sb.appendLine("\n── Albums Request ──")
-            sb.appendLine("browseId: FEmusic_new_releases_albums")
+            sb.appendLine("browseId: ${com.sonicmusic.app.data.remote.source.YtmBrowseId.NewReleasesAlbums.value}")
 
             val albumsRequest = Innertube.musicPost(
-                endpoint = "/youtubei/v1/browse",
+                endpoint = Innertube.BROWSE,
                 body = albumsBody,
                 acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
             )

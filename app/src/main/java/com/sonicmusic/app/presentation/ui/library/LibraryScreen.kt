@@ -157,7 +157,7 @@ fun LibraryScreen(
                         IconButton(onClick = { viewModel.toggleSearch() }) {
                             Icon(
                                 imageVector = if (isSearchActive) Icons.Rounded.Close else Icons.Rounded.Search,
-                                contentDescription = if (isSearchActive) "Close Search" else "Search Library"
+                                contentDescription = if (isSearchActive) "Close Search" else " Search Library"
                             )
                         }
                         IconButton(onClick = { showCreatePlaylistDialog = true }) {

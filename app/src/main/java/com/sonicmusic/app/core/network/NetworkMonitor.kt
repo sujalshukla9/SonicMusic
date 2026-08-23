@@ -30,51 +30,38 @@ class NetworkMonitor @Inject constructor(
     private val _isOnlineState = MutableStateFlow(isConnectedNow())
     val isOnlineState: StateFlow<Boolean> = _isOnlineState.asStateFlow()
 
-    val isOnline: Flow<Boolean> = callbackFlow {
+    init {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                val connected = isConnectedNow()
-                _isOnlineState.value = connected
-                trySend(connected)
+                _isOnlineState.value = true
             }
 
             override fun onLost(network: Network) {
-                val connected = isConnectedNow()
-                _isOnlineState.value = connected
-                trySend(connected)
+                _isOnlineState.value = isConnectedNow()
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                val connected = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                        networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                val connected = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 _isOnlineState.value = connected
-                trySend(connected)
             }
         }
-
-        trySend(isConnectedNow())
 
         try {
             connectivityManager.registerDefaultNetworkCallback(callback)
         } catch (_: Exception) {
-            trySend(false)
-        }
-
-        awaitClose {
-            runCatching { connectivityManager.unregisterNetworkCallback(callback) }
+            _isOnlineState.value = true
         }
     }
-        .distinctUntilChanged()
-        .conflate()
+
+    val isOnline: Flow<Boolean> = isOnlineState
 
     fun isConnectedNow(): Boolean {
         return try {
-            val network = connectivityManager.activeNetwork ?: return false
-            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val network = connectivityManager.activeNetwork ?: return true // Optimistic default to allow requests
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return true
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         } catch (_: Exception) {
-            false
+            true
         }
     }
 }

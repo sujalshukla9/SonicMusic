@@ -388,11 +388,11 @@ class SettingsViewModel @Inject constructor(
                     _appUpdateState.value = _appUpdateState.value.copy(
                         isDownloading = progress < 100,
                         downloadProgress = progress,
-                        statusText = if (progress < 100) "Downloading v$latestVersion... $progress%" else "Download complete."
+                        statusText = if (progress < 100) "Downloading v$latestVersion... $progress%" else " Download complete."
                     )
                 }
             }.onFailure { error ->
-                Log.e("SettingsVM", "Failed to start in-app update download", error)
+                Log.e("SettingsVM", " Failed to start in-app update download", error)
                 _appUpdateState.value = AppUpdateState(
                     isChecking = false,
                     isDownloading = false,
@@ -509,10 +509,10 @@ class SettingsViewModel @Inject constructor(
                     }
 
                     if (deleted > 0) {
-                        Log.d("SettingsVM", "🗑️ Evicted $deleted cache files to enforce ${limitMb ?: "saved"}MB limit")
+                        Log.d("SettingsVM", "🗑️ Evicted $deleted cache files to enforce ${limitMb ?: " saved"}MB limit")
                     }
                 } catch (e: Exception) {
-                    Log.e("SettingsVM", "Cache enforcement failed", e)
+                    Log.e("SettingsVM", " Cache enforcement failed", e)
                 }
             }
             // Refresh displayed size after enforcement

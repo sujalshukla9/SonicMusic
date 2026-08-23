@@ -299,7 +299,7 @@ class RecommendationRepositoryImpl @Inject constructor(
                         if (strictSongs.isEmpty()) null else {
                             ArtistSection(
                                 artist = Artist(
-                                    id = artistName.lowercase().replace(" ", "_"),
+                                    id = artistName.lowercase().replace(" ", " _"),
                                     name = artistName,
                                     songCount = strictSongs.size
                                 ),

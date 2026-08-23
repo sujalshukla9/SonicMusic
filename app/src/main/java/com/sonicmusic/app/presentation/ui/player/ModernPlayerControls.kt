@@ -260,7 +260,7 @@ fun ModernPlayerControls(
                 ) { isPlaying ->
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        contentDescription = if (isPlaying) "Pause" else " Play",
                         modifier = Modifier.size(controlBtnSize * 0.44f),
                         tint = onAccentColor
                     )

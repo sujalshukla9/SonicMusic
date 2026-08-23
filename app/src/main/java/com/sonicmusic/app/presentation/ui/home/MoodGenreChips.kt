@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.domain.model.MoodGenre
 
+import androidx.compose.foundation.border
+
 /**
  * Horizontal scrollable row of mood/genre chips for the home page.
  *
@@ -44,7 +46,8 @@ import com.sonicmusic.app.domain.model.MoodGenre
 fun MoodGenreChips(
     moodGenres: List<MoodGenre>,
     onMoodGenreClick: (MoodGenre) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selectedMoodGenre: MoodGenre? = null
 ) {
     if (moodGenres.isEmpty()) return
 
@@ -68,8 +71,10 @@ fun MoodGenreChips(
                 items = moodGenres,
                 key = { it.params }
             ) { moodGenre ->
+                val isSelected = selectedMoodGenre?.params == moodGenre.params
                 MoodGenreChip(
                     moodGenre = moodGenre,
+                    isSelected = isSelected,
                     onClick = { onMoodGenreClick(moodGenre) }
                 )
             }
@@ -83,6 +88,7 @@ fun MoodGenreChips(
 @Composable
 private fun MoodGenreChip(
     moodGenre: MoodGenre,
+    isSelected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -91,15 +97,31 @@ private fun MoodGenreChip(
     }
 
     val gradientBrush = Brush.horizontalGradient(
-        colors = listOf(
-            chipColor.copy(alpha = 0.85f),
-            chipColor.copy(alpha = 0.55f)
-        )
+        colors = if (isSelected) {
+            listOf(
+                chipColor.copy(alpha = 1.0f),
+                chipColor.copy(alpha = 0.85f)
+            )
+        } else {
+            listOf(
+                chipColor.copy(alpha = 0.85f),
+                chipColor.copy(alpha = 0.55f)
+            )
+        }
     )
 
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
+            .then(
+                if (isSelected) {
+                    Modifier.border(
+                        width = 2.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                } else Modifier
+            )
             .background(gradientBrush)
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 10.dp),
@@ -108,7 +130,7 @@ private fun MoodGenreChip(
         Text(
             text = moodGenre.title,
             style = MaterialTheme.typography.labelLarge.copy(
-                fontWeight = FontWeight.SemiBold,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                 letterSpacing = 0.3.sp
             ),
             color = Color.White,

@@ -163,7 +163,7 @@ class ThemeViewModel @Inject constructor(
             // Save last extracted color to Datastore
             settingsDataStore.setLastSeedColor(primaryArgb)
         } catch (e: Exception) {
-            Log.w("ThemeVM", "Color extraction failed", e)
+            Log.w("ThemeVM", " Color extraction failed", e)
         }
     }
 

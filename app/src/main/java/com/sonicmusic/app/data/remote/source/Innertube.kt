@@ -18,8 +18,7 @@ object Innertube {
     private const val YOUTUBE_HOST = "www.youtube.com"
     private const val YOUTUBEI_HOST = "youtubei.googleapis.com"
 
-    private const val WEB_USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+    private val WEB_USER_AGENT = YtmScopeConfig.ClientContext.USER_AGENT
     private const val ANDROID_USER_AGENT =
         "com.google.android.youtube/21.23.483 (Linux; U; Android 14; en_US) gzip"
     private const val ANDROID_CLIENT_NAME = "3"
@@ -55,11 +54,11 @@ object Innertube {
     @JvmInline
     value class SearchFilter(val value: String) {
         companion object {
-            val Song = SearchFilter("EgWKAQIIAWoOEAMQBBAJEAoQBRAQEBU%3D")
-            val Video = SearchFilter("EgWKAQIQAWoOEAMQBBAJEAoQBRAQEBU%3D")
-            val Album = SearchFilter("EgWKAQIYAWoOEAMQBBAJEAoQBRAQEBU%3D")
-            val Artist = SearchFilter("EgWKAQIgAWoOEAMQBBAJEAoQBRAQEBU%3D")
-            val CommunityPlaylist = SearchFilter("EgeKAQQoAEABag4QAxAEEAkQChAFEBAQFQ%3D%3D")
+            val Song = SearchFilter(YtmScopeConfig.SearchCategoryParams.SONGS)
+            val Video = SearchFilter(YtmScopeConfig.SearchCategoryParams.VIDEOS)
+            val Album = SearchFilter(YtmScopeConfig.SearchCategoryParams.ALBUMS)
+            val Artist = SearchFilter(YtmScopeConfig.SearchCategoryParams.ARTISTS)
+            val CommunityPlaylist = SearchFilter(YtmScopeConfig.SearchCategoryParams.PLAYLISTS)
         }
     }
 
@@ -125,20 +124,31 @@ object Innertube {
         return bytes.toByteArray()
     }
 
-    fun webRemixBody(language: String, region: String, block: JSONObject.() -> Unit): JSONObject {
+    /**
+     * Canonical single context builder for all YouTube Music requests across SonicMusic.
+     * Enforces WEB_REMIX client identity, user region/language, and visitorData token.
+     */
+    fun buildYtmContext(language: String, region: String, block: JSONObject.() -> Unit): JSONObject {
         return JSONObject().apply {
             put("context", JSONObject().apply {
                 put("client", JSONObject().apply {
-                    put("clientName", "WEB_REMIX")
-                    put("clientVersion", "1.20260601.01.00")
+                    put("clientName", YtmScopeConfig.ClientContext.CLIENT_NAME)
+                    put("clientVersion", YtmScopeConfig.ClientContext.CLIENT_VERSION)
                     put("hl", language)
                     put("gl", region)
-                    put("platform", "DESKTOP")
+                    put("platform", YtmScopeConfig.ClientContext.PLATFORM)
                     put("visitorData", generateVisitorData(region))
                 })
             })
             block()
         }
+    }
+
+    /**
+     * Alias for buildYtmContext for backwards compatibility.
+     */
+    fun webRemixBody(language: String, region: String, block: JSONObject.() -> Unit): JSONObject {
+        return buildYtmContext(language, region, block)
     }
 
     /**
@@ -158,6 +168,10 @@ object Innertube {
         )
     }
 
+    @Deprecated(
+        message = "Do not use generic YouTube Android client identity; use buildYtmContext() instead to avoid leaking non-music content.",
+        replaceWith = ReplaceWith("buildYtmContext(language, region, block)")
+    )
     fun androidBody(language: String, region: String, block: JSONObject.() -> Unit): JSONObject {
         return JSONObject().apply {
             put("context", JSONObject().apply {
@@ -197,7 +211,7 @@ object Innertube {
         return Request.Builder()
             .url(url)
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", " application/json")
             .header("User-Agent", WEB_USER_AGENT)
             .header("X-Goog-Api-Key", API_KEY)
             .header("Accept-Language", acceptLanguage)
@@ -255,7 +269,7 @@ object Innertube {
         return Request.Builder()
             .url(url)
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", " application/json")
             .header("User-Agent", ANDROID_USER_AGENT)
             .header("Accept-Language", acceptLanguage)
             .apply {
@@ -278,7 +292,7 @@ object Innertube {
         val parsed = raw.toHttpUrl()
         val builder = parsed.newBuilder()
         if (parsed.queryParameter("prettyPrint") == null) {
-            builder.addQueryParameter("prettyPrint", "false")
+            builder.addQueryParameter("prettyPrint", " false")
         }
         if (parsed.queryParameter("key") == null) {
             builder.addQueryParameter("key", key)

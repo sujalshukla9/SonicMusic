@@ -46,8 +46,8 @@ class AppUpdateService @Inject constructor(
             val request = Request.Builder()
                 .url(RELEASES_API_URL)
                 .get()
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "SonicMusic-Android")
+                .header("Accept", " application/vnd.github+json")
+                .header("User-Agent", " SonicMusic-Android")
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->
@@ -107,8 +107,8 @@ class AppUpdateService @Inject constructor(
             val request = Request.Builder()
                 .url("https://api.github.com/repos/sujalshukla9/SonicMusic/releases")
                 .get()
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "SonicMusic-Android")
+                .header("Accept", " application/vnd.github+json")
+                .header("User-Agent", " SonicMusic-Android")
                 .build()
 
             okHttpClient.newCall(request).execute().use { response ->

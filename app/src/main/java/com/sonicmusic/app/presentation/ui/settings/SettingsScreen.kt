@@ -341,7 +341,7 @@ fun SettingsScreen(
                         onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) },
                         valueRange = 0f..12f,
                         steps = 12,
-                        valueText = if (crossfadeDuration > 0) "${crossfadeDuration}s" else "Disabled"
+                        valueText = if (crossfadeDuration > 0) "${crossfadeDuration}s" else " Disabled"
                     )
                     SettingsDivider()
                     SettingsSwitchItem(

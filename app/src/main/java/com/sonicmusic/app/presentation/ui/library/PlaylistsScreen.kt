@@ -336,7 +336,7 @@ fun PlaylistsScreen(
                     },
                     enabled = importUrlOrId.isNotBlank() && !isImporting
                 ) {
-                    Text(if (isImporting) "Importing..." else "Import")
+                    Text(if (isImporting) "Importing..." else " Import")
                 }
             },
             dismissButton = {

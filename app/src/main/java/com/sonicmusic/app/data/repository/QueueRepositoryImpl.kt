@@ -257,7 +257,7 @@ class QueueRepositoryImpl @Inject constructor(
                 collect(fetchTasteBasedRecommendations(songId, targetLimit * 2))
             }
             if (collected.size < targetLimit) {
-                val broadQuery = seedSong?.let { "${it.artist} radio songs mix" } ?: "trending songs now"
+                val broadQuery = seedSong?.let { "${it.artist} radio songs mix" } ?: " trending songs now"
                 val broadFallback = youTubeiService.searchSongs(broadQuery, targetLimit * 2).getOrNull().orEmpty()
                 collect(broadFallback)
             }
@@ -665,7 +665,7 @@ class QueueRepositoryImpl @Inject constructor(
                     activeRadioVideoId = currentSongId
                     
                     addToQueue(songs)
-                    Log.d(TAG, "✅ Added ${songs.size} songs to queue, nextContinuationToken is ${if (nextToken != null) "present" else "null"}")
+                    Log.d(TAG, "✅ Added ${songs.size} songs to queue, nextContinuationToken is ${if (nextToken != null) " present" else " null"}")
                     return true
                 } else {
                     Log.d(TAG, "⚠️ YTM Radio returned empty songs, trying fallback related songs...")

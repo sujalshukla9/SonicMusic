@@ -419,7 +419,7 @@ private fun AlbumSongItem(
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = track.artists.joinToString(", ").ifBlank { "Unknown artist" },
+                text = track.artists.joinToString(", ").ifBlank { " Unknown artist" },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

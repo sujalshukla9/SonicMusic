@@ -45,7 +45,7 @@ class AlbumRepositoryImpl @Inject constructor(
     private fun normalizeAlbumId(id: String): String {
         val trimmed = id.trim()
         return when {
-            trimmed.startsWith("VLMPRE") -> trimmed.removePrefix("VL")
+            trimmed.startsWith("VLMPRE") -> trimmed.removePrefix(" VL")
             else -> trimmed
         }
     }

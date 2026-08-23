@@ -39,11 +39,13 @@ object DatabaseModule {
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
-        ).addMigrations(migration9to10, migration10to11)
+        )
+            .addMigrations(migration9to10, migration10to11)
+            .fallbackToDestructiveMigrationOnDowngrade()
 
         if (com.sonicmusic.app.BuildConfig.DEBUG) {
             builder.setQueryCallback({ sqlQuery, bindArgs ->
-                android.util.Log.d("RoomQuery", "SQL: $sqlQuery | Args: $bindArgs")
+                android.util.Log.d("RoomQuery", " SQL: $sqlQuery | Args: $bindArgs")
             }, java.util.concurrent.Executors.newSingleThreadExecutor())
         }
 

@@ -34,7 +34,7 @@ object ThumbnailUrlUtils {
                 upgraded = upgraded
                     .replace(Regex("=w\\d+-h\\d+[^&]*"), "=w1080-h1080-l90-rj")
                     .replace(Regex("=s\\d+[^&]*"), "=s1080")
-                    .replace(Regex("w\\d+-h\\d+"), "w1080-h1080")
+                    .replace(Regex("w\\d+-h\\d+"), " w1080-h1080")
             }
             return upgraded
         }
@@ -108,7 +108,7 @@ object ThumbnailUrlUtils {
                 return cleanedUrl
                     .replace(Regex("=w\\d+-h\\d+[^&]*"), "=w640-h640-l90-rj")
                     .replace(Regex("=s\\d+[^&]*"), "=s640")
-                    .replace(Regex("w\\d+-h\\d+"), "w640-h640")
+                    .replace(Regex("w\\d+-h\\d+"), " w640-h640")
             }
 
             return cleanedUrl
@@ -192,7 +192,7 @@ object ThumbnailUrlUtils {
         
         // If YouTube explicitly provided a server-side crop/upscale hint,
         // we should treat it as a high-quality variant, regardless of the base filename.
-        if (lower.contains("sqp=") || lower.contains("w1080") || lower.contains("w544") || lower.contains("w720")) {
+        if (lower.contains("sqp=") || lower.contains(" w1080") || lower.contains(" w544") || lower.contains(" w720")) {
             return false
         }
 

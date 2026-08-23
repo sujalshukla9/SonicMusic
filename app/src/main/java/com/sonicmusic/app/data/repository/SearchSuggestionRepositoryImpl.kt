@@ -87,7 +87,7 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                 
                 Result.success(parsed)
             } catch (e: Exception) {
-                Log.e("SearchSuggestionRepo", "Error fetching search suggestions", e)
+                Log.e("SearchSuggestionRepo", " Error fetching search suggestions", e)
                 // Return empty list instead of failure to fail silently as requested
                 Result.success(Pair(emptyList(), emptyList()))
             }
@@ -101,7 +101,7 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
             val json = JSONObject(jsonString)
             collectSuggestions(json, textSuggestions, contentSuggestions)
         } catch (e: Exception) {
-            Log.e("SearchSuggestionRepo", "Error parsing search suggestions JSON", e)
+            Log.e("SearchSuggestionRepo", " Error parsing search suggestions JSON", e)
         }
 
         return Pair(textSuggestions.toList(), contentSuggestions.distinctBy { it.id })
@@ -166,9 +166,9 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                         } else if (browseEndpoint != null) {
                             id = browseEndpoint.optString("browseId", "")
                             type = when {
-                                id.startsWith("UC") || subtitle.contains("Artist", ignoreCase = true) -> SuggestionType.ARTIST
-                                id.startsWith("MPRE") || subtitle.contains("Album", ignoreCase = true) -> SuggestionType.ALBUM
-                                id.startsWith("VL") || subtitle.contains("Playlist", ignoreCase = true) -> SuggestionType.PLAYLIST
+                                id.startsWith("UC") || subtitle.contains(" Artist", ignoreCase = true) -> SuggestionType.ARTIST
+                                id.startsWith("MPRE") || subtitle.contains(" Album", ignoreCase = true) -> SuggestionType.ALBUM
+                                id.startsWith("VL") || subtitle.contains(" Playlist", ignoreCase = true) -> SuggestionType.PLAYLIST
                                 else -> SuggestionType.SONG
                             }
                         }
@@ -205,7 +205,7 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                Log.w("SearchSuggestionRepo", "Failed to parse rich suggestion renderer", e)
+                Log.w("SearchSuggestionRepo", " Failed to parse rich suggestion renderer", e)
             }
         }
 
@@ -258,7 +258,7 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
     private suspend fun getRequestRegion(): String {
         val stored = settingsDataStore.countryCode.first()?.trim()?.uppercase()
         if (!stored.isNullOrEmpty() && stored.length == 2 && stored.all { it.isLetter() }) {
-            return if (stored == "UK") "GB" else stored
+            return if (stored == "UK") " GB" else stored
         }
         return "US"
     }

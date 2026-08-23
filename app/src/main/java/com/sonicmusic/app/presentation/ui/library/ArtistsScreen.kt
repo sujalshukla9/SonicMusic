@@ -88,7 +88,7 @@ fun ArtistsScreen(
                         IconButton(onClick = { viewModel.toggleSearch() }) {
                             Icon(
                                 imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
-                                contentDescription = if (isSearchActive) "Close Search" else "Search Artists"
+                                contentDescription = if (isSearchActive) "Close Search" else " Search Artists"
                             )
                         }
                     },
@@ -146,12 +146,12 @@ fun ArtistsScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "No artists found" else "No followed artists",
+                        text = if (searchQuery.isNotEmpty()) "No artists found" else " No followed artists",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = if (searchQuery.isNotEmpty()) "Try a different search" else "Follow artists from their profile to see them here",
+                        text = if (searchQuery.isNotEmpty()) "Try a different search" else " Follow artists from their profile to see them here",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )

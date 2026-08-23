@@ -186,7 +186,7 @@ fun TrendingArtistCard(
         ) {
             Icon(
                 imageVector = if (isFollowed) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                contentDescription = if (isFollowed) "Unfollow" else "Follow",
+                contentDescription = if (isFollowed) "Unfollow" else " Follow",
                 tint = followIconColor,
                 modifier = Modifier.size(16.dp)
             )

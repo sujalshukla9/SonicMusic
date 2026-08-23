@@ -29,7 +29,7 @@ data class RawShelfItem(
     val artistId: String? = null,
     val albumName: String? = null,
     val albumId: String? = null,
-    val videoType: String? = null, // e.g. "MUSIC_VIDEO_TYPE_ATV" (Audio track), "MUSIC_VIDEO_TYPE_OMV" (Official video)
+    val videoType: String? = null, // e.g. "MUSIC_VIDEO_TYPE_ATV" (Audio track), " MUSIC_VIDEO_TYPE_OMV" (Official video)
     val isVerified: Boolean = false,
     val channelId: String? = null,
     val thumbnailUrl: String,
@@ -40,51 +40,14 @@ data class RawShelfItem(
 )
 
 /**
- * 2. FILTER LAYER: Sanitizes incoming items to strip UGC/fanmade uploads and title clickbaits.
+ * 2. FILTER LAYER: Sanitizes incoming items to strip UGC/fanmade uploads and title clickbaits using YtmScopeGuard.
  */
 object InnertubeContentFilter {
-    private const val TAG = "InnertubeFilter"
-
-    // Regex matching common indicators of user-uploaded or fan-edited music (mashups, speed edits, compilations, etc.)
-    private val titleBlacklistRegex = Regex(
-        "(mashup|slowed|reverb|8d\\s+audio|lofi\\s+remix|tiktok|viral\\s+songs|compilation|fanmade|tribute|cover)",
-        RegexOption.IGNORE_CASE
-    )
-
     /**
-     * Filters list of RawShelfItems using primary and fallback rules.
+     * Filters list of RawShelfItems using YtmScopeGuard 4-step enforcement pipeline.
      */
     fun filterShelfItems(items: List<RawShelfItem>): List<RawShelfItem> {
-        return items.filter { item ->
-            // A. Title Blacklist check
-            if (titleBlacklistRegex.containsMatchIn(item.title)) {
-                Log.d(TAG, "🚫 Filtered out (Title Blacklist): '${item.title}'")
-                return@filter false
-            }
-
-            // B. Primary filter: Check if videoType matches clean official audio (ATV) or official music video (OMV)
-            val isOfficialType = item.videoType == "MUSIC_VIDEO_TYPE_ATV" || item.videoType == "MUSIC_VIDEO_TYPE_OMV"
-
-            if (isOfficialType) {
-                return@filter true
-            }
-
-            // C. Fallback filter: If videoType is missing or unspecified, check channel verified badge or official channel indicators
-            val isVerifiedArtist = item.isVerified || item.isOfficialArtist
-            val hasOfficialChannelTag = item.artistName.endsWith(" - Topic", ignoreCase = true) || 
-                                        item.artistName.endsWith("VEVO", ignoreCase = true)
-
-            if (item.videoType == null || item.videoType.isEmpty() || item.videoType == "MUSIC_VIDEO_TYPE_UNKNOWN") {
-                if (isVerifiedArtist || hasOfficialChannelTag) {
-                    Log.d(TAG, "⚠️ Fallback kept: '${item.title}' by '${item.artistName}' (Verified/Official channel)")
-                    return@filter true
-                }
-            }
-
-            // D. Drop everything else (UGC, generic video types, unverified self-uploads)
-            Log.d(TAG, "🚫 Filtered out (UGC/Unverified): '${item.title}' by '${item.artistName}' (videoType=${item.videoType})")
-            false
-        }
+        return YtmScopeGuard.enforce(items)
     }
 }
 
@@ -122,18 +85,18 @@ object InnertubeContentScorer {
 
             // Boost titles containing "Official Audio", "Official Lyric Video" or "Single"
             val titleLower = item.title.lowercase()
-            if (titleLower.contains("official audio") || titleLower.contains("lyric video")) {
+            if (titleLower.contains("official audio") || titleLower.contains(" lyric video")) {
                 score += 10
             }
-            if (titleLower.contains("single") || titleLower.contains("ep")) {
+            if (titleLower.contains("single") || titleLower.contains(" ep")) {
                 score += 5
             }
 
             // Penalize live bootlegs or fan lyrics if they bypassed the filter
-            if (titleLower.contains("live") && !titleLower.contains("studio")) {
+            if (titleLower.contains("live") && !titleLower.contains(" studio")) {
                 score -= 30
             }
-            if (titleLower.contains("lyrics") && !titleLower.contains("official")) {
+            if (titleLower.contains("lyrics") && !titleLower.contains(" official")) {
                 score -= 20
             }
 
@@ -548,8 +511,8 @@ class InnertubePipelineOrchestrator @Inject constructor(
                 ?.lowercase()
                 .orEmpty()
 
-            val isArtist = pageType.contains("artist") || pageType.contains("user_channel") || browseId.startsWith("UC")
-            val isAlbum = pageType.contains("album") || browseId.startsWith("MPRE") || browseId.startsWith("MPLA")
+            val isArtist = pageType.contains("artist") || pageType.contains(" user_channel") || browseId.startsWith(" UC")
+            val isAlbum = pageType.contains("album") || browseId.startsWith(" MPRE") || browseId.startsWith(" MPLA")
 
             // Identify views or duration text by shape
             val isDuration = text.contains(":") && text.replace(":", "").all { it.isDigit() }
@@ -644,7 +607,7 @@ class InnertubePipelineOrchestrator @Inject constructor(
                 val badge = badges.optJSONObject(i)
                 val inline = badge?.optJSONObject("musicInlineBadgeRenderer")
                 val iconType = inline?.optJSONObject("icon")?.optString("iconType") ?: ""
-                if (iconType == "MUSIC_VERIFIED" || iconType.contains("VERIFIED")) {
+                if (iconType == "MUSIC_VERIFIED" || iconType.contains(" VERIFIED")) {
                     return true
                 }
             }
@@ -691,7 +654,7 @@ class InnertubePipelineOrchestrator @Inject constructor(
 
     private fun upgradeThumbQuality(url: String, videoId: String): String {
         if (url.isEmpty()) return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.ggpht.com")) {
+        if (url.contains("lh3.googleusercontent.com") || url.contains(" yt3.ggpht.com")) {
             return url.replace(Regex("=w\\d+-h\\d+"), "=w540-h540")
         }
         if (url.contains("i.ytimg.com")) {

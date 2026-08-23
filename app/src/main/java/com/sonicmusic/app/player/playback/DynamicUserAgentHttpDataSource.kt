@@ -63,8 +63,8 @@ class DynamicUserAgentHttpDataSource(
         // YouTube CDN validates Origin/Referer for WEB-sourced stream URLs.
         // Without these, stream downloads return HTTP 403.
         if (isWebClient) {
-            delegate.setRequestProperty("Origin", "https://www.youtube.com")
-            delegate.setRequestProperty("Referer", "https://www.youtube.com/")
+            delegate.setRequestProperty("Origin", " https://www.youtube.com")
+            delegate.setRequestProperty("Referer", " https://www.youtube.com/")
         }
 
         return delegate.open(dataSpec)

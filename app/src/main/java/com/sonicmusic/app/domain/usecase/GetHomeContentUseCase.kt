@@ -114,7 +114,7 @@ class GetHomeContentUseCase @Inject constructor(
                 fetchSongsSection { songRepository.getNewReleases(HOME_SECTION_LIMIT) }
             }
             val mixedForYouDeferred = async {
-                fetchSongsSection { browseRepository.getMixedForYou(HOME_SECTION_LIMIT) }
+                fetchSongsSection { browseRepository.getMixedForYou(HOME_SECTION_LIMIT, forceRefresh = forceRefresh) }
             }
 
             val personalizedRaw = distinctSongs(personalizedDeferred.await(), HOME_SECTION_LIMIT)
@@ -149,21 +149,31 @@ class GetHomeContentUseCase @Inject constructor(
                 fetchSongsSection { recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT) }
             }
             val trendingAlbumsDeferred = async {
-                fetchSongsSection { browseRepository.getTrendingAlbums(HOME_SECTION_LIMIT) }
+                fetchSongsSection { browseRepository.getTrendingAlbums(HOME_SECTION_LIMIT, forceRefresh = forceRefresh) }
+            }
+            val trendingArtistsDeferred = async {
+                fetchSongsSection { browseRepository.getTrendingArtists(HOME_SECTION_LIMIT, forceRefresh = forceRefresh) }
             }
             val moodGenresDeferred = async {
-                fetchMoodGenres()
+                fetchMoodGenres(forceRefresh = forceRefresh)
             }
             val chartsDeferred = async {
-                fetchCharts()
+                fetchCharts(forceRefresh = forceRefresh)
+            }
+            val homeShelvesDeferred = async {
+                withTimeoutOrNull(SECTION_TIMEOUT_MS) {
+                    browseRepository.getHomeShelvesWithContinuation(forceRefresh = forceRefresh).getOrNull()
+                }
             }
 
             val englishHitsRaw = distinctSongs(englishHitsDeferred.await(), HOME_SECTION_LIMIT * 2)
             val artistSectionsRaw = artistsDeferred.await()
             val forgottenRaw = distinctSongs(forgottenDeferred.await(), HOME_SECTION_LIMIT)
             val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
+            val trendingArtists = distinctSongs(trendingArtistsDeferred.await(), HOME_SECTION_LIMIT)
             val moodGenres = moodGenresDeferred.await()
             val charts = chartsDeferred.await()
+            val homeShelvesResult = homeShelvesDeferred.await()
 
             val englishHits = distinctSongs(
                 songs = filterLikelyEnglishSongs(englishHitsRaw),
@@ -183,8 +193,11 @@ class GetHomeContentUseCase @Inject constructor(
                 englishHits = englishHits,
                 artists = artistSections,
                 trendingAlbums = trendingAlbums,
+                trendingArtists = trendingArtists,
                 moodGenres = moodGenres,
-                charts = charts
+                charts = charts,
+                continuationShelves = homeShelvesResult?.first.orEmpty(),
+                continuationToken = homeShelvesResult?.second
             )
             emit(currentContent)
             Log.d("GetHomeContent", "⚡ Stage 3 (Secondary Network) completed in ${System.currentTimeMillis() - startMs}ms")
@@ -195,15 +208,15 @@ class GetHomeContentUseCase @Inject constructor(
     // NEW SECTION FETCHERS
     // ══════════════════════════════════════════
 
-    private suspend fun fetchMoodGenres(): List<MoodGenre> {
+    private suspend fun fetchMoodGenres(forceRefresh: Boolean = false): List<MoodGenre> {
         return withTimeoutOrNull(SECTION_TIMEOUT_MS) {
-            browseRepository.getMoodsAndGenres().getOrNull().orEmpty()
+            browseRepository.getMoodsAndGenres(forceRefresh = forceRefresh).getOrNull().orEmpty()
         }.orEmpty()
     }
 
-    private suspend fun fetchCharts(): ChartSection? {
+    private suspend fun fetchCharts(forceRefresh: Boolean = false): ChartSection? {
         return withTimeoutOrNull(SECTION_TIMEOUT_MS) {
-            browseRepository.getCharts().getOrNull()
+            browseRepository.getCharts(forceRefresh = forceRefresh).getOrNull()
         }
     }
 
@@ -222,7 +235,7 @@ class GetHomeContentUseCase @Inject constructor(
                         )
                     }
             } catch (e: Exception) {
-                Log.w("GetHomeContent", "Recently played fetch failed", e)
+                Log.w("GetHomeContent", " Recently played fetch failed", e)
                 emptyList()
             }
         }.orEmpty()

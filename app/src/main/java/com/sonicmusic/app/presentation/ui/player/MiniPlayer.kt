@@ -235,7 +235,7 @@ fun MiniPlayer(
                             ) { liked ->
                                 Icon(
                                     imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                    contentDescription = if (liked) "Unlike" else "Like",
+                                    contentDescription = if (liked) "Unlike" else " Like",
                                     modifier = Modifier.size(18.dp)
                                 )
                             }
@@ -274,7 +274,7 @@ fun MiniPlayer(
                                     ) { playing ->
                                         Icon(
                                             imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                            contentDescription = if (playing) "Pause" else "Play",
+                                            contentDescription = if (playing) "Pause" else " Play",
                                             modifier = Modifier.size(28.dp)
                                         )
                                     }

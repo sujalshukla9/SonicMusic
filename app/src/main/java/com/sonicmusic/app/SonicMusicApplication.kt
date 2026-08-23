@@ -48,8 +48,8 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         if (BuildConfig.DEBUG) {
             setupStrictMode()
             setupJankDetector()
-            System.setProperty("kotlinx.coroutines.debug", "on")
-            System.setProperty("kotlinx.coroutines.stacktrace.recovery", "true")
+            System.setProperty("kotlinx.coroutines.debug", " on")
+            System.setProperty("kotlinx.coroutines.stacktrace.recovery", " true")
         }
     }
 
@@ -75,7 +75,7 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                 autoUpdateWorkRequest
             )
         } catch (e: Exception) {
-            android.util.Log.e("Memory", "Failed to enqueue WorkManager during startup: ${e.message}")
+            android.util.Log.e("Memory", " Failed to enqueue WorkManager during startup: ${e.message}")
         }
     }
 
@@ -129,9 +129,9 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         super.onTrimMemory(level)
         val levelName = when (level) {
             TRIM_MEMORY_RUNNING_LOW -> "RUNNING_LOW"
-            TRIM_MEMORY_RUNNING_CRITICAL -> "RUNNING_CRITICAL ⚠️"
+            TRIM_MEMORY_RUNNING_CRITICAL -> "RUNNING_CRITICAL"
             TRIM_MEMORY_BACKGROUND -> "BACKGROUND"
-            TRIM_MEMORY_COMPLETE -> "COMPLETE 🔴"
+            TRIM_MEMORY_COMPLETE -> "COMPLETE"
             else -> "level=$level"
         }
         android.util.Log.w("Memory", "onTrimMemory: $levelName")
@@ -139,7 +139,7 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         if (level >= TRIM_MEMORY_RUNNING_LOW) {
             // Coil registers its own ComponentCallbacks2 and will trim
             // its memory cache automatically. No manual intervention needed.
-            android.util.Log.w("Memory", "Mem pressure high — Coil will auto-trim memory cache.")
+            android.util.Log.w("Memory", " Mem pressure high — Coil will auto-trim memory cache.")
         }
     }
 

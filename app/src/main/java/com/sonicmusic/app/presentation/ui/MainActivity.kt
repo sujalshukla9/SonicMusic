@@ -199,10 +199,10 @@ sealed class Screen(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    object Home : Screen("home", "Home", Icons.Rounded.Home, Icons.Rounded.Home)
-    object Search : Screen("search", "Search", Icons.Rounded.Search, Icons.Rounded.Search)
-    object Library : Screen("library", "Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic)
-    object Settings : Screen("settings", "Settings", Icons.Rounded.Settings, Icons.Rounded.Settings)
+    object Home : Screen("home", " Home", Icons.Rounded.Home, Icons.Rounded.Home)
+    object Search : Screen("search", " Search", Icons.Rounded.Search, Icons.Rounded.Search)
+    object Library : Screen("library", " Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic)
+    object Settings : Screen("settings", " Settings", Icons.Rounded.Settings, Icons.Rounded.Settings)
 }
 
 // Sub-screens (no bottom nav)
@@ -223,7 +223,7 @@ object SubScreens {
     const val TOP_ALBUMS = "charts/albums"
     
     fun homeSection(sectionKey: String): String =
-        "home/section/${java.net.URLEncoder.encode(sectionKey, "UTF-8")}"
+        "home/section/${java.net.URLEncoder.encode(sectionKey, " UTF-8")}"
     fun playlistDetail(playlistId: Long) = "library/playlist/$playlistId"
     fun albumDetail(
         albumId: String,

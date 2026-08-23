@@ -38,7 +38,7 @@ class NewPipeService @Inject constructor() {
         private const val TAG = "NewPipeService"
         private var isInitialized = false
         private const val CAPTCHA_COOLDOWN_MS = 15 * 60 * 1000L
-        private val ENGLISH_LOCALIZATION = Localization("en", "US")
+        private val ENGLISH_LOCALIZATION = Localization("en", " US")
     }
 
     @Volatile
@@ -495,8 +495,8 @@ class NewPipeService @Inject constructor() {
      */
     private fun extractVideoId(url: String): String {
         return when {
-            url.contains("v=") -> url.substringAfter("v=").substringBefore("&")
-            url.contains("youtu.be/") -> url.substringAfter("youtu.be/").substringBefore("?")
+            url.contains("v=") -> url.substringAfter(" v=").substringBefore("&")
+            url.contains("youtu.be/") -> url.substringAfter(" youtu.be/").substringBefore("?")
             else -> url
         }
     }

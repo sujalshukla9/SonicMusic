@@ -275,9 +275,9 @@ class PlaybackService : MediaSessionService() {
             .setDefaultRequestProperties(
                 mapOf(
                     "Accept" to "*/*",
-                    "Accept-Language" to "en-US,en;q=0.9",
-                    "Origin" to "https://www.youtube.com",
-                    "Referer" to "https://www.youtube.com/",
+                    "Accept-Language" to " en-US,en;q=0.9",
+                    "Origin" to " https://www.youtube.com",
+                    "Referer" to " https://www.youtube.com/",
                 ),
             )
 
@@ -958,7 +958,7 @@ class PlaybackService : MediaSessionService() {
 
     private fun updateCustomLayout(isLiked: Boolean, repeatMode: Int): ImmutableList<CommandButton> {
         val likeButton = CommandButton.Builder()
-            .setDisplayName(if (isLiked) "Unlike" else "Like")
+            .setDisplayName(if (isLiked) "Unlike" else " Like")
             .setIconResId(if (isLiked) R.drawable.ic_notification_like else R.drawable.ic_notification_like_outline)
             .setSessionCommand(SessionCommand(ACTION_TOGGLE_LIKE, Bundle.EMPTY))
             .build()

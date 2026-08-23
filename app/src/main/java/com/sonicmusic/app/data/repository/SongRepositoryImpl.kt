@@ -267,101 +267,54 @@ class SongRepositoryImpl @Inject constructor(
 
     override suspend fun getNewReleases(limit: Int): Result<List<Song>> {
         return try {
-            val rawReleases = youTubeiService.getNewReleases(limit * 2)
+            val rawReleases = youTubeiService.getNewReleases(limit)
                 .getOrNull().orEmpty()
-            if (rawReleases.isEmpty()) return Result.success(emptyList())
-
-            val tasteProfile = userTasteRepository.getUserTasteProfile()
-            val playedIds = runCatching { playbackHistoryDao.getAllPlayedSongIds() }
-                .getOrDefault(emptyList()).toSet()
-            val followedNames = runCatching {
-                followedArtistDao.getAllFollowed().first().map { it.artistName }
-            }.getOrDefault(emptyList()).toSet()
-
-            val ranked = NewReleaseScoringEngine.scoreAndRank(
-                releases = rawReleases,
-                userTopArtists = tasteProfile.topArtists,
-                followedArtistIds = followedNames,
-                userTopGenres = tasteProfile.topGenres,
-                userLanguages = tasteProfile.preferredLanguages,
-                playedSongIds = playedIds,
-                artistGenreMap = ARTIST_GENRE_MAP
-            )
-
-            Log.d(TAG, "🆕 New Releases: ${rawReleases.size} raw → ${ranked.size} ranked")
-            Result.success(ranked.take(limit))
+            Log.d(TAG, "🆕 New Releases directly from YTM: ${rawReleases.size} songs")
+            Result.success(rawReleases.take(limit))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ New releases scoring failed", e)
+            Log.e(TAG, "❌ New releases fetch failed", e)
             Result.success(emptyList())
         }
     }
 
     override suspend fun getTrending(limit: Int): Result<List<Song>> {
         return try {
-            val rawTrending = youTubeiService.getTrendingSongs(limit * 2)
+            val rawTrending = youTubeiService.getTrendingSongs(limit)
                 .getOrNull().orEmpty()
-            if (rawTrending.isEmpty()) return Result.success(emptyList())
-
-            val tasteProfile = userTasteRepository.getUserTasteProfile()
-            val playedIds = runCatching { playbackHistoryDao.getAllPlayedSongIds() }
-                .getOrDefault(emptyList()).toSet()
-
-            val ranked = TrendingScoringEngine.personalizeAndRank(
-                trending = rawTrending,
-                userTopGenres = tasteProfile.topGenres,
-                userTopArtists = tasteProfile.topArtists,
-                userLanguages = tasteProfile.preferredLanguages,
-                playedSongIds = playedIds,
-                artistGenreMap = ARTIST_GENRE_MAP
-            )
-
-            Log.d(TAG, "🔥 Trending: ${rawTrending.size} raw → ${ranked.size} ranked")
-            Result.success(ranked.take(limit))
+            Log.d(TAG, "🔥 Trending directly from YTM: ${rawTrending.size} songs")
+            Result.success(rawTrending.take(limit))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Trending scoring failed", e)
+            Log.e(TAG, "❌ Trending fetch failed", e)
             Result.success(emptyList())
         }
     }
 
     override suspend fun getEnglishHits(limit: Int): Result<List<Song>> {
-        val safeLimit = limit.coerceAtLeast(1).coerceAtMost(200)
-        val year = Calendar.getInstance().get(Calendar.YEAR)
-        val queries = listOf(
-            "top english songs $year",
-            "english pop hits $year",
-            "global english hits",
-            "billboard hot 100 songs $year"
-        )
-
-        val merged = linkedMapOf<String, Song>()
-        for (query in queries) {
-            youTubeiService.searchSongs(query, safeLimit * 2).getOrNull().orEmpty()
+        return try {
+            val safeLimit = limit.coerceAtLeast(1).coerceAtMost(200)
+            val hits = youTubeiService.getEnglishHits(safeLimit)
+                .getOrNull().orEmpty()
                 .filter(::isLikelyEnglishTrack)
-                .forEach { song -> merged.putIfAbsent(song.id, song) }
-            if (merged.size >= safeLimit) break
-        }
 
-        if (merged.size < safeLimit) {
-            youTubeiService.getTrendingSongs(safeLimit * 2).getOrNull().orEmpty()
-                .filter(::isLikelyEnglishTrack)
-                .forEach { song -> merged.putIfAbsent(song.id, song) }
-        }
-
-        val hits = merged.values.take(safeLimit)
-        return if (hits.isNotEmpty()) {
-            Result.success(hits)
-        } else {
-            Result.success(
-                youTubeiService.getEnglishHits(safeLimit * 2)
-                    .getOrNull()
-                    .orEmpty()
+            if (hits.isNotEmpty()) {
+                Log.d(TAG, "🌍 English hits directly from YTM: ${hits.size} songs")
+                Result.success(hits.take(safeLimit))
+            } else {
+                val year = Calendar.getInstance().get(Calendar.YEAR)
+                val fallbackSongs = youTubeiService.searchSongs("top english songs $year", safeLimit)
+                    .getOrNull().orEmpty()
                     .filter(::isLikelyEnglishTrack)
-                    .take(safeLimit)
-            )
+                Result.success(fallbackSongs.take(safeLimit))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ English hits fetch failed", e)
+            Result.success(emptyList())
         }
     }
 
@@ -493,36 +446,36 @@ class SongRepositoryImpl @Inject constructor(
 
     /** Shared artist → genre map for scoring engines. */
     private val ARTIST_GENRE_MAP = mapOf(
-        "Arijit Singh" to listOf("Bollywood", "Romantic"),
-        "Shreya Ghoshal" to listOf("Bollywood", "Classical"),
-        "Atif Aslam" to listOf("Bollywood", "Pop"),
-        "Pritam" to listOf("Bollywood", "Film"),
-        "A.R. Rahman" to listOf("Bollywood", "Classical", "World"),
-        "Neha Kakkar" to listOf("Bollywood", "Pop"),
-        "Badshah" to listOf("Hip-Hop", "Bollywood"),
-        "Honey Singh" to listOf("Hip-Hop", "Bollywood"),
-        "Jubin Nautiyal" to listOf("Bollywood", "Pop"),
-        "B Praak" to listOf("Bollywood", "Punjabi"),
-        "Vishal Mishra" to listOf("Bollywood", "Romantic"),
-        "Diljit Dosanjh" to listOf("Punjabi", "Pop"),
-        "AP Dhillon" to listOf("Punjabi", "Hip-Hop"),
-        "Drake" to listOf("Hip-Hop", "R&B"),
-        "Taylor Swift" to listOf("Pop", "Country"),
-        "The Weeknd" to listOf("R&B", "Pop"),
-        "Ed Sheeran" to listOf("Pop", "Acoustic"),
-        "BTS" to listOf("K-Pop", "Pop"),
-        "Eminem" to listOf("Hip-Hop", "Rap"),
-        "Billie Eilish" to listOf("Pop", "Alternative"),
-        "Post Malone" to listOf("Hip-Hop", "Pop"),
-        "Dua Lipa" to listOf("Pop", "Dance"),
-        "Travis Scott" to listOf("Hip-Hop", "Trap"),
-        "Lana Del Rey" to listOf("Indie", "Pop"),
-        "Coldplay" to listOf("Rock", "Pop"),
-        "Imagine Dragons" to listOf("Rock", "Pop"),
-        "Ariana Grande" to listOf("Pop", "R&B"),
-        "Justin Bieber" to listOf("Pop", "R&B"),
-        "Maroon 5" to listOf("Pop", "Rock"),
-        "Sunidhi Chauhan" to listOf("Bollywood", "Pop"),
-        "Sonu Nigam" to listOf("Bollywood", "Classical")
+        "Arijit Singh" to listOf(" Bollywood", " Romantic"),
+        "Shreya Ghoshal" to listOf(" Bollywood", " Classical"),
+        "Atif Aslam" to listOf(" Bollywood", " Pop"),
+        "Pritam" to listOf(" Bollywood", " Film"),
+        "A.R. Rahman" to listOf(" Bollywood", " Classical", " World"),
+        "Neha Kakkar" to listOf(" Bollywood", " Pop"),
+        "Badshah" to listOf(" Hip-Hop", " Bollywood"),
+        "Honey Singh" to listOf(" Hip-Hop", " Bollywood"),
+        "Jubin Nautiyal" to listOf(" Bollywood", " Pop"),
+        "B Praak" to listOf(" Bollywood", " Punjabi"),
+        "Vishal Mishra" to listOf(" Bollywood", " Romantic"),
+        "Diljit Dosanjh" to listOf(" Punjabi", " Pop"),
+        "AP Dhillon" to listOf(" Punjabi", " Hip-Hop"),
+        "Drake" to listOf(" Hip-Hop", " R&B"),
+        "Taylor Swift" to listOf(" Pop", " Country"),
+        "The Weeknd" to listOf(" R&B", " Pop"),
+        "Ed Sheeran" to listOf(" Pop", " Acoustic"),
+        "BTS" to listOf(" K-Pop", " Pop"),
+        "Eminem" to listOf(" Hip-Hop", " Rap"),
+        "Billie Eilish" to listOf(" Pop", " Alternative"),
+        "Post Malone" to listOf(" Hip-Hop", " Pop"),
+        "Dua Lipa" to listOf(" Pop", " Dance"),
+        "Travis Scott" to listOf(" Hip-Hop", " Trap"),
+        "Lana Del Rey" to listOf(" Indie", " Pop"),
+        "Coldplay" to listOf(" Rock", " Pop"),
+        "Imagine Dragons" to listOf(" Rock", " Pop"),
+        "Ariana Grande" to listOf(" Pop", " R&B"),
+        "Justin Bieber" to listOf(" Pop", " R&B"),
+        "Maroon 5" to listOf(" Pop", " Rock"),
+        "Sunidhi Chauhan" to listOf(" Bollywood", " Pop"),
+        "Sonu Nigam" to listOf(" Bollywood", " Classical")
     )
 }

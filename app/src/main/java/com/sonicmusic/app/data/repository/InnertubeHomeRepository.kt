@@ -32,7 +32,9 @@ class InnertubeHomeRepository @Inject constructor(
     private val okHttpClient: OkHttpClient,
     private val settingsDataStore: SettingsDataStore,
     private val quickPicksRepository: QuickPicksRepository,
-    private val userTasteRepository: UserTasteRepository
+    private val userTasteRepository: UserTasteRepository,
+    private val listenAgainRepository: com.sonicmusic.app.domain.repository.ListenAgainRepository,
+    private val recommendationRepository: com.sonicmusic.app.domain.repository.RecommendationRepository
 ) : HomeRepository {
     companion object {
         private const val TAG = "InnertubeHomeRepo"
@@ -82,6 +84,46 @@ class InnertubeHomeRepository @Inject constructor(
             )
         }
         HomeSection("Made for You", homeSongs)
+    }
+
+    override suspend fun refreshListenAgain(): HomeSection = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Refreshing Listen Again from local ListenAgainRepository")
+        val songs = try {
+            listenAgainRepository.getListenAgainSongs(27)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val homeSongs = songs.map { song ->
+            HomeSong(
+                videoId = song.id,
+                title = song.title,
+                artists = listOf(song.artist),
+                album = song.albumName ?: song.album,
+                thumbnailUrl = song.thumbnailUrl,
+                durationText = null
+            )
+        }
+        HomeSection("Listen Again", homeSongs)
+    }
+
+    override suspend fun refreshForgottenFavorites(): HomeSection = withContext(Dispatchers.IO) {
+        Log.d(TAG, "Refreshing Forgotten Favorites from local RecommendationRepository")
+        val songs = try {
+            recommendationRepository.getForgottenFavorites(20).getOrDefault(emptyList())
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val homeSongs = songs.map { song ->
+            HomeSong(
+                videoId = song.id,
+                title = song.title,
+                artists = listOf(song.artist),
+                album = song.albumName ?: song.album,
+                thumbnailUrl = song.thumbnailUrl,
+                durationText = null
+            )
+        }
+        HomeSection("Forgotten Favorites", homeSongs)
     }
 
     /**
@@ -141,8 +183,8 @@ class InnertubeHomeRepository @Inject constructor(
      */
     private fun fetchHomeJson(region: String, cookies: String?): String? {
         val language = "en"
-        val requestBody = Innertube.webRemixBody(language, region) {
-            put("browseId", "FEmusic_home")
+        val requestBody = Innertube.buildYtmContext(language, region) {
+            put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.Home.value)
         }
         val acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
         val request = Innertube.musicPost(

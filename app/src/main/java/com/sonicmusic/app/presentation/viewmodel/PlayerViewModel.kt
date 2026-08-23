@@ -447,7 +447,7 @@ class PlayerViewModel @Inject constructor(
                 }
 
                 // All retries failed
-                val errMsg = "Failed to refresh stream for ${song.title}: ${lastException?.message ?: "Unknown error"}"
+                val errMsg = "Failed to refresh stream for ${song.title}: ${lastException?.message ?: " Unknown error"}"
                 _error.value = errMsg
                 Log.w(TAG, "$errMsg. Skipping to next song.")
                 delay(1500)
@@ -464,7 +464,7 @@ class PlayerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     /**
-     * Play a song - ViTune Style (instant recommendations)
+     * Play a song - YouTube Music Style (instant playback + Up Next radio mix)
      *
      * @param song The song to play
      */
@@ -473,56 +473,25 @@ class PlayerViewModel @Inject constructor(
             _isLoading.value = true
             _error.value = null
 
-            var lastException: Exception? = null
-            
             // Immediate UI feedback
             playerServiceConnection.preparePlayback(song)
 
-            // Clear and reset queue state ONCE before retry loop
+            // Clear and reset queue state ONCE
             queueRepository.clearQueue()
             lastRecommendationSongId = null
             lastRecommendationRequestAt = 0L
 
-            // Retry loop for initial playback
-            repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
-                try {
-                    Log.d(TAG, "▶️ Loading stream for: ${song.title} (attempt ${attempt + 1})")
+            playerServiceConnection.playSongsLazy(
+                songs = listOf(song),
+                startIndex = 0,
+                songRepository = songRepository
+            )
 
-                    // Fetch stream URL
-                    val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-
-                    result.onSuccess { streamUrl ->
-                        Log.d(TAG, "✅ Got stream URL, starting playback")
-
-                        // Start playback
-                        playerServiceConnection.playSong(song, streamUrl)
-                        
-                        // ViTune Logic: Instant Radio — fire recommendations immediately (no delay)
-                        if (_infiniteModeEnabled.value) {
-                            fetchAndAddRecommendations(song.id, TARGET_QUEUE_SIZE)
-                        }
-
-                        _isLoading.value = false
-                        return@launch
-
-                    }.onFailure { exception ->
-                        Log.e(TAG, "❌ Failed to get stream URL", exception)
-                        lastException = exception as? Exception
-                    }
-
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Error playing song", e)
-                    lastException = e
-                }
-
-                // Wait before retry (except on last attempt)
-                if (attempt < MAX_URL_RETRY_ATTEMPTS - 1) {
-                    delay(URL_RETRY_DELAY_MS * (attempt + 1))
-                }
+            // YouTube Music: Instant Radio Mix Up Next queue
+            if (_infiniteModeEnabled.value) {
+                fetchAndAddRecommendations(song.id, TARGET_QUEUE_SIZE)
             }
 
-            // All retries failed
-            _error.value = "Failed to load song: ${lastException?.message ?: "Unknown error"}"
             _isLoading.value = false
         }
     }
@@ -622,6 +591,38 @@ class PlayerViewModel @Inject constructor(
      */
     fun hasNonMusicContent(): Boolean {
         return queueRepository.hasNonMusicContent()
+    }
+
+    /**
+     * Insert song to play next (YouTube Music style)
+     */
+    fun playNext(song: Song) {
+        addToPlayNext(song)
+    }
+
+    /**
+     * Add song to play immediately after the current song
+     */
+    fun addToPlayNext(song: Song) {
+        viewModelScope.launch {
+            try {
+                if (blacklistedSongIds.value.contains(song.id)) {
+                    _error.value = "\"${song.title}\" is blacklisted"
+                    return@launch
+                }
+
+                if (!song.isValidMusicContent()) {
+                    _error.value = "Cannot add ${song.contentType.name.lowercase().replace('_', ' ')} to queue"
+                    return@launch
+                }
+
+                playerServiceConnection.insertPlayNextLazy(song, songRepository)
+                queueRepository.markSongAsQueued(song.id)
+                _error.value = "Playing next: ${song.title}"
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in addToPlayNext", e)
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1099,55 +1100,6 @@ class PlayerViewModel @Inject constructor(
             }.onFailure { error ->
                 _error.value = "Failed to blacklist song: ${error.message}"
                 Log.e(TAG, "Failed blacklisting song", error)
-            }
-        }
-    }
-    
-    /**
-     * Add a song to play next (immediate queue position after current)
-     * ViTune-style queue management
-     */
-    fun addToPlayNext(song: Song) {
-        viewModelScope.launch {
-            try {
-                // Check if already in queue
-                if (queueRepository.isSongQueued(song.id)) {
-                    Log.d(TAG, "⚠️ Song already in queue, moving to play next: ${song.title}")
-                    // Find and remove existing position
-                    val currentQueue = queue.value
-                    val existingIndex = currentQueue.indexOfFirst { it.id == song.id }
-                    if (existingIndex != -1) {
-                        playerServiceConnection.removeFromQueue(existingIndex)
-                        queueRepository.removeFromTracking(song.id)
-                    }
-                }
-
-                // Get stream URL
-                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                    .onSuccess { streamUrl ->
-                        val insertIndex = (currentQueueIndex.value + 1).coerceAtLeast(0)
-
-                        // Capture queue size BEFORE adding so we know the appended index.
-                        val queueSizeBefore = queue.value.size
-
-                        // Add then move right after current song.
-                        playerServiceConnection.addToQueue(song, streamUrl)
-                        queueRepository.markSongAsQueued(song.id)
-
-                        // The new song was appended at queueSizeBefore (0-indexed).
-                        val appendedIndex = queueSizeBefore
-                        if (appendedIndex > insertIndex) {
-                            playerServiceConnection.reorderQueue(appendedIndex, insertIndex)
-                            queueRepository.moveSong(appendedIndex, insertIndex)
-                        }
-
-                        Log.d(TAG, "⏭️ Added to play next: ${song.title}")
-                    }
-                    .onFailure { exception ->
-                        Log.e(TAG, "Failed to add to play next", exception)
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adding song to play next", e)
             }
         }
     }

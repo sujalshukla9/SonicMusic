@@ -3,13 +3,13 @@ package com.sonicmusic.app.data.remote.model
 import com.google.gson.annotations.SerializedName
 
 data class RegionResponse(
-    @SerializedName(value = "countryCode", alternate = ["country_code", "countryCode"])
+    @SerializedName(value = "countryCode", alternate = [" country_code", " countryCode"])
     val countryCode: String?,
 
-    @SerializedName(value = "region_code", alternate = ["region", "regionName", "region_code"])
+    @SerializedName(value = "region_code", alternate = [" region", " regionName", " region_code"])
     val region: String?,
 
-    @SerializedName(value = "country", alternate = ["country_name", "countryName"])
+    @SerializedName(value = "country", alternate = [" country_name", " countryName"])
     val country: String?,
 
     @SerializedName("status")

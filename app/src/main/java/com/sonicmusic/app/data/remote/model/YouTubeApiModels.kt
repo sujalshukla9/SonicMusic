@@ -112,14 +112,11 @@ data class ContextData(
  * Default region set to US as a neutral fallback.
  */
 data class ClientData(
-    @SerializedName("clientName") val clientName: String = "ANDROID_MUSIC",
-    @SerializedName("clientVersion") val clientVersion: String = "6.42.52",
-    @SerializedName("androidSdkVersion") val androidSdkVersion: Int = 34,
+    @SerializedName("clientName") val clientName: String = com.sonicmusic.app.data.remote.source.YtmScopeConfig.ClientContext.CLIENT_NAME,
+    @SerializedName("clientVersion") val clientVersion: String = com.sonicmusic.app.data.remote.source.YtmScopeConfig.ClientContext.CLIENT_VERSION,
     @SerializedName("hl") val hl: String = "en",
     @SerializedName("gl") val gl: String = "US",
-    @SerializedName("platform") val platform: String = "MOBILE",
-    @SerializedName("osName") val osName: String = "Android",
-    @SerializedName("osVersion") val osVersion: String = "14"
+    @SerializedName("platform") val platform: String = com.sonicmusic.app.data.remote.source.YtmScopeConfig.ClientContext.PLATFORM
 )
 
 /**

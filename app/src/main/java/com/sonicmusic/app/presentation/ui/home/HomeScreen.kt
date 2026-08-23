@@ -118,6 +118,10 @@ fun HomeScreen(
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val countryName by viewModel.countryName.collectAsStateWithLifecycle()
+    val selectedMoodGenre by viewModel.selectedMoodGenre.collectAsStateWithLifecycle()
+    val isMoodFilterLoading by viewModel.isMoodFilterLoading.collectAsStateWithLifecycle()
+    val moodFilteredSongs by viewModel.moodFilteredSongs.collectAsStateWithLifecycle()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
     val visibleKeys by remember {
@@ -129,6 +133,20 @@ fun HomeScreen(
     val isScrollInProgress = listState.isScrollInProgress
     LaunchedEffect(visibleKeys, isScrollInProgress) {
         viewModel.onVisibleSectionsChanged(visibleKeys, isScrollInProgress)
+    }
+
+    // Infinite scroll continuation trigger when scrolled near bottom
+    LaunchedEffect(listState) {
+        androidx.compose.runtime.snapshotFlow {
+            val layoutInfo = listState.layoutInfo
+            val totalItems = layoutInfo.totalItemsCount
+            val lastVisibleItemIndex = (layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) + 1
+            totalItems > 0 && lastVisibleItemIndex >= totalItems - 3
+        }.collect { shouldLoadMore ->
+            if (shouldLoadMore) {
+                viewModel.loadMoreHomeContent()
+            }
+        }
     }
 
     val onHomeSectionSongClick: (String, Song) -> Unit = { sectionKey, song ->
@@ -194,21 +212,12 @@ fun HomeScreen(
             )
         }
 
-        if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty()) {
+        if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty() && homeContent.trending.isEmpty()) {
             // No internet and no cached content
             com.sonicmusic.app.presentation.ui.components.NoInternetView(
                 onRetry = { viewModel.loadHomeContent() },
                 modifier = Modifier.padding(paddingValues)
             )
-        } else if (isLoading && homeContent.listenAgain.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                LoadingIndicator()
-            }
         } else {
             M3ExpressivePullToRefresh(
                 isRefreshing = isRefreshing,
@@ -220,48 +229,20 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                // Memoized: these filters previously ran on every recomposition,
-                // iterating all home lists each frame. Now they only re-run when
-                // content, online state, or the downloaded-ids set change.
-                val listenAgainFiltered = remember(homeContent.listenAgain, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.listenAgain else homeContent.listenAgain.filter { it.id in downloadedSongIds }
-                }
-                val quickPicksFiltered = remember(homeContent.quickPicks, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.quickPicks else homeContent.quickPicks.filter { it.id in downloadedSongIds }
-                }
-                val trendingFiltered = remember(homeContent.trending, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.trending else homeContent.trending.filter { it.id in downloadedSongIds }
-                }
-                val newReleasesFiltered = remember(homeContent.newReleases, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.newReleases else homeContent.newReleases.filter { it.id in downloadedSongIds }
-                }
-                val personalizedFiltered = remember(homeContent.personalizedForYou, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.personalizedForYou else homeContent.personalizedForYou.filter { it.id in downloadedSongIds }
-                }
-                val chartsFilteredSongs = remember(homeContent.charts, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.charts?.songs.orEmpty() else homeContent.charts?.songs.orEmpty().filter { it.id in downloadedSongIds }
-                }
-                val trendingAlbumsFiltered = remember(homeContent.trendingAlbums, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.trendingAlbums else homeContent.trendingAlbums.filter { it.id in downloadedSongIds }
-                }
-                val englishHitsFiltered = remember(homeContent.englishHits, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.englishHits else homeContent.englishHits.filter { it.id in downloadedSongIds }
-                }
-                val forgottenFavoritesFiltered = remember(homeContent.forgottenFavorites, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.forgottenFavorites else homeContent.forgottenFavorites.filter { it.id in downloadedSongIds }
-                }
-                val mixedForYouFiltered = remember(homeContent.mixedForYou, isOnline, downloadedSongIds) {
-                    if (isOnline) homeContent.mixedForYou else homeContent.mixedForYou.filter { it.id in downloadedSongIds }
-                }
-                val artistsFiltered = remember(homeContent.artists, isOnline, downloadedSongIds) {
-                    if (isOnline) {
-                        homeContent.artists
-                    } else {
-                        homeContent.artists.map { section ->
-                            section.copy(songs = section.songs.filter { it.id in downloadedSongIds })
-                        }.filter { it.songs.isNotEmpty() }
-                    }
-                }
+                val listenAgainFiltered = homeContent.listenAgain
+                val recentlyPlayedFiltered = homeContent.recentlyPlayed
+                val quickPicksFiltered = homeContent.quickPicks
+                val trendingFiltered = homeContent.trending
+                val newReleasesFiltered = homeContent.newReleases
+                val personalizedFiltered = homeContent.personalizedForYou
+                val chartsFilteredSongs = homeContent.charts?.songs.orEmpty()
+                val trendingAlbumsFiltered = homeContent.trendingAlbums
+                val trendingArtistsFiltered = homeContent.trendingArtists
+                val englishHitsFiltered = homeContent.englishHits
+                val forgottenFavoritesFiltered = homeContent.forgottenFavorites
+                val mixedForYouFiltered = homeContent.mixedForYou
+                val artistsFiltered = homeContent.artists
+                val continuationShelves = homeContent.continuationShelves
 
                 LazyColumn(
                     state = listState,
@@ -286,14 +267,58 @@ fun HomeScreen(
                         )
                     }
 
-                    // ... (rest of the content) ...
+                    // ═══════════════════════════════════════════
+                    // MOODS & GENRES CHIPS (YTM Dynamic Filter Bar)
+                    // ═══════════════════════════════════════════
+                    if (homeContent.moodGenres.isNotEmpty()) {
+                        item(key = "mood_genres_chips") {
+                            MoodGenreChips(
+                                moodGenres = homeContent.moodGenres,
+                                selectedMoodGenre = selectedMoodGenre,
+                                onMoodGenreClick = { moodGenre ->
+                                    viewModel.onMoodGenreSelected(moodGenre)
+                                }
+                            )
+                        }
+                    }
+
+                    // Active Mood Filter Songs Section (In-line YTM Mood filtering)
+                    selectedMoodGenre?.let { mood ->
+                        if (isMoodFilterLoading) {
+                            item(key = "mood_shimmer") {
+                                ShimmerLoadingSection(cardStyle = ShimmerCardStyle.MEDIUM_CARD)
+                            }
+                        } else if (moodFilteredSongs.isNotEmpty()) {
+                            item(key = "mood_filter_section") {
+                                SongSection(
+                                    title = mood.title,
+                                    subtitle = "Curated ${mood.title} tracks",
+                                    songs = moodFilteredSongs,
+                                    onSongClick = { song ->
+                                        onHomeSectionSongClick("mood_filter", song)
+                                    },
+                                    onPlayAll = {
+                                        onHomeSectionPlay("mood_filter", false)
+                                    },
+                                    onShuffle = {
+                                        onHomeSectionPlay("mood_filter", true)
+                                    },
+                                    onSeeAllClick = {
+                                        onHomeSectionSeeAll("mood_genre:${mood.title}|${mood.params}")
+                                    },
+                                    cardStyle = CardStyle.MEDIUM_CARD,
+                                    isOnline = isOnline,
+                                    downloadedSongIds = downloadedSongIds
+                                )
+                            }
+                        }
+                    }
                     
                     // ═══════════════════════════════════════════
                     // 2️⃣ CONTINUE LISTENING
                     // Shows single last-played song only (ViTune style)
                     // ═══════════════════════════════════════════
                     if (homeContent.listenAgain.isNotEmpty()) {
-                        // User has history — show the most recent song with full section queue
                         item(key = "continue_listening") {
                             val lastSong = homeContent.listenAgain.first()
                             val isSongEnabled = isOnline || lastSong.id in downloadedSongIds
@@ -307,60 +332,69 @@ fun HomeScreen(
                                 }
                             )
                         }
-                    } else if (quickPicksFiltered.isNotEmpty()) {
-                        // New user — show "For You" horizontal row
-                        item(key = "for_you") {
-                            ForYouSection(
-                                songs = quickPicksFiltered.take(10),
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_QUICK_PICKS, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_QUICK_PICKS)
-                                }
-                            )
-                        }
                     }
-    
+
                     // ═══════════════════════════════════════════
-                    // 3️⃣ LISTEN AGAIN / TRENDING - 3x3 Grid
-                    // Shows history for existing users,
-                    // shows trending with proper title for new users
+                    // 3️⃣ LISTEN AGAIN - 3x3 Grid
+                    // Shows history for existing users
                     // ═══════════════════════════════════════════
-                    val hasHistory = homeContent.listenAgain.isNotEmpty() 
-                    val listenAgainGridSongs = if (hasHistory) {
-                        listenAgainFiltered.take(27)
-                    } else {
-                        trendingFiltered.take(27)
-                    }
-                    val listenAgainSectionKey = if (hasHistory) {
-                        HomeViewModel.SECTION_LISTEN_AGAIN
-                    } else {
-                        HomeViewModel.SECTION_TRENDING
-                    }
-                    
-                    if (listenAgainGridSongs.isNotEmpty()) {
+                    if (homeContent.listenAgain.isNotEmpty()) {
                         item(key = "listen_again_grid") {
                             ListenAgainGrid(
-                                songs = listenAgainGridSongs,
+                                songs = listenAgainFiltered.take(27),
                                 onSongClick = { song ->
-                                    onHomeSectionSongClick(listenAgainSectionKey, song)
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_LISTEN_AGAIN, song)
                                 },
-                                onPlayAll = { onHomeSectionPlay(listenAgainSectionKey, false) },
-                                onShuffle = { onHomeSectionPlay(listenAgainSectionKey, true) },
-                                title = if (hasHistory) "Listen Again" else "Trending",
+                                onPlayAll = { onHomeSectionPlay(HomeViewModel.SECTION_LISTEN_AGAIN, false) },
+                                onShuffle = { onHomeSectionPlay(HomeViewModel.SECTION_LISTEN_AGAIN, true) },
+                                title = "Listen Again",
                                 onSeeAllClick = {
-                                    onHomeSectionSeeAll(listenAgainSectionKey)
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_LISTEN_AGAIN)
                                 },
                                 isOnline = isOnline,
                                 downloadedSongIds = downloadedSongIds
                             )
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════
+                    // 3.5️⃣ RECENTLY PLAYED
+                    // ═══════════════════════════════════════════
+                    if (recentlyPlayedFiltered.isNotEmpty()) {
+                        item(key = "recently_played") {
+                            SongSection(
+                                title = "Recently Played",
+                                subtitle = "Your recent listening history",
+                                songs = recentlyPlayedFiltered,
+                                onSongClick = { song ->
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_RECENTLY_PLAYED, song)
+                                },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_RECENTLY_PLAYED, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_RECENTLY_PLAYED, true)
+                                },
+                                onSeeAllClick = {
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_RECENTLY_PLAYED)
+                                },
+                                cardStyle = CardStyle.MEDIUM_CARD,
+                                isOnline = isOnline,
+                                downloadedSongIds = downloadedSongIds
+                            )
+                        }
+                    }
+
+                    // Skeleton shimmer loader while initial content loads
+                    if (quickPicksFiltered.isEmpty() && trendingFiltered.isEmpty() && newReleasesFiltered.isEmpty()) {
+                        item(key = "shimmer_1") {
+                            ShimmerLoadingSection(cardStyle = ShimmerCardStyle.MEDIUM_CARD)
+                        }
+                        item(key = "shimmer_2") {
+                            ShimmerLoadingSection(cardStyle = ShimmerCardStyle.COMPACT_ROW)
+                        }
+                        item(key = "shimmer_3") {
+                            ShimmerLoadingSection(cardStyle = ShimmerCardStyle.LARGE_SQUARE)
                         }
                     }
 
@@ -390,8 +424,9 @@ fun HomeScreen(
                     }
 
                     // ═══════════════════════════════════════════
-                    // 4.1️⃣ MOODS & GENRES (NEW)
-                                   if (personalizedFiltered.isNotEmpty()) {
+                    // 4.1️⃣ MADE FOR YOU
+                    // ═══════════════════════════════════════════
+                    if (personalizedFiltered.isNotEmpty()) {
                         item(key = "personalized_for_you") {
                             SongSection(
                                 title = "Made for You",
@@ -417,7 +452,7 @@ fun HomeScreen(
                     }
 
                     // ═══════════════════════════════════════════
-                    // 4.8️⃣ CHARTS (NEW)
+                    // 4.8️⃣ CHARTS
                     // ═══════════════════════════════════════════
                     homeContent.charts?.let { charts ->
                         if (chartsFilteredSongs.isNotEmpty()) {
@@ -503,7 +538,7 @@ fun HomeScreen(
                     }
 
                     // ═══════════════════════════════════════════
-                    // 6.5️⃣ TRENDING ALBUMS (NEW)
+                    // 6.5️⃣ TRENDING ALBUMS
                     // ═══════════════════════════════════════════
                     if (trendingAlbumsFiltered.isNotEmpty()) {
                         item(key = "trending_albums") {
@@ -527,6 +562,61 @@ fun HomeScreen(
                                 isOnline = isOnline,
                                 downloadedSongIds = downloadedSongIds
                             )
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════
+                    // 6.6️⃣ TRENDING ARTISTS (YTM Circular Avatars)
+                    // ═══════════════════════════════════════════
+                    if (trendingArtistsFiltered.isNotEmpty()) {
+                        item(key = "trending_artists") {
+                            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                Column(
+                                    modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                text = "Trending Artists",
+                                                style = MaterialTheme.typography.titleLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onBackground
+                                            )
+                                            Text(
+                                                text = "Artists topping the charts",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        TextButton(onClick = { onHomeSectionSeeAll(HomeViewModel.SECTION_TRENDING_ARTISTS) }) {
+                                            Text(
+                                                text = "See all",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    TrendingArtistRow(
+                                        artists = trendingArtistsFiltered,
+                                        followedArtistIds = followedArtistIds,
+                                        onArtistClick = { artistSong ->
+                                            val artistId = artistSong.id.takeIf { it.isNotBlank() } ?: artistSong.artistId
+                                            val artistName = artistSong.artist.ifBlank { artistSong.title }
+                                            onNavigateToArtist(artistName, artistId)
+                                        },
+                                        onFollowToggle = { artistSong ->
+                                            viewModel.toggleFollowArtist(artistSong)
+                                        }
+                                    )
+                                    Spacer(modifier = Modifier.height(20.dp))
+                                }
+                            }
                         }
                     }
                     
@@ -558,9 +648,36 @@ fun HomeScreen(
                         }
                     }
 
+                    // ═══════════════════════════════════════════
+                    // 7.5️⃣ FORGOTTEN FAVORITES
+                    // ═══════════════════════════════════════════
+                    if (forgottenFavoritesFiltered.isNotEmpty()) {
+                        item(key = "forgotten_favorites") {
+                            SongSection(
+                                title = "Forgotten Favorites",
+                                subtitle = "Rediscover songs you used to love",
+                                songs = forgottenFavoritesFiltered,
+                                onSongClick = { song ->
+                                    onHomeSectionSongClick(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, song)
+                                },
+                                onPlayAll = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, false)
+                                },
+                                onShuffle = {
+                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, true)
+                                },
+                                onSeeAllClick = {
+                                    onHomeSectionSeeAll(HomeViewModel.SECTION_FORGOTTEN_FAVORITES)
+                                },
+                                cardStyle = CardStyle.MEDIUM_CARD,
+                                isOnline = isOnline,
+                                downloadedSongIds = downloadedSongIds
+                            )
+                        }
+                    }
 
-                                     // ═══════════════════════════════════════════
-                    // 8️⃣ MIXED FOR YOU (NEW)
+                    // ═══════════════════════════════════════════
+                    // 8️⃣ MIXED FOR YOU
                     // ═══════════════════════════════════════════
                     if (mixedForYouFiltered.isNotEmpty()) {
                         item(key = "mixed_for_you") {
@@ -612,6 +729,40 @@ fun HomeScreen(
                             isOnline = isOnline,
                             downloadedSongIds = downloadedSongIds
                         )
+                    }
+
+                    // ═══════════════════════════════════════════
+                    // CONTINUATION SHELVES (Infinite Home Feed)
+                    // ═══════════════════════════════════════════
+                    items(
+                        items = continuationShelves,
+                        key = { shelf -> "cont_shelf_${shelf.id}" },
+                        contentType = { "continuation_shelf" }
+                    ) { shelf ->
+                        val shelfSectionKey = "continuation_${shelf.id}"
+                        SongSection(
+                            title = shelf.title,
+                            subtitle = shelf.subtitle ?: "Recommended for you",
+                            songs = shelf.songs,
+                            onSongClick = { song ->
+                                onHomeSectionSongClick(shelfSectionKey, song)
+                            },
+                            onPlayAll = { onHomeSectionPlay(shelfSectionKey, false) },
+                            onShuffle = { onHomeSectionPlay(shelfSectionKey, true) },
+                            onSeeAllClick = {
+                                onHomeSectionSeeAll(shelfSectionKey)
+                            },
+                            cardStyle = CardStyle.MEDIUM_CARD,
+                            isOnline = isOnline,
+                            downloadedSongIds = downloadedSongIds
+                        )
+                    }
+
+                    // Shimmer loader at bottom when loading continuation items
+                    if (isLoadingMore) {
+                        item(key = "continuation_shimmer") {
+                            ShimmerLoadingSection(cardStyle = ShimmerCardStyle.MEDIUM_CARD)
+                        }
                     }
                 }
             }

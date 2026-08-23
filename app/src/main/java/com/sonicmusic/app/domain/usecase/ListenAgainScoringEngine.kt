@@ -100,8 +100,8 @@ object ListenAgainScoringEngine {
     // COMPOSITE SCORE
     // ══════════════════════════════════════════
     data class ScoringContext(
-        val currentTimeOfDay: String,   // "morning" | "afternoon" | "evening" | "night"
-        val currentDay: String,         // "mon" .. "sun"
+        val currentTimeOfDay: String,   // "morning" | " afternoon" | " evening" | " night"
+        val currentDay: String,         // "mon" .. " sun"
         val nowMillis: Long
     )
 

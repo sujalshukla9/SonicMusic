@@ -101,14 +101,29 @@ class HomeViewModel @Inject constructor(
     private val _dynamicSections = MutableStateFlow<Map<String, List<Song>>>(emptyMap())
     val dynamicSections: StateFlow<Map<String, List<Song>>> = _dynamicSections.asStateFlow()
 
+    private val _selectedMoodGenre = MutableStateFlow<com.sonicmusic.app.domain.model.MoodGenre?>(null)
+    val selectedMoodGenre: StateFlow<com.sonicmusic.app.domain.model.MoodGenre?> = _selectedMoodGenre.asStateFlow()
+
+    private val _isMoodFilterLoading = MutableStateFlow(false)
+    val isMoodFilterLoading: StateFlow<Boolean> = _isMoodFilterLoading.asStateFlow()
+
+    private val _moodFilteredSongs = MutableStateFlow<List<Song>>(emptyList())
+    val moodFilteredSongs: StateFlow<List<Song>> = _moodFilteredSongs.asStateFlow()
+
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
     private val _visibleSections = MutableStateFlow<Set<Any>>(emptySet())
 
     private var pendingQuickPicks: List<Song>? = null
     private var pendingPersonalized: List<Song>? = null
+    private var pendingListenAgain: List<Song>? = null
+    private var pendingForgottenFavorites: List<Song>? = null
     private var isScrollInProgress = false
 
     /** Prevents concurrent load / refresh from racing. */
     private var loadJob: Job? = null
+    private var moreJob: Job? = null
 
     val countryName: StateFlow<String?> = regionRepository.countryName
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -141,9 +156,27 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun applyPendingListenAgain() {
+        pendingListenAgain?.let { songs ->
+            _homeContent.value = _homeContent.value.copy(listenAgain = songs)
+            pendingListenAgain = null
+            Log.d(TAG, "Applied pending Listen Again update")
+        }
+    }
+
+    private fun applyPendingForgottenFavorites() {
+        pendingForgottenFavorites?.let { songs ->
+            _homeContent.value = _homeContent.value.copy(forgottenFavorites = songs)
+            pendingForgottenFavorites = null
+            Log.d(TAG, "Applied pending Forgotten Favorites update")
+        }
+    }
+
     private fun applyPendingUpdates() {
         applyPendingQuickPicks()
         applyPendingPersonalized()
+        applyPendingListenAgain()
+        applyPendingForgottenFavorites()
     }
 
     fun onVisibleSectionsChanged(visibleKeys: Set<Any>, isScrollInProgress: Boolean = false) {
@@ -158,6 +191,12 @@ class HomeViewModel @Inject constructor(
             }
             if ("personalized_for_you" !in visibleKeys) {
                 applyPendingPersonalized()
+            }
+            if ("listen_again_grid" !in visibleKeys && "continue_listening" !in visibleKeys) {
+                applyPendingListenAgain()
+            }
+            if ("forgotten_favorites" !in visibleKeys) {
+                applyPendingForgottenFavorites()
             }
         }
     }
@@ -183,8 +222,10 @@ class HomeViewModel @Inject constructor(
                 val currentContent = _homeContent.value
                 val isQuickPicksVisible = "quick_picks" in _visibleSections.value || "for_you" in _visibleSections.value
                 val isPersonalizedVisible = "personalized_for_you" in _visibleSections.value
+                val isListenAgainVisible = "listen_again_grid" in _visibleSections.value || "continue_listening" in _visibleSections.value
+                val isForgottenVisible = "forgotten_favorites" in _visibleSections.value
 
-                when (title.lowercase(Locale.US)) {
+                when (title.lowercase(Locale.US).trim()) {
                     "quick picks", "quickpicks" -> {
                         if (isQuickPicksVisible && isScrollInProgress) {
                             pendingQuickPicks = updatedSongs
@@ -192,7 +233,7 @@ class HomeViewModel @Inject constructor(
                         } else {
                             _homeContent.value = currentContent.copy(quickPicks = updatedSongs)
                             pendingQuickPicks = null
-                            Log.d(TAG, "Applied Quick Picks update immediately (visible=$isQuickPicksVisible, scrolling=$isScrollInProgress)")
+                            Log.d(TAG, "Applied Quick Picks update immediately")
                         }
                     }
                     "made for you", "personalized", "mixed for you" -> {
@@ -202,7 +243,27 @@ class HomeViewModel @Inject constructor(
                         } else {
                             _homeContent.value = currentContent.copy(personalizedForYou = updatedSongs)
                             pendingPersonalized = null
-                            Log.d(TAG, "Applied Made for You update immediately (visible=$isPersonalizedVisible, scrolling=$isScrollInProgress)")
+                            Log.d(TAG, "Applied Made for You update immediately")
+                        }
+                    }
+                    "listen again" -> {
+                        if (isListenAgainVisible && isScrollInProgress) {
+                            pendingListenAgain = updatedSongs
+                            Log.d(TAG, "Delaying Listen Again update")
+                        } else {
+                            _homeContent.value = currentContent.copy(listenAgain = updatedSongs)
+                            pendingListenAgain = null
+                            Log.d(TAG, "Applied Listen Again update immediately")
+                        }
+                    }
+                    "forgotten favorites", "forgotten" -> {
+                        if (isForgottenVisible && isScrollInProgress) {
+                            pendingForgottenFavorites = updatedSongs
+                            Log.d(TAG, "Delaying Forgotten Favorites update")
+                        } else {
+                            _homeContent.value = currentContent.copy(forgottenFavorites = updatedSongs)
+                            pendingForgottenFavorites = null
+                            Log.d(TAG, "Applied Forgotten Favorites update immediately")
                         }
                     }
                 }
@@ -229,6 +290,66 @@ class HomeViewModel @Inject constructor(
                 artistRepository.unfollowArtist(name, browseId)
             } else {
                 artistRepository.followArtist(name, browseId, artist.thumbnailUrl)
+            }
+        }
+    }
+
+    fun onMoodGenreSelected(moodGenre: com.sonicmusic.app.domain.model.MoodGenre) {
+        if (_selectedMoodGenre.value?.params == moodGenre.params) {
+            // Deselect and clear filter
+            clearMoodFilter()
+            return
+        }
+
+        _selectedMoodGenre.value = moodGenre
+        viewModelScope.launch {
+            _isMoodFilterLoading.value = true
+            browseRepository.getMoodGenreSongs(moodGenre.params, limit = 30)
+                .onSuccess { songs ->
+                    _moodFilteredSongs.value = songs
+                }
+                .onFailure { exception ->
+                    _error.value = exception.message ?: "Failed to load ${moodGenre.title}"
+                    _moodFilteredSongs.value = emptyList()
+                }
+            _isMoodFilterLoading.value = false
+        }
+    }
+
+    fun clearMoodFilter() {
+        _selectedMoodGenre.value = null
+        _moodFilteredSongs.value = emptyList()
+        _isMoodFilterLoading.value = false
+    }
+
+    fun loadMoreHomeContent() {
+        val token = _homeContent.value.continuationToken
+        if (token.isNullOrBlank() || _isLoadingMore.value) return
+
+        moreJob?.cancel()
+        moreJob = viewModelScope.launch {
+            _isLoadingMore.value = true
+            try {
+                browseRepository.getHomeContinuation(token)
+                    .onSuccess { (newShelves, nextToken) ->
+                        if (newShelves.isNotEmpty()) {
+                            val currentShelves = _homeContent.value.continuationShelves
+                            _homeContent.value = _homeContent.value.copy(
+                                continuationShelves = currentShelves + newShelves,
+                                continuationToken = nextToken
+                            )
+                        } else {
+                            _homeContent.value = _homeContent.value.copy(continuationToken = null)
+                        }
+                    }
+                    .onFailure { e ->
+                        Log.w(TAG, "Failed loading continuation home content", e)
+                        _homeContent.value = _homeContent.value.copy(continuationToken = null)
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in loadMoreHomeContent", e)
+            } finally {
+                _isLoadingMore.value = false
             }
         }
     }
@@ -437,20 +558,15 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Add a song to play next
+     * Add a song to play next (YouTube Music style)
      */
     fun playNext(song: Song) {
         viewModelScope.launch {
             try {
-                // Append through normal queue path so local queue state is updated.
-                playerServiceConnection.addSongsToQueueLazy(
-                    songs = listOf(song),
-                    songRepository = songRepository,
-                    isQueueAlreadyPopulated = true
-                )
-                Log.d(TAG, "➕ Added to queue: ${song.title}")
+                playerServiceConnection.insertPlayNextLazy(song, songRepository)
+                Log.d(TAG, "Added play next: ${song.title}")
             } catch (e: Exception) {
-                Log.e(TAG, "Error adding song to queue", e)
+                Log.e(TAG, "Error adding song to play next", e)
             }
         }
     }
@@ -518,8 +634,12 @@ class HomeViewModel @Inject constructor(
             SECTION_CHARTS -> _homeContent.value.charts?.songs.orEmpty()
             SECTION_RECENTLY_PLAYED -> _homeContent.value.recentlyPlayed
             SECTION_MIXED_FOR_YOU -> _homeContent.value.mixedForYou
+            "mood_filter" -> _moodFilteredSongs.value
             else -> {
-                if (section.startsWith(SECTION_ARTIST_PREFIX)) {
+                if (section.startsWith("continuation_")) {
+                    val shelfId = section.removePrefix("continuation_")
+                    _homeContent.value.continuationShelves.firstOrNull { it.id == shelfId }?.songs.orEmpty()
+                } else if (section.startsWith(SECTION_ARTIST_PREFIX)) {
                     val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
                     _homeContent.value.artists.firstOrNull { it.artist.id == artistId }?.songs.orEmpty()
                 } else if (section.startsWith("mood_genre:")) {
@@ -548,8 +668,12 @@ class HomeViewModel @Inject constructor(
             SECTION_RECENTLY_PLAYED -> "Recently Played"
             SECTION_MIXED_FOR_YOU -> "Mixed For You"
             SECTION_MOOD_GENRE -> "Moods & Genres"
+            "mood_filter" -> _selectedMoodGenre.value?.title ?: "Mood Songs"
             else -> {
-                if (section.startsWith(SECTION_ARTIST_PREFIX)) {
+                if (section.startsWith("continuation_")) {
+                    val shelfId = section.removePrefix("continuation_")
+                    _homeContent.value.continuationShelves.firstOrNull { it.id == shelfId }?.title ?: "Recommended"
+                } else if (section.startsWith(SECTION_ARTIST_PREFIX)) {
                     val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
                     val artistName = _homeContent.value.artists
                         .firstOrNull { it.artist.id == artistId }

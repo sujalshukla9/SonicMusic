@@ -398,6 +398,7 @@ fun FullPlayerScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 10.dp)
             ) {
                 val availableHeight = maxHeight
                 val availableWidth = maxWidth
@@ -415,12 +416,12 @@ fun FullPlayerScreen(
                 }
                 val artworkSize = minOf(maxArtWidth, maxArtFromHeight).coerceAtLeast(160.dp)
 
-                // Spacing above artwork — tight like ViTune
+                // Spacing above artwork
                 val topSpacer = when {
-                    availableHeight >= 800.dp -> 20.dp
-                    availableHeight >= 680.dp -> 12.dp
-                    availableHeight >= 580.dp -> 6.dp
-                    else -> 2.dp
+                    availableHeight >= 800.dp -> 28.dp
+                    availableHeight >= 680.dp -> 20.dp
+                    availableHeight >= 580.dp -> 12.dp
+                    else -> 6.dp
                 }
 
                 val badgeSpacer = when {
@@ -1157,10 +1158,10 @@ private fun ArtworkSection(
     ) {
         if (!useLandscapeLayout) {
             val topSpacer = when {
-                availableHeight >= 800.dp -> 20.dp
-                availableHeight >= 680.dp -> 12.dp
-                availableHeight >= 580.dp -> 6.dp
-                else -> 2.dp
+                availableHeight >= 800.dp -> 28.dp
+                availableHeight >= 680.dp -> 20.dp
+                availableHeight >= 580.dp -> 12.dp
+                else -> 6.dp
             }
             Spacer(modifier = Modifier.height(topSpacer))
         }

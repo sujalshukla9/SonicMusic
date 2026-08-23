@@ -179,7 +179,7 @@ class LibraryViewModel @Inject constructor(
         // Sort
         list = when (sortType) {
             DownloadedSortType.RECENTLY_DOWNLOADED -> list.sortedByDescending { it.downloadedAt }
-            DownloadedSortType.TITLE_A_Z -> list.sortedBy { it.title.lowercase().removePrefix("a ").removePrefix("an ").removePrefix("the ") }
+            DownloadedSortType.TITLE_A_Z -> list.sortedBy { it.title.lowercase().removePrefix("a ").removePrefix(" an ").removePrefix(" the ") }
             DownloadedSortType.ARTIST_A_Z -> list.sortedBy { it.artists.lowercase() }
             DownloadedSortType.FILE_SIZE -> list.sortedByDescending { it.fileSizeBytes }
             DownloadedSortType.DURATION -> list.sortedByDescending { it.durationMs }

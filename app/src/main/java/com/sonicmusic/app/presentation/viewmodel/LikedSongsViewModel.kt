@@ -61,4 +61,8 @@ class LikedSongsViewModel @Inject constructor(
             playerServiceConnection.playSongsLazy(shuffledSongs, 0, songRepository)
         }
     }
+
+    fun playNext(song: Song) {
+        playerServiceConnection.insertPlayNextLazy(song, songRepository)
+    }
 }

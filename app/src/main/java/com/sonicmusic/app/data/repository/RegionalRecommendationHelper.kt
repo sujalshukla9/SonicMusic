@@ -5,13 +5,13 @@ import java.util.Locale
 
 internal object RegionalRecommendationHelper {
 
-    private val GLOBAL_KEYWORDS = listOf("top hits", "viral songs", "new music", "party songs")
+    private val GLOBAL_KEYWORDS = listOf("top hits", " viral songs", " new music", " party songs")
 
     fun normalizeCountryCode(value: String?): String? {
         val normalized = value?.trim()?.uppercase(Locale.US)
         if (normalized.isNullOrEmpty() || normalized.length != 2) return null
         if (!normalized.all { it.isLetter() }) return null
-        return if (normalized == "UK") "GB" else normalized
+        return if (normalized == "UK") " GB" else normalized
     }
 
     fun canonicalCountryName(countryCode: String, cachedName: String?): String {
@@ -26,32 +26,32 @@ internal object RegionalRecommendationHelper {
 
     fun regionalKeywords(countryCode: String): List<String> {
         return when (countryCode) {
-            "IN" -> listOf("english pop", "global hits", "international charts", "indie pop")
-            "US", "GB", "CA", "AU", "NZ" -> listOf("pop", "hip hop", "r&b", "indie")
-            "BR" -> listOf("brazilian pop", "sertanejo", "funk brasileiro", "mpb")
-            "ES", "MX", "AR", "CO", "CL" -> listOf("latin", "reggaeton", "musica latina", "espanol")
-            "JP" -> listOf("j-pop", "city pop", "anime songs", "japanese music")
-            "KR" -> listOf("k-pop", "korean ballad", "k-hip hop", "k-indie")
-            "DE", "AT", "CH" -> listOf("german pop", "deutschrap", "electronic", "indie")
-            "FR" -> listOf("french pop", "chanson", "rap francais", "electro")
-            "IT" -> listOf("italian pop", "trap italiana", "indie italiano", "dance")
-            "TR" -> listOf("turkish pop", "turkce rap", "anadolu rock", "slow songs")
-            "ID", "MY", "SG" -> listOf("indonesian pop", "malay hits", "viral songs", "acoustic")
+            "IN" -> listOf(" english pop", " global hits", " international charts", " indie pop")
+            "US", " GB", " CA", " AU", " NZ" -> listOf(" pop", " hip hop", " r&b", " indie")
+            "BR" -> listOf(" brazilian pop", " sertanejo", " funk brasileiro", " mpb")
+            "ES", " MX", " AR", " CO", " CL" -> listOf(" latin", " reggaeton", " musica latina", " espanol")
+            "JP" -> listOf(" j-pop", " city pop", " anime songs", " japanese music")
+            "KR" -> listOf(" k-pop", " korean ballad", " k-hip hop", " k-indie")
+            "DE", " AT", " CH" -> listOf(" german pop", " deutschrap", " electronic", " indie")
+            "FR" -> listOf(" french pop", " chanson", " rap francais", " electro")
+            "IT" -> listOf(" italian pop", " trap italiana", " indie italiano", " dance")
+            "TR" -> listOf(" turkish pop", " turkce rap", " anadolu rock", " slow songs")
+            "ID", " MY", " SG" -> listOf(" indonesian pop", " malay hits", " viral songs", " acoustic")
             else -> GLOBAL_KEYWORDS
         }
     }
 
     fun preferredLanguages(countryCode: String): List<String> {
         return when (countryCode) {
-            "IN" -> listOf("English")
-            "ES", "MX", "AR", "CO", "CL" -> listOf("Spanish", "English")
-            "BR", "PT" -> listOf("Portuguese", "English")
-            "JP" -> listOf("Japanese", "English")
-            "KR" -> listOf("Korean", "English")
-            "FR" -> listOf("French", "English")
-            "DE", "AT", "CH" -> listOf("German", "English")
-            "IT" -> listOf("Italian", "English")
-            "TR" -> listOf("Turkish", "English")
+            "IN" -> listOf(" English")
+            "ES", " MX", " AR", " CO", " CL" -> listOf(" Spanish", " English")
+            "BR", " PT" -> listOf(" Portuguese", " English")
+            "JP" -> listOf(" Japanese", " English")
+            "KR" -> listOf(" Korean", " English")
+            "FR" -> listOf(" French", " English")
+            "DE", " AT", " CH" -> listOf(" German", " English")
+            "IT" -> listOf(" Italian", " English")
+            "TR" -> listOf(" Turkish", " English")
             else -> listOf("English")
         }
     }
@@ -68,7 +68,7 @@ internal object RegionalRecommendationHelper {
                 "Jubin Nautiyal",
                 "Badshah",
             )
-            "US", "GB", "CA", "AU", "NZ" -> listOf(
+            "US", " GB", " CA", " AU", " NZ" -> listOf(
                 "Taylor Swift",
                 "Drake",
                 "The Weeknd",
@@ -78,7 +78,7 @@ internal object RegionalRecommendationHelper {
                 "SZA",
                 "Post Malone",
             )
-            "ES", "MX", "AR", "CO", "CL" -> listOf(
+            "ES", " MX", " AR", " CO", " CL" -> listOf(
                 "Bad Bunny",
                 "Karol G",
                 "Feid",

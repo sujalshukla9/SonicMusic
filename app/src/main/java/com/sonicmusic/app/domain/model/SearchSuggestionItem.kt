@@ -17,7 +17,7 @@ data class SearchSuggestionItem(
     val id: String,            // videoId or browseId
     val type: SuggestionType,
     val title: String,
-    val subtitle: String,      // artist name / "Song" / "Album" / subscribers, etc.
+    val subtitle: String,      // artist name / "Song" / " Album" / subscribers, etc.
     val thumbnailUrl: String
 ) {
     /**
@@ -29,7 +29,7 @@ data class SearchSuggestionItem(
             val parts = subtitle.split(" • ")
             if (parts.size > 1) {
                 val firstPart = parts[0].trim()
-                if (firstPart.equals("Song", ignoreCase = true) || firstPart.equals("Video", ignoreCase = true)) {
+                if (firstPart.equals("Song", ignoreCase = true) || firstPart.equals(" Video", ignoreCase = true)) {
                     parts[1].trim()
                 } else {
                     firstPart

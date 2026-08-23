@@ -270,15 +270,11 @@ class ArtistDetailViewModel @Inject constructor(
     // ─── Playback Actions ───────────────────────────────────────────
 
     fun playSong(song: Song) {
-        viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    playerServiceConnection.playSong(song, streamUrl)
-                }
-                .onFailure { e ->
-                    Log.e(TAG, "Failed to play song", e)
-                }
-        }
+        playerServiceConnection.playSongsLazy(
+            songs = listOf(song),
+            startIndex = 0,
+            songRepository = songRepository
+        )
     }
 
     fun playAll() {
@@ -286,20 +282,11 @@ class ArtistDetailViewModel @Inject constructor(
             ?: historyToSongs(_recentlyPlayed.value)
         if (songs.isEmpty()) return
 
-        viewModelScope.launch {
-            val urlMap = fetchStreamUrlsBatch(songs.take(10))
-            val first = songs.firstOrNull { urlMap.containsKey(it.id) } ?: return@launch
-            val firstUrl = urlMap[first.id] ?: return@launch
-
-            playerServiceConnection.playSong(first, firstUrl)
-
-            songs.drop(1).forEach { song ->
-                val url = urlMap[song.id]
-                if (url != null) {
-                    playerServiceConnection.addToQueue(song, url)
-                }
-            }
-        }
+        playerServiceConnection.playSongsLazy(
+            songs = songs,
+            startIndex = 0,
+            songRepository = songRepository
+        )
     }
 
     fun shufflePlay() {
@@ -307,37 +294,24 @@ class ArtistDetailViewModel @Inject constructor(
             ?: historyToSongs(_recentlyPlayed.value)).shuffled()
         if (songs.isEmpty()) return
 
-        viewModelScope.launch {
-            val urlMap = fetchStreamUrlsBatch(songs.take(10))
-            val first = songs.firstOrNull { urlMap.containsKey(it.id) } ?: return@launch
-            val firstUrl = urlMap[first.id] ?: return@launch
-
-            playerServiceConnection.playSong(first, firstUrl)
-
-            songs.drop(1).forEach { song ->
-                val url = urlMap[song.id]
-                if (url != null) {
-                    playerServiceConnection.addToQueue(song, url)
-                }
-            }
-        }
+        playerServiceConnection.playSongsLazy(
+            songs = songs,
+            startIndex = 0,
+            songRepository = songRepository
+        )
     }
 
     fun playAlbumSongs(songs: List<Song>) {
         if (songs.isEmpty()) return
-        viewModelScope.launch {
-            val urlMap = fetchStreamUrlsBatch(songs.take(10))
-            val first = songs.firstOrNull { urlMap.containsKey(it.id) } ?: return@launch
-            val firstUrl = urlMap[first.id] ?: return@launch
+        playerServiceConnection.playSongsLazy(
+            songs = songs,
+            startIndex = 0,
+            songRepository = songRepository
+        )
+    }
 
-            playerServiceConnection.playSong(first, firstUrl)
-            songs.drop(1).forEach { song ->
-                val url = urlMap[song.id]
-                if (url != null) {
-                    playerServiceConnection.addToQueue(song, url)
-                }
-            }
-        }
+    fun playNext(song: Song) {
+        playerServiceConnection.insertPlayNextLazy(song, songRepository)
     }
 
     fun playHistorySong(history: PlaybackHistory) {

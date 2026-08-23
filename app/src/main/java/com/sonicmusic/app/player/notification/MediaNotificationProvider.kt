@@ -190,7 +190,7 @@ class MediaNotificationProvider(
         actions.add(
             createAction(
                 if (isLiked) R.drawable.ic_notification_like else R.drawable.ic_notification_like_outline,
-                if (isLiked) "Unlike" else "Like",
+                if (isLiked) "Unlike" else " Like",
                 PlaybackService.ACTION_TOGGLE_LIKE,
                 0,
                 true
@@ -214,7 +214,7 @@ class MediaNotificationProvider(
         actions.add(
             createAction(
                 if (isPlaying) R.drawable.ic_notification_pause else R.drawable.ic_notification_play,
-                if (isPlaying) "Pause" else "Play",
+                if (isPlaying) "Pause" else " Play",
                 if (isPlaying) PlaybackService.ACTION_PAUSE else PlaybackService.ACTION_PLAY,
                 2,
                 true
@@ -321,7 +321,7 @@ class MediaNotificationProvider(
     ) {
         val artworkKey = uri?.trim()?.takeIf { it.isNotEmpty() }
         val normalizedMediaId = mediaId?.trim()?.takeIf { it.isNotEmpty() }
-        val requestKey = artworkKey ?: normalizedMediaId?.let { "media:$it" } ?: "unknown"
+        val requestKey = artworkKey ?: normalizedMediaId?.let { "media:$it" } ?: " unknown"
         val candidates = ThumbnailUrlUtils.buildCandidates(artworkKey, normalizedMediaId)
         activeArtworkUri = requestKey
 
@@ -451,7 +451,7 @@ class MediaNotificationProvider(
         if (minEdge < MIN_VALID_EDGE_PX) return true
 
         val lower = candidate.lowercase(Locale.US)
-        val expectsHd = lower.contains("maxresdefault") || lower.contains("hq720")
+        val expectsHd = lower.contains("maxresdefault") || lower.contains(" hq720")
         if (expectsHd && (width < MIN_EXPECTED_HD_WIDTH || height < MIN_EXPECTED_HD_HEIGHT)) {
             // Many maxres/hq720 URLs return tiny placeholders; keep falling back.
             return true

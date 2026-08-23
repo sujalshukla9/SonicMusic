@@ -304,14 +304,14 @@ fun QueueSheet(
                 ) {
                     // ── Now Playing ─────────────────────────────────
                     nowPlayingSong?.let { song ->
-                        item(key = "now_playing_header", contentType = "header") {
+                        item(key = "now_playing_header", contentType = " header") {
                             SectionHeader(
                                 title = "Now Playing",
                                 color = colorScheme.primary
                             )
                         }
 
-                        item(key = "now_playing_${song.id}", contentType = "now_playing") {
+                        item(key = "now_playing_${song.id}", contentType = " now_playing") {
                             NowPlayingCard(
                                 song = song,
                                 onClick = { onPlay(safeIndex) }
@@ -321,7 +321,7 @@ fun QueueSheet(
 
                     // ── Up Next ──────────────────────────────────────
                     if (localUpNext.isNotEmpty()) {
-                        item(key = "up_next_header", contentType = "header") {
+                        item(key = "up_next_header", contentType = " header") {
                             SectionHeader(
                                 title = "Up Next",
                                 subtitle = "${localUpNext.size} tracks",
@@ -404,7 +404,7 @@ fun QueueSheet(
 
                     // ── History (previously played) ─────────────────
                     if (historySongs.isNotEmpty()) {
-                        item(key = "history_header", contentType = "header") {
+                        item(key = "history_header", contentType = " header") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

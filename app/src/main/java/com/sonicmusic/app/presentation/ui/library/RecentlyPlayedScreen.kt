@@ -169,13 +169,13 @@ fun RecentlyPlayedScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = if (historySearchQuery.isNotEmpty()) "No search results" else "No recently played songs",
+                        text = if (historySearchQuery.isNotEmpty()) "No search results" else " No recently played songs",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = if (historySearchQuery.isNotEmpty()) "Try a different search query" else "Songs you play will appear here",
+                        text = if (historySearchQuery.isNotEmpty()) "Try a different search query" else " Songs you play will appear here",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                     )

@@ -81,7 +81,7 @@ class RegionRepository @Inject constructor(
                 }
             } catch (e: Exception) {
                 // Never crash app startup due to region detection failures.
-                android.util.Log.e("RegionRepository", "Error initializing region", e)
+                android.util.Log.e("RegionRepository", " Error initializing region", e)
                 fallbackToLocale()
             }
         }
@@ -116,7 +116,7 @@ class RegionRepository @Inject constructor(
             return
         }
 
-        android.util.Log.e("RegionRepository", "All region fetch attempts failed, falling back to locale")
+        android.util.Log.e("RegionRepository", " All region fetch attempts failed, falling back to locale")
         fallbackToLocale()
     }
 

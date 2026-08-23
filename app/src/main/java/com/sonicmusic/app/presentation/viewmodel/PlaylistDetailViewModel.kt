@@ -103,61 +103,17 @@ class PlaylistDetailViewModel @Inject constructor(
     fun playSong(song: Song) {
         val allSongs = _songs.value
         val index = allSongs.indexOfFirst { it.id == song.id }.takeIf { it >= 0 } ?: 0
-
-        viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    val urlMap = mutableMapOf(song.id to streamUrl)
-
-                    val remaining = allSongs.filterNot { it.id == song.id }
-                    val results = withContext(Dispatchers.IO) {
-                        remaining.map { s ->
-                            async {
-                                songRepository.getStreamUrl(s.id, StreamQuality.BEST)
-                                    .getOrNull()?.let { url -> s.id to url }
-                            }
-                        }.awaitAll().filterNotNull()
-                    }
-                    results.forEach { (id, url) -> urlMap[id] = url }
-
-                    playerServiceConnection.playWithQueue(allSongs, urlMap, index)
-                }
-                .onFailure { e ->
-                    _error.value = "Failed to play: ${e.message}"
-                }
-        }
+        playerServiceConnection.playSongsLazy(allSongs, index, songRepository)
     }
 
     fun playAll(songs: List<Song>) {
         if (songs.isEmpty()) return
-
-        viewModelScope.launch {
-            val firstSong = songs.first()
-            songRepository.getStreamUrl(firstSong.id, StreamQuality.BEST)
-                .onSuccess { streamUrl ->
-                    val urlMap = mutableMapOf(firstSong.id to streamUrl)
-
-                    val results = withContext(Dispatchers.IO) {
-                        songs.drop(1).map { song ->
-                            async {
-                                songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                                    .getOrNull()?.let { url -> song.id to url }
-                            }
-                        }.awaitAll().filterNotNull()
-                    }
-                    results.forEach { (id, url) -> urlMap[id] = url }
-
-                    playerServiceConnection.playWithQueue(songs, urlMap, 0)
-                }
-                .onFailure { e ->
-                    _error.value = "Failed to play: ${e.message}"
-                }
-        }
+        playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
     fun shufflePlay(songs: List<Song>) {
-        val shuffled = songs.shuffled()
-        playAll(shuffled)
+        if (songs.isEmpty()) return
+        playerServiceConnection.playSongsLazy(songs.shuffled(), 0, songRepository)
     }
 
     fun removeSongFromPlaylist(songId: String) {

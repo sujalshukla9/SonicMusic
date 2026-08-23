@@ -11,7 +11,7 @@ enum class ArtistSource {
 
 enum class ArtistRole {
     PRIMARY,      // Main artist
-    FEATURED,     // "feat." / "ft."
+    FEATURED,     // "feat." / " ft."
     PRODUCER,     // Produced by
     COMPOSER      // Written by
 }

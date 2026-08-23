@@ -104,16 +104,22 @@ class HomeRefreshManager @Inject constructor(
 
     private suspend fun triggerRefresh() {
         try {
-            Log.d(TAG, "Triggering background refresh for Quick Picks and Made for You")
+            Log.d(TAG, "Triggering background refresh for Quick Picks, Made for You, Listen Again, and Forgotten Favorites")
             coroutineScope {
                 val quickPicksDeferred = async { homeRepository.refreshQuickPicks() }
                 val madeForYouDeferred = async { homeRepository.refreshMadeForYou() }
+                val listenAgainDeferred = async { homeRepository.refreshListenAgain() }
+                val forgottenFavoritesDeferred = async { homeRepository.refreshForgottenFavorites() }
 
                 val quickPicks = quickPicksDeferred.await()
                 val madeForYou = madeForYouDeferred.await()
+                val listenAgain = listenAgainDeferred.await()
+                val forgottenFavorites = forgottenFavoritesDeferred.await()
 
                 _refreshEvents.emit(Pair("Quick Picks", quickPicks))
                 _refreshEvents.emit(Pair("Made for You", madeForYou))
+                _refreshEvents.emit(Pair("Listen Again", listenAgain))
+                _refreshEvents.emit(Pair("Forgotten Favorites", forgottenFavorites))
             }
             Log.d(TAG, "Background refresh completed successfully")
         } catch (e: Exception) {

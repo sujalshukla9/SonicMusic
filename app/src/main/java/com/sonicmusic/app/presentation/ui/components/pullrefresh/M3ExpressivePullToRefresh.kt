@@ -167,12 +167,36 @@ fun M3ExpressivePullToRefresh(
                 indicatorScaleAnim.snapTo(1f)
                 indicatorAlphaAnim.snapTo(1f)
             }
+        } else if (!isRefreshing && state.status == RefreshStatus.REFRESHING && refreshResult == null) {
+            // ViewModel finished refreshing without explicit RefreshResult: dismiss smoothly
+            val elapsed = System.currentTimeMillis() - state.refreshStartTimeMs
+            val remaining = PullToRefreshState.MIN_REFRESH_DISPLAY_MS - elapsed
+            if (remaining > 0) delay(remaining)
+
+            state.lastRefreshTimeMs = System.currentTimeMillis()
+            if (!reducedMotion) {
+                val j1 = launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
+                val j2 = launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
+                val j3 = launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
+                joinAll(j1, j2, j3)
+            } else {
+                indicatorScaleAnim.snapTo(0f)
+                indicatorAlphaAnim.snapTo(0f)
+                contentOffsetAnim.snapTo(0f)
+            }
+
+            state.status = RefreshStatus.IDLE
+            state.dragProgress = 0f
+            state.rawDragOffset = 0f
+            state.indicatorOffset = 0f
+            state.contentOffset = 0f
+            completionIconProgress = 0f
         }
     }
 
     // ── React to refreshResult (success / error) ──
     LaunchedEffect(refreshResult) {
-        if (refreshResult == null || state.status != RefreshStatus.REFRESHING) return@LaunchedEffect
+        if (refreshResult == null || (state.status != RefreshStatus.REFRESHING && !state.isCompleting())) return@LaunchedEffect
 
         // Ensure minimum display time
         val elapsed = System.currentTimeMillis() - state.refreshStartTimeMs
@@ -268,13 +292,16 @@ fun M3ExpressivePullToRefresh(
                 
                 state.status = RefreshStatus.IDLE
                 state.dragProgress = 0f
+                state.rawDragOffset = 0f
+                state.indicatorOffset = 0f
+                state.contentOffset = 0f
                 onRefreshResultConsumed()
             }
         }
     }
 
     // ── Nested scroll connection — the heart of the gesture ──
-    val nestedScrollConnection = remember(enabled) {
+    val nestedScrollConnection = remember(enabled, thresholdPx, maxDragPx, contentRestOffsetPx, reducedMotion) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 // If we are pulling, allow releasing drag back up
@@ -287,12 +314,6 @@ fun M3ExpressivePullToRefresh(
                         val newRaw = (state.rawDragOffset + available.y).coerceAtLeast(0f)
                         val consumed = newRaw - state.rawDragOffset
                         updateDragState(state, newRaw, thresholdPx, maxDragPx, view, lastHapticMilestone) { m -> lastHapticMilestone = m }
-
-                        scope.launch {
-                            contentOffsetAnim.snapTo(state.contentOffset)
-                            indicatorScaleAnim.snapTo(0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f))
-                            indicatorAlphaAnim.snapTo(state.dragProgress.coerceIn(0f, 1f))
-                        }
 
                         return if (newRaw <= 0f) {
                             state.status = RefreshStatus.IDLE
@@ -316,12 +337,6 @@ fun M3ExpressivePullToRefresh(
 
                 // Only start pulling when content is at the top (consumed.y == 0) and dragging down
                 if (available.y > 0 && source == NestedScrollSource.Drag) {
-                    // Debounce check
-                    val now = System.currentTimeMillis()
-                    if (state.isIdle() && now - state.lastRefreshTimeMs < PullToRefreshState.DEBOUNCE_MS) {
-                        return Offset.Zero
-                    }
-
                     if (state.isIdle()) {
                         state.status = RefreshStatus.PULLING
                         lastHapticMilestone = 0
@@ -329,12 +344,6 @@ fun M3ExpressivePullToRefresh(
 
                     val newRaw = (state.rawDragOffset + available.y).coerceAtMost(maxDragPx / state.dampingFactor)
                     updateDragState(state, newRaw, thresholdPx, maxDragPx, view, lastHapticMilestone) { m -> lastHapticMilestone = m }
-
-                    scope.launch {
-                        contentOffsetAnim.snapTo(state.contentOffset)
-                        indicatorScaleAnim.snapTo(0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f))
-                        indicatorAlphaAnim.snapTo(state.dragProgress.coerceIn(0f, 1f))
-                    }
 
                     return Offset(0f, available.y)
                 }
@@ -347,15 +356,31 @@ fun M3ExpressivePullToRefresh(
 
                 if (state.status == RefreshStatus.ARMED) {
                     // User released while armed → trigger refresh
+                    val startOffset = state.contentOffset
+                    val startScale = 0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f)
+                    val startAlpha = state.dragProgress.coerceIn(0f, 1f)
+
                     state.status = RefreshStatus.REFRESHING
                     state.refreshStartTimeMs = System.currentTimeMillis()
                     performHaptic(view, HapticType.CONTEXT_CLICK)
 
-                    scope.launch {
-                        contentOffsetAnim.animateTo(contentRestOffsetPx, SettleSpring)
-                    }
-                    scope.launch {
-                        indicatorScaleAnim.animateTo(1f, SettleSpring)
+                    if (!reducedMotion) {
+                        scope.launch {
+                            contentOffsetAnim.snapTo(startOffset)
+                            contentOffsetAnim.animateTo(contentRestOffsetPx, SettleSpring)
+                        }
+                        scope.launch {
+                            indicatorScaleAnim.snapTo(startScale)
+                            indicatorScaleAnim.animateTo(1f, SettleSpring)
+                        }
+                        scope.launch {
+                            indicatorAlphaAnim.snapTo(startAlpha)
+                            indicatorAlphaAnim.animateTo(1f, tween(150))
+                        }
+                    } else {
+                        contentOffsetAnim.snapTo(contentRestOffsetPx)
+                        indicatorScaleAnim.snapTo(1f)
+                        indicatorAlphaAnim.snapTo(1f)
                     }
 
                     onRefresh()
@@ -363,15 +388,72 @@ fun M3ExpressivePullToRefresh(
                     return androidx.compose.ui.unit.Velocity(0f, available.y)
                 } else if (state.status == RefreshStatus.PULLING) {
                     // Released before threshold — snap back
+                    val startOffset = state.contentOffset
+                    val startScale = 0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f)
+                    val startAlpha = state.dragProgress.coerceIn(0f, 1f)
+
                     state.status = RefreshStatus.IDLE
                     state.rawDragOffset = 0f
                     state.dragProgress = 0f
+                    state.contentOffset = 0f
                     lastHapticMilestone = 0
 
-                    scope.launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
-                    scope.launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
-                    scope.launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
+                    if (!reducedMotion) {
+                        scope.launch {
+                            contentOffsetAnim.snapTo(startOffset)
+                            contentOffsetAnim.animateTo(0f, DismissSpring)
+                        }
+                        scope.launch {
+                            indicatorScaleAnim.snapTo(startScale)
+                            indicatorScaleAnim.animateTo(0f, DismissSpring)
+                        }
+                        scope.launch {
+                            indicatorAlphaAnim.snapTo(startAlpha)
+                            indicatorAlphaAnim.animateTo(0f, tween(150))
+                        }
+                    } else {
+                        contentOffsetAnim.snapTo(0f)
+                        indicatorScaleAnim.snapTo(0f)
+                        indicatorAlphaAnim.snapTo(0f)
+                    }
                     return androidx.compose.ui.unit.Velocity(0f, available.y)
+                }
+                return androidx.compose.ui.unit.Velocity.Zero
+            }
+
+            override suspend fun onPostFling(
+                consumed: androidx.compose.ui.unit.Velocity,
+                available: androidx.compose.ui.unit.Velocity
+            ): androidx.compose.ui.unit.Velocity {
+                if (state.status == RefreshStatus.PULLING) {
+                    val startOffset = state.contentOffset
+                    val startScale = 0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f)
+                    val startAlpha = state.dragProgress.coerceIn(0f, 1f)
+
+                    state.status = RefreshStatus.IDLE
+                    state.rawDragOffset = 0f
+                    state.dragProgress = 0f
+                    state.contentOffset = 0f
+                    lastHapticMilestone = 0
+
+                    if (!reducedMotion) {
+                        scope.launch {
+                            contentOffsetAnim.snapTo(startOffset)
+                            contentOffsetAnim.animateTo(0f, DismissSpring)
+                        }
+                        scope.launch {
+                            indicatorScaleAnim.snapTo(startScale)
+                            indicatorScaleAnim.animateTo(0f, DismissSpring)
+                        }
+                        scope.launch {
+                            indicatorAlphaAnim.snapTo(startAlpha)
+                            indicatorAlphaAnim.animateTo(0f, tween(150))
+                        }
+                    } else {
+                        contentOffsetAnim.snapTo(0f)
+                        indicatorScaleAnim.snapTo(0f)
+                        indicatorAlphaAnim.snapTo(0f)
+                    }
                 }
                 return androidx.compose.ui.unit.Velocity.Zero
             }
@@ -401,21 +483,20 @@ fun M3ExpressivePullToRefresh(
         else -> primary
     }
 
-    val animatedContainerColor by animateFloatAsState(
-        targetValue = when (state.status) {
-            RefreshStatus.ARMED -> 1f
-            RefreshStatus.COMPLETING_SUCCESS -> 2f
-            RefreshStatus.COMPLETING_ERROR -> 3f
-            else -> 0f
-        },
-        animationSpec = tween(200),
-        label = "containerColorAnim"
-    )
+    val currentContentOffset = when {
+        state.isPulling() || state.isArmed() -> state.contentOffset
+        else -> contentOffsetAnim.value
+    }
 
-    // ── Icon rotation proportional to drag ──
-    val iconRotation = state.dragProgress * 360f
+    val currentIndicatorScale = when {
+        state.isPulling() || state.isArmed() -> 0.4f + 0.6f * state.dragProgress.coerceIn(0f, 1f)
+        else -> indicatorScaleAnim.value
+    }
 
-    // ── Removing custom morphingShape since user requested official LoadingIndicator ──
+    val currentIndicatorAlpha = when {
+        state.isPulling() || state.isArmed() -> state.dragProgress.coerceIn(0f, 1f)
+        else -> indicatorAlphaAnim.value
+    }
 
     Box(
         modifier = modifier
@@ -427,18 +508,18 @@ fun M3ExpressivePullToRefresh(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = contentOffsetAnim.value
+                    translationY = currentContentOffset
                 }
         ) {
             content()
         }
 
         // ── Indicator ──
-        if (state.status != RefreshStatus.IDLE || indicatorAlphaAnim.value > 0.01f) {
+        if (state.status != RefreshStatus.IDLE || currentIndicatorAlpha > 0.01f) {
             val indicatorCenterY = if (state.status == RefreshStatus.REFRESHING || state.isCompleting()) {
                 indicatorRestOffsetPx
             } else {
-                (state.contentOffset * 0.5f).coerceAtMost(indicatorRestOffsetPx)
+                (currentContentOffset * 0.5f).coerceAtMost(indicatorRestOffsetPx)
             }
 
             Box(
@@ -451,8 +532,8 @@ fun M3ExpressivePullToRefresh(
                         )
                     }
                     .size(INDICATOR_SIZE)
-                    .scale(indicatorScaleAnim.value)
-                    .alpha(indicatorAlphaAnim.value)
+                    .scale(currentIndicatorScale)
+                    .alpha(currentIndicatorAlpha)
                     .shadow(elevation = 6.dp, shape = CircleShape)
                     .background(color = containerColor, shape = CircleShape)
                     .semantics {

@@ -46,7 +46,7 @@ object NetworkModule {
             .addInterceptor(logging)
             .addInterceptor { chain ->
                 val request = chain.request().newBuilder()
-                    .header("User-Agent", "SonicMusic/1.0 (Android; Mobile)")
+                    .header("User-Agent", " SonicMusic/1.0 (Android; Mobile)")
                     .build()
                 chain.proceed(request)
             }

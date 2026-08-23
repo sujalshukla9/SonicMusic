@@ -139,6 +139,7 @@ class RegionRepositoryTest {
         whenever(settingsDataStore.regionCode).thenReturn(flowOf("UK"))
         whenever(settingsDataStore.countryCode).thenReturn(flowOf("UK"))
         whenever(settingsDataStore.countryName).thenReturn(flowOf("United Kingdom"))
+        whenever(settingsDataStore.isRegionFromIp).thenReturn(flowOf(true))
 
         val repository = RegionRepository(regionApi, settingsDataStore, newPipeService, youTubeiService)
 
@@ -168,7 +169,7 @@ class RegionRepositoryTest {
         // Assert
         verify(settingsDataStore).setCountryCode("GB")
         verify(settingsDataStore).setRegionCode("GB")
-        verify(settingsDataStore).setCountryName(any())
+        verify(settingsDataStore).setCountryName("United Kingdom")
         verify(newPipeService).updateRegion("GB")
     }
 
@@ -198,6 +199,8 @@ class RegionRepositoryTest {
         whenever(settingsDataStore.regionCode).thenReturn(flowOf(""))
         whenever(settingsDataStore.countryCode).thenReturn(flowOf(""))
         whenever(settingsDataStore.countryName).thenReturn(flowOf(""))
+        whenever(regionApi.getRegion()).thenThrow(RuntimeException("API unavailable"))
+        whenever(regionApi.getRegionByUrl(any())).thenThrow(RuntimeException("API unavailable"))
         whenever(youTubeiService.detectCountryFromInnertube()).thenReturn("DE")
 
         val repository = RegionRepository(regionApi, settingsDataStore, newPipeService, youTubeiService)
@@ -207,10 +210,9 @@ class RegionRepositoryTest {
 
         // Assert
         verify(youTubeiService).detectCountryFromInnertube()
-        verify(regionApi, never()).getRegion()
         verify(settingsDataStore).setCountryCode("DE")
         verify(settingsDataStore).setRegionCode("DE")
-        verify(settingsDataStore).setCountryName(any())
+        verify(settingsDataStore).setCountryName("Germany")
         verify(settingsDataStore).setIsRegionFromIp(true)
         verify(newPipeService).updateRegion("DE")
     }

@@ -76,23 +76,25 @@ class BrowseRepositoryImpl @Inject constructor(
     // MOODS & GENRES
     // ══════════════════════════════════════════
 
-    override suspend fun getMoodsAndGenres(): Result<List<MoodGenre>> = withContext(Dispatchers.IO) {
+    override suspend fun getMoodsAndGenres(forceRefresh: Boolean): Result<List<MoodGenre>> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
 
-        // In-memory cache hit
-        cachedMoodGenres?.takeIf { now - cachedMoodGenresAt < TTL_MOODS_GENRES }?.let {
-            Log.d(TAG, "♻️ Mood/genre in-memory cache hit (${it.size} items)")
-            return@withContext Result.success(it)
-        }
+        if (!forceRefresh) {
+            // In-memory cache hit
+            cachedMoodGenres?.takeIf { now - cachedMoodGenresAt < TTL_MOODS_GENRES }?.let {
+                Log.d(TAG, "♻️ Mood/genre in-memory cache hit (${it.size} items)")
+                return@withContext Result.success(it)
+            }
 
-        // Room cache hit
-        browseSectionDao.getValidCache(KEY_MOODS_GENRES, now)?.let { entity ->
-            val moods = deserializeMoodGenres(entity.jsonData)
-            if (moods.isNotEmpty()) {
-                cachedMoodGenres = moods
-                cachedMoodGenresAt = entity.cachedAt
-                Log.d(TAG, "💾 Mood/genre Room cache hit (${moods.size} items)")
-                return@withContext Result.success(moods)
+            // Room cache hit
+            browseSectionDao.getValidCache(KEY_MOODS_GENRES, now)?.let { entity ->
+                val moods = deserializeMoodGenres(entity.jsonData)
+                if (moods.isNotEmpty()) {
+                    cachedMoodGenres = moods
+                    cachedMoodGenresAt = entity.cachedAt
+                    Log.d(TAG, "💾 Mood/genre Room cache hit (${moods.size} items)")
+                    return@withContext Result.success(moods)
+                }
             }
         }
 
@@ -137,12 +139,12 @@ class BrowseRepositoryImpl @Inject constructor(
     // CHARTS
     // ══════════════════════════════════════════
 
-    override suspend fun getCharts(continuationToken: String?): Result<ChartSection> =
+    override suspend fun getCharts(continuationToken: String?, forceRefresh: Boolean): Result<ChartSection> =
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
 
-            // In-memory cache (only for initial fetch, not continuations)
-            if (continuationToken.isNullOrBlank()) {
+            // In-memory cache (only for initial fetch, not continuations, and not force-refresh)
+            if (continuationToken.isNullOrBlank() && !forceRefresh) {
                 cachedCharts?.takeIf { now - cachedChartsAt < TTL_CHARTS }?.let {
                     Log.d(TAG, "♻️ Charts in-memory cache hit (${it.songs.size} songs)")
                     return@withContext Result.success(it)
@@ -197,24 +199,26 @@ class BrowseRepositoryImpl @Inject constructor(
     // TRENDING ALBUMS
     // ══════════════════════════════════════════
 
-    override suspend fun getTrendingAlbums(limit: Int): Result<List<Song>> =
+    override suspend fun getTrendingAlbums(limit: Int, forceRefresh: Boolean): Result<List<Song>> =
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
 
-            // In-memory cache
-            cachedTrendingAlbums?.takeIf { now - cachedTrendingAlbumsAt < TTL_TRENDING }?.let {
-                Log.d(TAG, "♻️ Trending albums in-memory cache hit (${it.size} items)")
-                return@withContext Result.success(it.take(limit))
-            }
+            if (!forceRefresh) {
+                // In-memory cache
+                cachedTrendingAlbums?.takeIf { now - cachedTrendingAlbumsAt < TTL_TRENDING }?.let {
+                    Log.d(TAG, "♻️ Trending albums in-memory cache hit (${it.size} items)")
+                    return@withContext Result.success(it.take(limit))
+                }
 
-            // Room cache
-            browseSectionDao.getValidCache(KEY_TRENDING_ALBUMS, now)?.let { entity ->
-                val albums = deserializeSongs(entity.jsonData)
-                if (albums.isNotEmpty()) {
-                    cachedTrendingAlbums = albums
-                    cachedTrendingAlbumsAt = entity.cachedAt
-                    Log.d(TAG, "💾 Trending albums Room cache hit (${albums.size} items)")
-                    return@withContext Result.success(albums.take(limit))
+                // Room cache
+                browseSectionDao.getValidCache(KEY_TRENDING_ALBUMS, now)?.let { entity ->
+                    val albums = deserializeSongs(entity.jsonData)
+                    if (albums.isNotEmpty()) {
+                        cachedTrendingAlbums = albums
+                        cachedTrendingAlbumsAt = entity.cachedAt
+                        Log.d(TAG, "💾 Trending albums Room cache hit (${albums.size} items)")
+                        return@withContext Result.success(albums.take(limit))
+                    }
                 }
             }
 
@@ -240,24 +244,26 @@ class BrowseRepositoryImpl @Inject constructor(
     // TRENDING ARTISTS
     // ══════════════════════════════════════════
 
-    override suspend fun getTrendingArtists(limit: Int): Result<List<Song>> =
+    override suspend fun getTrendingArtists(limit: Int, forceRefresh: Boolean): Result<List<Song>> =
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
 
-            // In-memory cache
-            cachedTrendingArtists?.takeIf { now - cachedTrendingArtistsAt < TTL_TRENDING }?.let {
-                Log.d(TAG, "♻️ Trending artists in-memory cache hit (${it.size} items)")
-                return@withContext Result.success(it.take(limit))
-            }
+            if (!forceRefresh) {
+                // In-memory cache
+                cachedTrendingArtists?.takeIf { now - cachedTrendingArtistsAt < TTL_TRENDING }?.let {
+                    Log.d(TAG, "♻️ Trending artists in-memory cache hit (${it.size} items)")
+                    return@withContext Result.success(it.take(limit))
+                }
 
-            // Room cache
-            browseSectionDao.getValidCache(KEY_TRENDING_ARTISTS, now)?.let { entity ->
-                val artists = deserializeSongs(entity.jsonData)
-                if (artists.isNotEmpty()) {
-                    cachedTrendingArtists = artists
-                    cachedTrendingArtistsAt = entity.cachedAt
-                    Log.d(TAG, "💾 Trending artists Room cache hit (${artists.size} items)")
-                    return@withContext Result.success(artists.take(limit))
+                // Room cache
+                browseSectionDao.getValidCache(KEY_TRENDING_ARTISTS, now)?.let { entity ->
+                    val artists = deserializeSongs(entity.jsonData)
+                    if (artists.isNotEmpty()) {
+                        cachedTrendingArtists = artists
+                        cachedTrendingArtistsAt = entity.cachedAt
+                        Log.d(TAG, "💾 Trending artists Room cache hit (${artists.size} items)")
+                        return@withContext Result.success(artists.take(limit))
+                    }
                 }
             }
 
@@ -283,24 +289,26 @@ class BrowseRepositoryImpl @Inject constructor(
     // MIXED FOR YOU (FEmusic_home shelves)
     // ══════════════════════════════════════════
 
-    override suspend fun getMixedForYou(limit: Int): Result<List<Song>> =
+    override suspend fun getMixedForYou(limit: Int, forceRefresh: Boolean): Result<List<Song>> =
         withContext(Dispatchers.IO) {
             val now = System.currentTimeMillis()
 
-            // In-memory cache
-            cachedMixedForYou?.takeIf { now - cachedMixedForYouAt < TTL_MIXED }?.let {
-                Log.d(TAG, "♻️ Mixed for you in-memory cache hit (${it.size} songs)")
-                return@withContext Result.success(it.take(limit))
-            }
+            if (!forceRefresh) {
+                // In-memory cache
+                cachedMixedForYou?.takeIf { now - cachedMixedForYouAt < TTL_MIXED }?.let {
+                    Log.d(TAG, "♻️ Mixed for you in-memory cache hit (${it.size} songs)")
+                    return@withContext Result.success(it.take(limit))
+                }
 
-            // Room cache
-            browseSectionDao.getValidCache(KEY_MIXED_FOR_YOU, now)?.let { entity ->
-                val songs = deserializeSongs(entity.jsonData)
-                if (songs.isNotEmpty()) {
-                    cachedMixedForYou = songs
-                    cachedMixedForYouAt = entity.cachedAt
-                    Log.d(TAG, "💾 Mixed for you Room cache hit (${songs.size} songs)")
-                    return@withContext Result.success(songs.take(limit))
+                // Room cache
+                browseSectionDao.getValidCache(KEY_MIXED_FOR_YOU, now)?.let { entity ->
+                    val songs = deserializeSongs(entity.jsonData)
+                    if (songs.isNotEmpty()) {
+                        cachedMixedForYou = songs
+                        cachedMixedForYouAt = entity.cachedAt
+                        Log.d(TAG, "💾 Mixed for you Room cache hit (${songs.size} songs)")
+                        return@withContext Result.success(songs.take(limit))
+                    }
                 }
             }
 
@@ -340,6 +348,59 @@ class BrowseRepositoryImpl @Inject constructor(
                 } catch (fallbackE: Exception) {
                     Result.failure(e)
                 }
+            }
+        }
+
+    // ══════════════════════════════════════════
+    // CONTINUATION SHELVES
+    // ══════════════════════════════════════════
+
+    override suspend fun getHomeShelvesWithContinuation(forceRefresh: Boolean): Result<Pair<List<com.sonicmusic.app.domain.model.ContinuationShelf>, String?>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val recentSongIds = try {
+                    playbackHistoryDao.getRecentSongIds(15)
+                } catch (e: Exception) {
+                    emptyList()
+                }
+                val result = youTubeiService.browseHomeWithContinuation(recentSongIds, continuationToken = null)
+                result.map { homeResult ->
+                    val shelves = homeResult.shelves.mapIndexed { index, shelf ->
+                        com.sonicmusic.app.domain.model.ContinuationShelf(
+                            id = shelf.browseId ?: "shelf_$index",
+                            title = shelf.title,
+                            songs = shelf.songs
+                        )
+                    }
+                    Pair(shelves, homeResult.continuationToken)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Home shelves with continuation error", e)
+                Result.failure(e)
+            }
+        }
+
+    override suspend fun getHomeContinuation(continuationToken: String): Result<Pair<List<com.sonicmusic.app.domain.model.ContinuationShelf>, String?>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val result = youTubeiService.browseHomeWithContinuation(continuationToken = continuationToken)
+                result.map { homeResult ->
+                    val shelves = homeResult.shelves.mapIndexed { index, shelf ->
+                        com.sonicmusic.app.domain.model.ContinuationShelf(
+                            id = shelf.browseId ?: "cont_shelf_${System.currentTimeMillis()}_$index",
+                            title = shelf.title,
+                            songs = shelf.songs
+                        )
+                    }
+                    Pair(shelves, homeResult.continuationToken)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Home continuation error", e)
+                Result.failure(e)
             }
         }
 
@@ -457,8 +518,8 @@ class BrowseRepositoryImpl @Inject constructor(
             ChartSection(
                 title = obj.optString("title", "Top Songs"),
                 songs = deserializeSongsArray(obj.optJSONArray("songs")),
-                continuationToken = obj.optString("continuationToken", null),
-                country = obj.optString("country", null)
+                continuationToken = obj.optString("continuationToken").takeIf { it.isNotBlank() },
+                country = obj.optString("country").takeIf { it.isNotBlank() }
             )
         } catch (e: Exception) {
             null
@@ -502,8 +563,8 @@ class BrowseRepositoryImpl @Inject constructor(
         if (array == null) return emptyList()
         return (0 until array.length()).mapNotNull { i ->
             val obj = array.optJSONObject(i) ?: return@mapNotNull null
-            val albumBrowseId = obj.optString("albumBrowseId", null)?.takeIf { it.isNotBlank() }
-            val albumName = obj.optString("albumName", null)?.takeIf { it.isNotBlank() }
+            val albumBrowseId = obj.optString("albumBrowseId").takeIf { it.isNotBlank() }
+            val albumName = obj.optString("albumName").takeIf { it.isNotBlank() }
             Song(
                 id = obj.optString("id", ""),
                 title = obj.optString("title", ""),
@@ -515,8 +576,8 @@ class BrowseRepositoryImpl @Inject constructor(
                 } catch (e: Exception) {
                     ContentType.SONG
                 },
-                artistId = obj.optString("artistId", null),
-                category = obj.optString("category", null),
+                artistId = obj.optString("artistId").takeIf { it.isNotBlank() },
+                category = obj.optString("category", "Music"),
                 viewCount = if (obj.has("viewCount")) obj.optLong("viewCount") else null,
                 albumId = albumBrowseId,
                 album = albumName,

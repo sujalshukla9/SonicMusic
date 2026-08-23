@@ -34,25 +34,34 @@ object HomeContentFilter {
 
     /**
      * Filter individual songs:
-     * - Must be official audio tracks (MUSIC_VIDEO_TYPE_ATV)
+     * - Must be official audio tracks (MUSIC_VIDEO_TYPE_ATV) or official music videos (MUSIC_VIDEO_TYPE_OMV)
      * - Must not contain blacklisted terms in the title
      */
     fun filterSongs(songs: List<RawHomeSong>): List<RawHomeSong> {
-        return songs.filter { song ->
-            // 1. Keep only official song uploads (ATV)
-            if (song.videoType != "MUSIC_VIDEO_TYPE_ATV") {
-                Log.d(TAG, "🚫 Dropped (Not ATV): '${song.title}' (videoType=${song.videoType})")
+        val filtered = songs.filter { song ->
+            // 1. Remove UGC, bootlegs, and clickbait edits using centralized blacklist
+            if (YtmScopeGuard.isTitleBlacklisted(song.title)) {
+                Log.d(TAG, "🚫 Dropped (Title Blacklist): '${song.title}'")
                 return@filter false
             }
 
-            // 2. Remove UGC, bootlegs, and clickbait edits
-            if (titleBlacklistRegex.containsMatchIn(song.title)) {
-                Log.d(TAG, "🚫 Dropped (Title Blacklist): '${song.title}'")
+            // 2. Keep only official song uploads (ATV) and official music videos (OMV)
+            val isValidType = song.videoType == "MUSIC_VIDEO_TYPE_ATV" || song.videoType == "MUSIC_VIDEO_TYPE_OMV"
+            if (!isValidType) {
+                // Fallback: if artist looks valid / Topic channel, allow with warning
+                val isTopicOrVevo = song.artists.any { it.endsWith(" - Topic", ignoreCase = true) || it.endsWith("VEVO", ignoreCase = true) }
+                if (song.videoType.isNullOrBlank() && isTopicOrVevo) {
+                    return@filter true
+                }
+                Log.d(TAG, "🚫 Dropped (Non-Official Type): '${song.title}' (videoType=${song.videoType})")
                 return@filter false
             }
 
             true
         }
+
+        // Deduplicate songs by videoId
+        return YtmScopeGuard.deduplicateByVideoId(filtered) { it.videoId }
     }
 
     /**

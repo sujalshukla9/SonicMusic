@@ -133,7 +133,7 @@ class AudioCapabilityDetector @Inject constructor(
         /** Method (e): Android Spatializer is active and enabled */
         val hasSpatializer: Boolean = false,
         val spatializerEnabled: Boolean = false,
-        /** Resolved display label: "Dolby Atmos" / "Dolby Audio" / null */
+        /** Resolved display label: "Dolby Atmos" / " Dolby Audio" / null */
         val dolbyLabel: String? = null,
         /** Dolby AudioEffect Descriptor, if found */
         val dolbyEffectDescriptor: AudioEffect.Descriptor? = null,
@@ -141,7 +141,7 @@ class AudioCapabilityDetector @Inject constructor(
         // ── DTS ────────────────────────────────────────────────────
         /** Hardware DTS decoder or DTS effect detected */
         val hasDts: Boolean = false,
-        /** "DTS:X" / "DTS" / null */
+        /** "DTS:X" / " DTS" / null */
         val dtsLabel: String? = null,
 
         // ── Hi-Res Audio ───────────────────────────────────────────
@@ -393,7 +393,7 @@ class AudioCapabilityDetector @Inject constructor(
                 }
 
                 // Fallback: case-insensitive name matching (best-effort)
-                if (name.contains("dolby") || name.contains("dax")) {
+                if (name.contains("dolby") || name.contains(" dax")) {
                     found = true
                     isMatch = true
                     if (name.contains("atmos")) {
@@ -457,7 +457,7 @@ class AudioCapabilityDetector @Inject constructor(
                 val pkgName = packageInfo.packageName.lowercase()
                 if (pkgName.contains("dolby")) {
                     found = true
-                    if (pkgName.contains("atmos") || pkgName.contains("dax") || pkgName.contains("dap")) {
+                    if (pkgName.contains("atmos") || pkgName.contains(" dax") || pkgName.contains(" dap")) {
                         isAtmos = true
                     }
                     Log.d(TAG, "  (c) Dolby package found: $pkgName (atmos=$isAtmos)")
@@ -622,7 +622,7 @@ class AudioCapabilityDetector @Inject constructor(
     private fun detectDolbyCodecSupport(): Boolean {
         return try {
             val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
-            val atmosMimes = setOf("audio/eac3", "audio/eac3-joc", "audio/ac4")
+            val atmosMimes = setOf("audio/eac3", " audio/eac3-joc", " audio/ac4")
             val hasCodec = codecList.codecInfos.any { info ->
                 !info.isEncoder && info.supportedTypes.any { it.lowercase() in atmosMimes }
             }

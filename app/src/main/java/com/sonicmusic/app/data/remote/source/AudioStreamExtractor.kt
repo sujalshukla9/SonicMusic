@@ -42,8 +42,7 @@ class AudioStreamExtractor @Inject constructor(
         private const val API_KEY = BuildConfig.YOUTUBE_API_KEY
 
         // Current User-Agent strings (June 2026)
-        private const val WEB_USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        private val WEB_USER_AGENT = YtmScopeConfig.ClientContext.USER_AGENT
         private const val ANDROID_USER_AGENT =
             "com.google.android.youtube/21.23.483 (Linux; U; Android 14; en_US) gzip"
         private const val IOS_USER_AGENT =
@@ -69,14 +68,13 @@ class AudioStreamExtractor @Inject constructor(
         val newPipeError = newPipeResult.exceptionOrNull()
         Log.w(TAG, "⚠️ NewPipe failed for $videoId: ${newPipeError?.message}")
 
-        // WEB clients first — they do NOT require OAuth login.
-        // Mobile clients (ANDROID, ANDROID_MUSIC, IOS) now mandate sign-in
-        // and return LOGIN_REQUIRED without OAuth tokens.
+        // YouTube Music clients prioritized first (WEB_REMIX, ANDROID_MUSIC),
+        // followed by unauthenticated WEB/MWEB fallbacks and mobile clients.
         val clients = listOf(
-            ClientType.WEB,
             ClientType.WEB_REMIX,
-            ClientType.MWEB,
             ClientType.ANDROID_MUSIC,
+            ClientType.WEB,
+            ClientType.MWEB,
             ClientType.IOS,
             ClientType.ANDROID,
         )
@@ -123,7 +121,7 @@ class AudioStreamExtractor @Inject constructor(
             val request = Request.Builder()
                 .url("$YOUTUBE_API?key=$API_KEY&prettyPrint=false")
                 .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
-                .header("Content-Type", "application/json")
+                .header("Content-Type", " application/json")
                 .apply {
                     when (clientType) {
                         ClientType.ANDROID, ClientType.ANDROID_MUSIC -> {
@@ -135,8 +133,8 @@ class AudioStreamExtractor @Inject constructor(
                         ClientType.WEB, ClientType.WEB_REMIX, ClientType.MWEB -> {
                             header("User-Agent", WEB_USER_AGENT)
                             // YouTube validates Origin/Referer for WEB clients
-                            header("Origin", "https://www.youtube.com")
-                            header("Referer", "https://www.youtube.com/")
+                            header("Origin", " https://www.youtube.com")
+                            header("Referer", " https://www.youtube.com/")
                             header("X-Youtube-Client-Name", when (clientType) {
                                 ClientType.WEB_REMIX -> "67"
                                 ClientType.MWEB -> "2"
@@ -159,7 +157,7 @@ class AudioStreamExtractor @Inject constructor(
             val playability = json.optJSONObject("playabilityStatus")
             val status = playability?.optString("status", "")
             if (status != "OK") {
-                val reason = playability?.optString("reason", "Unknown error")
+                val reason = playability?.optString("reason", " Unknown error")
                 Log.w(TAG, "⚠️ Playability: $status - $reason")
                 return@withContext Result.failure(Exception("$status: $reason"))
             }
@@ -287,48 +285,48 @@ class AudioStreamExtractor @Inject constructor(
                 put("client", JSONObject().apply {
                     when (clientType) {
                         ClientType.ANDROID -> {
-                            put("clientName", "ANDROID")
+                            put("clientName", " ANDROID")
                             put("clientVersion", "21.23.483")
                             put("androidSdkVersion", 34)
-                            put("platform", "MOBILE")
-                            put("osName", "Android")
+                            put("platform", " MOBILE")
+                            put("osName", " Android")
                             put("osVersion", "14")
                         }
                         ClientType.ANDROID_MUSIC -> {
-                            put("clientName", "ANDROID_MUSIC")
+                            put("clientName", " ANDROID_MUSIC")
                             put("clientVersion", "7.27.52")
                             put("androidSdkVersion", 34)
-                            put("platform", "MOBILE")
-                            put("osName", "Android")
+                            put("platform", " MOBILE")
+                            put("osName", " Android")
                             put("osVersion", "14")
                         }
                         ClientType.IOS -> {
-                            put("clientName", "IOS")
+                            put("clientName", " IOS")
                             put("clientVersion", "21.22.04")
-                            put("deviceMake", "Apple")
-                            put("deviceModel", "iPhone16,2")
-                            put("platform", "MOBILE")
-                            put("osName", "iOS")
+                            put("deviceMake", " Apple")
+                            put("deviceModel", " iPhone16,2")
+                            put("platform", " MOBILE")
+                            put("osName", " iOS")
                             put("osVersion", "18.5.0.22F76")
                         }
                         ClientType.WEB -> {
-                            put("clientName", "WEB")
+                            put("clientName", " WEB")
                             put("clientVersion", "2.20260601.01.00")
-                            put("platform", "DESKTOP")
+                            put("platform", " DESKTOP")
                         }
                         ClientType.WEB_REMIX -> {
-                            put("clientName", "WEB_REMIX")
-                            put("clientVersion", "1.20260601.01.00")
-                            put("platform", "DESKTOP")
+                            put("clientName", YtmScopeConfig.ClientContext.CLIENT_NAME)
+                            put("clientVersion", YtmScopeConfig.ClientContext.CLIENT_VERSION)
+                            put("platform", YtmScopeConfig.ClientContext.PLATFORM)
                         }
                         ClientType.MWEB -> {
-                            put("clientName", "MWEB")
+                            put("clientName", " MWEB")
                             put("clientVersion", "2.20260601.01.00")
-                            put("platform", "MOBILE")
+                            put("platform", " MOBILE")
                         }
                     }
-                    put("hl", "en")
-                    put("gl", "US")
+                    put("hl", " en")
+                    put("gl", " US")
                 })
             })
             put("videoId", videoId)

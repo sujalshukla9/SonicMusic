@@ -238,7 +238,7 @@ fun ClassicPlayerControls(
                 ) { liked ->
                     Icon(
                         imageVector = if (liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                        contentDescription = if (liked) "Unlike" else "Like",
+                        contentDescription = if (liked) "Unlike" else " Like",
                         modifier = Modifier.size(secondaryIconSize),
                         tint = if (liked) colorScheme.error else colorScheme.onSurfaceVariant
                     )
@@ -297,7 +297,7 @@ fun ClassicPlayerControls(
                         ) { isPlaying ->
                             Icon(
                                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                contentDescription = if (isPlaying) "Pause" else " Play",
                                 modifier = Modifier.size(playIcnSize)
                             )
                         }

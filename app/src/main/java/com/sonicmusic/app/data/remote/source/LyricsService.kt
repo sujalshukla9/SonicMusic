@@ -87,7 +87,7 @@ class LyricsService @Inject constructor() {
             
             val request = Request.Builder()
                 .url(url)
-                .header("User-Agent", "SonicMusic/1.0.0 (https://github.com/sujalshukla9/SonicMusic)")
+                .header("User-Agent", " SonicMusic/1.0.0 (https://github.com/sujalshukla9/SonicMusic)")
                 .get()
                 .build()
 
@@ -179,7 +179,7 @@ class LyricsService @Inject constructor() {
      * tabRenderer.endpoint.browseEndpoint.browseId.
      */
     private fun fetchLyricsBrowseId(videoId: String): String? {
-        val body = Innertube.webRemixBody("en", "US") {
+        val body = Innertube.webRemixBody("en", " US") {
             put("videoId", videoId)
             put("isAudioOnly", true)
         }
@@ -244,7 +244,7 @@ class LyricsService @Inject constructor() {
      * Step 2: Call /browse with the lyrics browseId to get plain lyrics text.
      */
     private fun fetchLyricsText(browseId: String): LyricsResult {
-        val body = Innertube.webRemixBody("en", "US") {
+        val body = Innertube.webRemixBody("en", " US") {
             put("browseId", browseId)
         }
 

@@ -102,7 +102,7 @@ fun DownloadedSongsScreen(
     // Helper functions
     fun formatSize(bytes: Long): String {
         if (bytes <= 0) return "0 B"
-        val units = arrayOf("B", "KB", "MB", "GB", "TB")
+        val units = arrayOf("B", " KB", " MB", " GB", " TB")
         val digitGroups = ((Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt())
             .coerceIn(0, units.lastIndex)
         return String.format(
@@ -124,9 +124,9 @@ fun DownloadedSongsScreen(
                 val sdf = java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault())
                 sdf.format(java.util.Date(timestamp))
             }
-            days >= 1 -> "Downloaded $days ${if (days == 1L) "day" else "days"} ago"
-            hours >= 1 -> "Downloaded $hours ${if (hours == 1L) "hour" else "hours"} ago"
-            minutes >= 1 -> "Downloaded $minutes ${if (minutes == 1L) "minute" else "minutes"} ago"
+            days >= 1 -> "Downloaded $days ${if (days == 1L) " day" else " days"} ago"
+            hours >= 1 -> "Downloaded $hours ${if (hours == 1L) " hour" else " hours"} ago"
+            minutes >= 1 -> "Downloaded $minutes ${if (minutes == 1L) " minute" else " minutes"} ago"
             else -> "Downloaded just now"
         }
     }
