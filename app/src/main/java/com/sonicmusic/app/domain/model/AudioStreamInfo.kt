@@ -16,6 +16,12 @@ data class AudioStreamInfo(
     val channelCount: Int = 2,
     val isEnhanced: Boolean = false,
     val isLocal: Boolean = false,
+    /**
+     * True only when the selected InnerTube playback rendition has explicit
+     * Dolby Atmos/JOC metadata. Generic Dolby, multichannel, AC-4, and spatial
+     * flags are insufficient. This does not indicate device capability.
+     */
+    val hasDolbyAtmos: Boolean = false,
 ) {
     /**
      * Whether this stream qualifies as high-res

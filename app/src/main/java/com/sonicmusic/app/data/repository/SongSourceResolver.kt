@@ -39,11 +39,11 @@ class SongSourceResolver @Inject constructor(
         if (downloadedSong != null && downloadedSong.status == DownloadStatus.COMPLETED) {
             val file = File(downloadedSong.localFilePath)
             if (file.exists()) {
-                Log.d(TAG, "📦 Found offline local file: ${downloadedSong.localFilePath}")
+                Log.d(TAG, "Found offline local file: ${downloadedSong.localFilePath}")
                 return SongSource.Local(downloadedSong.localFilePath)
             } else {
                 // Song deleted from disk externally but DB still has entry -> detect on access, mark as REMOVED, prompt re-download
-                Log.w(TAG, "⚠️ Offline file not found on disk, updating DB status to REMOVED: $videoId")
+                Log.w(TAG, "Offline file not found on disk, updating DB status to REMOVED: $videoId")
                 downloadedSongDao.updateStatus(videoId, DownloadStatus.REMOVED)
             }
         }
@@ -51,17 +51,17 @@ class SongSourceResolver @Inject constructor(
         // 2. Else if online -> resolve via Innertube player endpoint
         if (networkMonitor.isConnectedNow()) {
             return try {
-                Log.d(TAG, "📡 Fetching remote stream URL online for: $videoId")
+                Log.d(TAG, "Fetching remote stream URL online for: $videoId")
                 val streamUrl = songRepository.get().getStreamUrl(videoId, StreamQuality.BEST).getOrThrow()
                 SongSource.Remote(streamUrl)
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Failed to fetch remote stream URL", e)
+                Log.e(TAG, "Failed to fetch remote stream URL", e)
                 SongSource.Unavailable
             }
         }
 
         // 3. Else -> return Unavailable
-        Log.w(TAG, "📴 Offline and song is not downloaded: $videoId")
+        Log.w(TAG, "Offline and song is not downloaded: $videoId")
         return SongSource.Unavailable
     }
 }

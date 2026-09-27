@@ -9,7 +9,9 @@ data class AlbumDetails(
     val thumbnailUrl: String, // highest res
     val trackCount: Int,
     val songs: List<AlbumTrack>,
-    val videos: List<AlbumVideo> // empty if none found
+    val videos: List<AlbumVideo>, // empty if none found
+    val artistBrowseId: String? = null,
+    val artistRefs: List<ArtistRef> = emptyList()
 )
 
 data class AlbumTrack(
@@ -19,7 +21,9 @@ data class AlbumTrack(
     val durationText: String,
     val artists: List<String>,
     val albumBrowseId: String,   // parent album's browseId
-    val albumName: String
+    val albumName: String,
+    val artistBrowseIds: List<String> = emptyList(),
+    val artistRefs: List<ArtistRef> = emptyList()
 )
 
 data class AlbumVideo(

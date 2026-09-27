@@ -15,7 +15,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import com.sonicmusic.app.worker.AutoUpdateWorker
+import com.sonicmusic.app.features.updates.worker.AutoUpdateWorker
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -48,8 +48,8 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         if (BuildConfig.DEBUG) {
             setupStrictMode()
             setupJankDetector()
-            System.setProperty("kotlinx.coroutines.debug", " on")
-            System.setProperty("kotlinx.coroutines.stacktrace.recovery", " true")
+            System.setProperty("kotlinx.coroutines.debug", "on")
+            System.setProperty("kotlinx.coroutines.stacktrace.recovery", "true")
         }
     }
 
@@ -98,7 +98,7 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                 .detectLeakedRegistrationObjects()
                 .detectFileUriExposure()
                 .detectContentUriWithoutPermission()
-                .setClassInstanceLimit(com.sonicmusic.app.player.playback.PlaybackService::class.java, 1)
+                .setClassInstanceLimit(com.sonicmusic.app.features.player.service.PlaybackService::class.java, 1)
                 .penaltyLog()
                 .build()
         )
@@ -112,7 +112,7 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                 if (lastFrameTime > 0) {
                     val droppedFrames = ((frameTimeNanos - lastFrameTime) / 16_666_666) - 1
                     if (droppedFrames > 2) {
-                        android.util.Log.w("Jank", "⚠️ Dropped $droppedFrames frames " +
+                        android.util.Log.w("Jank", "Dropped $droppedFrames frames " +
                             "(${(frameTimeNanos - lastFrameTime) / 1_000_000}ms)")
                     }
                 }

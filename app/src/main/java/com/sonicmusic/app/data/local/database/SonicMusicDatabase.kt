@@ -35,7 +35,7 @@ import com.sonicmusic.app.data.local.entity.SongEntity
         ArtistPageCacheEntity::class,
         BrowseSectionEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 @androidx.room.TypeConverters(DownloadStatusConverter::class, ContentTypeConverter::class)

@@ -38,32 +38,32 @@ class LyricsService @Inject constructor() {
     suspend fun fetchLyrics(song: Song): LyricsResult = withContext(Dispatchers.IO) {
         val videoId = song.id
         try {
-            Log.d(TAG, "🎤 Fetching lyrics for: ${song.title} - $videoId")
+            Log.d(TAG, "Fetching lyrics for: ${song.title} - $videoId")
 
             // Step 1: Try LRCLIB for synced lyrics
             val lrcResult = fetchLrcLibLyrics(song)
             if (lrcResult is LyricsResult.FoundSynced) {
-                Log.d(TAG, "✅ Found synced lyrics from LRCLIB")
+                Log.d(TAG, "Found synced lyrics from LRCLIB")
                 return@withContext lrcResult
             }
             // LRCLIB may also return plain lyrics
             if (lrcResult is LyricsResult.Found) {
-                Log.d(TAG, "✅ Found plain lyrics from LRCLIB")
+                Log.d(TAG, "Found plain lyrics from LRCLIB")
                 return@withContext lrcResult
             }
 
             // Step 2: Fall back to YouTube Music InnerTube plain lyrics
-            Log.d(TAG, "⚠️ LRCLIB failed or no lyrics. Falling back to InnerTube for $videoId")
+            Log.d(TAG, "LRCLIB failed or no lyrics. Falling back to InnerTube for $videoId")
             val browseId = fetchLyricsBrowseId(videoId)
             if (browseId == null) {
-                Log.d(TAG, "📝 No InnerTube lyrics tab found for: $videoId")
+                Log.d(TAG, "No InnerTube lyrics tab found for: $videoId")
                 return@withContext LyricsResult.NotFound
             }
 
-            Log.d(TAG, "📝 Got InnerTube lyrics browseId: $browseId")
+            Log.d(TAG, "Got InnerTube lyrics browseId: $browseId")
             return@withContext fetchLyricsText(browseId)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error fetching lyrics", e)
+            Log.e(TAG, "Error fetching lyrics", e)
             LyricsResult.Error(e.message ?: "Unknown error")
         }
     }
@@ -124,7 +124,7 @@ class LyricsService @Inject constructor() {
 
             return LyricsResult.NotFound
         } catch (e: Exception) {
-            Log.e(TAG, "❌ LRCLIB fetch failed", e)
+            Log.e(TAG, "LRCLIB fetch failed", e)
             return LyricsResult.NotFound
         }
     }
@@ -179,7 +179,7 @@ class LyricsService @Inject constructor() {
      * tabRenderer.endpoint.browseEndpoint.browseId.
      */
     private fun fetchLyricsBrowseId(videoId: String): String? {
-        val body = Innertube.webRemixBody("en", " US") {
+        val body = Innertube.webRemixBody("en", "US") {
             put("videoId", videoId)
             put("isAudioOnly", true)
         }
@@ -192,7 +192,7 @@ class LyricsService @Inject constructor() {
 
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
-            Log.e(TAG, "❌ /next failed: ${response.code}")
+            Log.e(TAG, "/next failed: ${response.code}")
             return null
         }
 
@@ -235,7 +235,7 @@ class LyricsService @Inject constructor() {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error parsing lyrics browseId", e)
+            Log.e(TAG, "Error parsing lyrics browseId", e)
         }
         return null
     }
@@ -244,7 +244,7 @@ class LyricsService @Inject constructor() {
      * Step 2: Call /browse with the lyrics browseId to get plain lyrics text.
      */
     private fun fetchLyricsText(browseId: String): LyricsResult {
-        val body = Innertube.webRemixBody("en", " US") {
+        val body = Innertube.webRemixBody("en", "US") {
             put("browseId", browseId)
         }
 
@@ -256,7 +256,7 @@ class LyricsService @Inject constructor() {
 
         val response = client.newCall(request).execute()
         if (!response.isSuccessful) {
-            Log.e(TAG, "❌ /browse failed: ${response.code}")
+            Log.e(TAG, "/browse failed: ${response.code}")
             return LyricsResult.Error("Failed to fetch lyrics: ${response.code}")
         }
 
@@ -310,7 +310,7 @@ class LyricsService @Inject constructor() {
                     }
                 }
                 if (lines.isNotEmpty()) {
-                    Log.d(TAG, "✅ Got synced lyrics via InnerTube API (${lines.size} lines)")
+                    Log.d(TAG, "Got synced lyrics via InnerTube API (${lines.size} lines)")
                     return LyricsResult.FoundSynced(lines, "Source: YouTube Music")
                 }
             }
@@ -363,10 +363,10 @@ class LyricsService @Inject constructor() {
                     }.trim().takeIf { it.isNotBlank() }
                 }
 
-            Log.d(TAG, "✅ Got plain lyrics (${finalText.length} chars), source: $source")
+            Log.d(TAG, "Got plain lyrics (${finalText.length} chars), source: $source")
             return LyricsResult.Found(text = finalText, originalText = originalText, source = source)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error parsing lyrics text", e)
+            Log.e(TAG, "Error parsing lyrics text", e)
             return LyricsResult.Error("Failed to parse lyrics: ${e.message}")
         }
     }

@@ -70,8 +70,17 @@ class NewPipeDownloader private constructor() : Downloader() {
         // Read body ONCE (OkHttp body can only be consumed once)
         val responseBody = response.body?.string()
 
-        // Check for ReCaptcha (using already-read body)
-        if (response.code == 429 || (responseBody?.contains("recaptcha") == true)) {
+        // Check for genuine ReCaptcha challenge (not mere presence of recaptcha scripts/keys in normal HTML)
+        val finalUrl = response.request.url.toString()
+        val isSorryUrl = finalUrl.contains("/sorry/") || finalUrl.contains("google.com/sorry")
+        val hasCaptchaForm = responseBody != null && (
+            responseBody.contains("id=\"captcha-form\"") ||
+            responseBody.contains("action=\"CaptchaRedirect\"") ||
+            responseBody.contains("/sorry/index") ||
+            responseBody.contains("class=\"g-recaptcha\"")
+        )
+
+        if (response.code == 429 || (isSorryUrl && hasCaptchaForm)) {
             response.close()
             throw ReCaptchaException("reCAPTCHA challenge", url)
         }

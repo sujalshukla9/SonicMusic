@@ -29,5 +29,6 @@ data class SongEntity(
     val likedAt: Long? = null,
     val cachedStreamUrl: String? = null,
     val cacheExpiry: Long? = null,
-    val contentType: ContentType = ContentType.SONG
+    val contentType: ContentType = ContentType.SONG,
+    val artistsJson: String? = null
 )

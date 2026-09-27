@@ -5,6 +5,7 @@ import android.telephony.TelephonyManager
 import android.util.Log
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.core.util.ThumbnailUrlUtils
+import com.sonicmusic.app.domain.model.ArtistRef
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -112,7 +113,7 @@ class YouTubeiService @Inject constructor(
         
         // Duration limits for songs (in seconds)
         private const val MIN_DURATION = 30      // 30 seconds minimum
-        private const val MAX_DURATION = 1800     // 30 minutes maximum (allow extended mixes)
+        private const val MAX_DURATION = InnertubeConfig.MAX_INDIVIDUAL_SONG_DURATION_SECONDS // 11 minutes max for single tracks
         
         // Non-music keywords to filter out
         private val EXCLUDE_KEYWORDS = listOf(
@@ -149,14 +150,14 @@ class YouTubeiService @Inject constructor(
             // Try SIM country first (most accurate)
             val simCountry = telephonyManager?.simCountryIso?.uppercase()
             if (!simCountry.isNullOrEmpty() && simCountry.length == 2) {
-                Log.d(TAG, "🌍 Region from SIM: $simCountry")
+                Log.d(TAG, "Region from SIM: $simCountry")
                 return simCountry
             }
             
             // Try network country
             val networkCountry = telephonyManager?.networkCountryIso?.uppercase()
             if (!networkCountry.isNullOrEmpty() && networkCountry.length == 2) {
-                Log.d(TAG, "🌍 Region from network: $networkCountry")
+                Log.d(TAG, "Region from network: $networkCountry")
                 return networkCountry
             }
         } catch (e: Exception) {
@@ -166,11 +167,11 @@ class YouTubeiService @Inject constructor(
         // Fallback to system locale
         val localeCountry = Locale.getDefault().country.uppercase()
         if (localeCountry.isNotEmpty()) {
-            Log.d(TAG, "🌍 Region from locale: $localeCountry")
+            Log.d(TAG, "Region from locale: $localeCountry")
             return localeCountry
         }
         
-        Log.d(TAG, "🌍 Using default region: $DEFAULT_REGION")
+        Log.d(TAG, "Using default region: $DEFAULT_REGION")
         return DEFAULT_REGION
     }
     
@@ -267,7 +268,7 @@ class YouTubeiService @Inject constructor(
             Result.success(items)
             
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Mixed search error", e)
+            Log.e(TAG, "Mixed search error", e)
             Result.failure(e)
         }
     }
@@ -323,7 +324,7 @@ class YouTubeiService @Inject constructor(
                 .distinctBy { it.id }
                 .take(limit)
 
-            Log.d(TAG, "🎬 Video search returned ${videos.size} videos for: $query (continuation=${!page.continuationToken.isNullOrBlank()})")
+            Log.d(TAG, "Video search returned ${videos.size} videos for: $query (continuation=${!page.continuationToken.isNullOrBlank()})")
             Result.success(
                 SongSearchPage(
                     songs = videos,
@@ -331,7 +332,7 @@ class YouTubeiService @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Video search error", e)
+            Log.e(TAG, "Video search error", e)
             Result.failure(e)
         }
     }
@@ -345,17 +346,17 @@ class YouTubeiService @Inject constructor(
      * Returns music-only results with proper filtering
      */
     suspend fun searchSongs(query: String, limit: Int = 50, offset: Int = 0): Result<List<Song>> = withContext(Dispatchers.IO) {
-        Log.d(TAG, "🎵 Searching for: $query")
+        Log.d(TAG, "Searching for: $query")
         
         // Try YouTube Music API first (music-only results)
         var result = searchYouTubeMusic(query, limit, offset)
         
         if (result.isSuccess && result.getOrNull()?.isNotEmpty() == true) {
-            Log.d(TAG, "✅ YouTube Music returned ${result.getOrNull()?.size} songs")
+            Log.d(TAG, "YouTube Music returned ${result.getOrNull()?.size} songs")
             return@withContext result
         }
         
-        Log.d(TAG, "⚠️ YouTube Music failed, trying regular YouTube with filters")
+        Log.d(TAG, "YouTube Music failed, trying regular YouTube with filters")
         
         // Fallback to regular YouTube with strict music filtering
         result = searchYouTubeWithMusicFilter(query, limit, offset)
@@ -415,7 +416,7 @@ class YouTubeiService @Inject constructor(
         }
 
         if (fallbackResult.isSuccess) {
-            Log.d(TAG, "✅ Fallback page search returned ${fallbackResult.getOrNull()?.songs?.size ?: 0} songs")
+            Log.d(TAG, "Fallback page search returned ${fallbackResult.getOrNull()?.songs?.size ?: 0} songs")
             return@withContext fallbackResult
         }
 
@@ -447,7 +448,7 @@ class YouTubeiService @Inject constructor(
 
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
-                Log.e(TAG, "❌ YouTube Music paged search failed: ${response.code}")
+                Log.e(TAG, "YouTube Music paged search failed: ${response.code}")
                 return@withContext Result.failure(Exception("YouTube Music failed: ${response.code}"))
             }
 
@@ -475,7 +476,7 @@ class YouTubeiService @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            Log.e(TAG, "❌ YouTube Music paged search error", e)
+            Log.e(TAG, "YouTube Music paged search error", e)
             Result.failure(e)
         }
     }
@@ -505,7 +506,7 @@ class YouTubeiService @Inject constructor(
 
             Log.d(
                 TAG,
-                "📡 Calling YouTube Music API (offset=$safeOffset, limit=$safeLimit)"
+                "Calling YouTube Music API (offset=$safeOffset, limit=$safeLimit)"
             )
 
             while (keepFetching) {
@@ -524,7 +525,7 @@ class YouTubeiService @Inject constructor(
 
                 val response = client.newCall(request).execute()
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "❌ YouTube Music failed on page ${pageIndex + 1}: ${response.code}")
+                    Log.e(TAG, "YouTube Music failed on page ${pageIndex + 1}: ${response.code}")
                     return@withContext Result.failure(Exception("YouTube Music failed: ${response.code}"))
                 }
 
@@ -551,7 +552,7 @@ class YouTubeiService @Inject constructor(
                         if (!isNewToken) {
                             Log.w(
                                 TAG,
-                                "⚠️ Repeated continuation token detected for query=\"$query\"; stopping pagination"
+                                "Repeated continuation token detected for query=\"$query\"; stopping pagination"
                             )
                         }
                         isNewToken
@@ -566,10 +567,10 @@ class YouTubeiService @Inject constructor(
                 offset = safeOffset
             )
 
-            Log.d(TAG, "🎶 Parsed ${songs.size} music tracks (raw=${rawSongs.size}, pages=$pageIndex)")
+            Log.d(TAG, "Parsed ${songs.size} music tracks (raw=${rawSongs.size}, pages=$pageIndex)")
             Result.success(songs)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ YouTube Music error", e)
+            Log.e(TAG, "YouTube Music error", e)
             Result.failure(e)
         }
     }
@@ -616,12 +617,12 @@ class YouTubeiService @Inject constructor(
                 acceptLanguage = getAcceptLanguageHeader(language, region)
             )
             
-            Log.d(TAG, "📡 Calling YouTube Music Search API with Song filter...")
+            Log.d(TAG, "Calling YouTube Music Search API with Song filter...")
 
             val response = client.newCall(request).execute()
             
             if (!response.isSuccessful) {
-                Log.e(TAG, "❌ YouTube Music search failed: ${response.code}")
+                Log.e(TAG, "YouTube Music search failed: ${response.code}")
                 return@withContext Result.failure(Exception("YouTube Music search failed: ${response.code}"))
             }
 
@@ -637,11 +638,11 @@ class YouTubeiService @Inject constructor(
                 offset = offset
             )
             
-            Log.d(TAG, "🎶 Filtered to ${songs.size} music tracks")
+            Log.d(TAG, "Filtered to ${songs.size} music tracks")
 
             Result.success(songs)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ YouTube Music search error", e)
+            Log.e(TAG, "YouTube Music search error", e)
             Result.failure(e)
         }
     }
@@ -660,13 +661,13 @@ class YouTubeiService @Inject constructor(
     private fun isMusicContent(song: Song): Boolean {
         // Check duration (1 min - 10 min)
         if (song.duration > 0 && !isValidDuration(song.duration)) {
-            Log.d(TAG, "⏱️ Filtered by duration: ${song.title} (${song.duration}s)")
+            Log.d(TAG, "Filtered by duration: ${song.title} (${song.duration}s)")
             return false
         }
         
         // Check for excluded keywords
         if (containsExcludedKeywords(song.title)) {
-            Log.d(TAG, "🚫 Filtered by keyword: ${song.title}")
+            Log.d(TAG, "Filtered by keyword: ${song.title}")
             return false
         }
         
@@ -688,13 +689,13 @@ class YouTubeiService @Inject constructor(
         // Only normalize content type, upgrade thumbnails, and deduplicate.
         val cleaned = songs.asSequence()
             .filter { it.id.isNotBlank() && it.title.isNotBlank() }
+            .filter { InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
             .map { song ->
                 song.copy(
                     contentType = ContentType.SONG,
                     thumbnailUrl = upgradeThumbQuality(song.thumbnailUrl, song.id)
                 )
             }
-            .filter { !containsExcludedKeywords(it.title) }
             .distinctBy { it.id }
             .toList()
 
@@ -766,7 +767,7 @@ class YouTubeiService @Inject constructor(
      */
     private fun containsExcludedKeywords(title: String): Boolean {
         val titleLower = title.lowercase()
-        return EXCLUDE_KEYWORDS.any { titleLower.contains(it) }
+        return EXCLUDE_KEYWORDS.any { titleLower.contains(it) } || !InnertubeConfig.isAuthenticSong(title)
     }
     
     /**
@@ -851,16 +852,16 @@ class YouTubeiService @Inject constructor(
             }
 
             if (songs.isEmpty() && continuationToken.isNullOrBlank()) {
-                Log.d(TAG, "⚠️ No YTM tabs found, trying alternative structure")
+                Log.d(TAG, "No YTM tabs found, trying alternative structure")
                 songs += parseYouTubeResponse(jsonString)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Parse YouTube Music error", e)
+            Log.e(TAG, "Parse YouTube Music error", e)
         }
 
         Log.d(
             TAG,
-            "📊 YouTube Music parsed page: ${songs.size} songs, continuation=${!continuationToken.isNullOrBlank()}"
+            "YouTube Music parsed page: ${songs.size} songs, continuation=${!continuationToken.isNullOrBlank()}"
         )
         return ParsedSongSearchPage(
             songs = songs,
@@ -1028,19 +1029,22 @@ class YouTubeiService @Inject constructor(
                 subtitleText
             }
 
-            val cardArtistId = if (cardSubtitleRuns != null) {
-                val refs = extractArtistAndAlbumRefs(cardSubtitleRuns)
-                if (refs.artists.isNotEmpty()) {
-                    refs.artists.map { it.browseId.orEmpty() }.joinToString(",")
-                } else null
+            val cardSubtitleRefs = cardSubtitleRuns?.let { extractArtistAndAlbumRefs(it) }
+            val cardArtistId = if (cardSubtitleRefs != null && cardSubtitleRefs.artists.isNotEmpty()) {
+                cardSubtitleRefs.artists.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
             } else null
+
+            val cardArtistRefs = if (cardSubtitleRefs != null && cardSubtitleRefs.artists.isNotEmpty()) {
+                cardSubtitleRefs.artists.map { ArtistRef(it.name, it.browseId) }
+            } else if (cardArtist.isNotBlank()) {
+                listOf(ArtistRef(cleanArtistName(cardArtist), null))
+            } else emptyList()
 
             var cardAlbumName: String? = null
             var cardAlbumBrowseId: String? = null
-            if (cardSubtitleRuns != null) {
-                val refs = extractArtistAndAlbumRefs(cardSubtitleRuns)
-                cardAlbumName = refs.album?.name
-                cardAlbumBrowseId = refs.album?.browseId
+            if (cardSubtitleRefs != null) {
+                cardAlbumName = cardSubtitleRefs.album?.name
+                cardAlbumBrowseId = cardSubtitleRefs.album?.browseId
             }
 
             return Song(
@@ -1055,7 +1059,8 @@ class YouTubeiService @Inject constructor(
                 category = "Mixed",
                 contentType = contentType,
                 albumBrowseId = cardAlbumBrowseId,
-                albumName = cardAlbumName
+                albumName = cardAlbumName,
+                artists = cardArtistRefs
             )
          } catch (e: Exception) {
              return null
@@ -1080,11 +1085,11 @@ class YouTubeiService @Inject constructor(
             var typeText = ""
             var id = ""
             var artistBrowseId: String? = null
+            val artistNames = mutableListOf<String>()
+            val artistIds = mutableListOf<String>()
             
             if (subtitleRuns != null) {
                 val fullSubtitle = StringBuilder()
-                val artistNames = mutableListOf<String>()
-                val artistIds = mutableListOf<String>()
                 
                 for (k in 0 until subtitleRuns.length()) {
                     val run = subtitleRuns.optJSONObject(k) ?: continue
@@ -1164,12 +1169,27 @@ class YouTubeiService @Inject constructor(
             
             // Explicit override for known browse ID prefixes
             if (id.startsWith("UC")) contentType = ContentType.ARTIST
-            
+
+            val mixedArtistRefs = when {
+                contentType == ContentType.ARTIST -> {
+                    listOf(ArtistRef(title, id.takeIf { it.startsWith("UC") } ?: artistBrowseId))
+                }
+                artistNames.isNotEmpty() -> {
+                    artistNames.mapIndexed { idx, name ->
+                        ArtistRef(name, artistIds.getOrNull(idx))
+                    }
+                }
+                artist.isNotBlank() -> {
+                    listOf(ArtistRef(cleanArtistName(artist), artistBrowseId))
+                }
+                else -> emptyList()
+            }
+
             return Song(
                 id = id,
                 title = title,
                 artist = cleanArtistName(artist),
-                artistId = artistBrowseId,
+                artistId = if (contentType == ContentType.ARTIST && id.startsWith("UC")) id else artistBrowseId,
                 album = albumName,
                 albumId = albumBrowseId,
                 duration = 0,
@@ -1177,7 +1197,8 @@ class YouTubeiService @Inject constructor(
                 category = "Mixed",
                 contentType = contentType,
                 albumBrowseId = albumBrowseId,
-                albumName = albumName
+                albumName = albumName,
+                artists = mixedArtistRefs
             )
         } catch (e: Exception) {
             return null
@@ -1213,6 +1234,7 @@ class YouTubeiService @Inject constructor(
             var title = ""
             var artist = ""
             var artistId: String? = null
+            var parsedArtistRefs = emptyList<ArtistRef>()
             var durationText = "0:00"
             var albumName: String? = null
             var albumBrowseId: String? = null
@@ -1233,8 +1255,9 @@ class YouTubeiService @Inject constructor(
                     if (artistColumn != null && artistColumn.length() > 0) {
                         // Use extractArtistAndAlbumRefs for proper artist detection (ViTune-style)
                         val refs = extractArtistAndAlbumRefs(artistColumn)
+                        parsedArtistRefs = refs.artists.map { ArtistRef(it.name, it.browseId) }
                         artistId = if (refs.artists.isNotEmpty()) {
-                            refs.artists.map { it.browseId.orEmpty() }.joinToString(",")
+                            refs.artists.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
                         } else null
                         artist = if (refs.artists.isNotEmpty()) {
                             refs.artists.joinToString(", ") { it.name }
@@ -1307,7 +1330,7 @@ class YouTubeiService @Inject constructor(
 
             // Skip non-music content (videos, podcasts, live streams)
             if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
-                Log.d(TAG, "🎬 Skipping non-music content: $title ($contentType)")
+                Log.d(TAG, "Skipping non-music content: $title ($contentType)")
                 return null
             }
 
@@ -1323,7 +1346,10 @@ class YouTubeiService @Inject constructor(
                 category = "Music",
                 contentType = contentType,
                 albumBrowseId = albumBrowseId,
-                albumName = albumName
+                albumName = albumName,
+                artists = if (parsedArtistRefs.isNotEmpty()) parsedArtistRefs else {
+                    if (artist.isNotBlank()) listOf(ArtistRef(cleanArtistName(artist), artistId)) else emptyList()
+                }
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing music item", e)
@@ -1340,11 +1366,16 @@ class YouTubeiService @Inject constructor(
         val artistLower = artist.lowercase()
         val durationSeconds = parseDuration(durationText)
 
+        // Non-single compilations, spam channels, full albums, DJ mixes, and jukeboxes
+        if (!InnertubeConfig.isAuthenticSong(title, artist, durationSeconds)) {
+            return ContentType.ALBUM
+        }
+
         // Check for explicit content type indicators in title
         return when {
             // Live streams
             titleLower.contains("live") && (titleLower.contains(" now") || titleLower.contains(" streaming")) -> ContentType.LIVE_STREAM
-            titleLower.contains("🔴") || titleLower.contains(" livestream") -> ContentType.LIVE_STREAM
+            titleLower.contains("live stream") || titleLower.contains(" livestream") -> ContentType.LIVE_STREAM
 
             // Podcasts
             titleLower.contains("podcast") || titleLower.contains(" episode") -> ContentType.PODCAST
@@ -1356,7 +1387,7 @@ class YouTubeiService @Inject constructor(
 
             // Full albums
             titleLower.contains("full album") || titleLower.contains(" complete album") -> ContentType.ALBUM
-            durationSeconds > 1800 -> ContentType.ALBUM  // More than 30 minutes = album
+            durationSeconds > InnertubeConfig.MAX_INDIVIDUAL_SONG_DURATION_SECONDS -> ContentType.ALBUM  // Over 11 minutes = album/mix
 
             // Music videos (visual content)
             titleLower.contains("official video") || titleLower.contains(" music video") -> ContentType.VIDEO
@@ -1442,15 +1473,30 @@ class YouTubeiService @Inject constructor(
             val title = extractText(renderer.optJSONObject("title"))
             if (title.isEmpty()) return null
 
-            val artist = extractArtistFromTextObject(renderer.optJSONObject("ownerText"))
-                .ifEmpty { extractArtistFromTextObject(renderer.optJSONObject("shortBylineText")) }
+            val ownerRuns = renderer.optJSONObject("ownerText")?.optJSONArray("runs")
+                ?: renderer.optJSONObject("shortBylineText")?.optJSONArray("runs")
+            val artistInfo = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(
+                runs = ownerRuns.toRunList()
+            )
+            val artist = cleanArtistName(
+                artistInfo.displayName.ifBlank {
+                    extractArtistFromTextObject(renderer.optJSONObject("ownerText"))
+                        .ifEmpty { extractArtistFromTextObject(renderer.optJSONObject("shortBylineText")) }
+                }
+            )
+            val videoArtistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                artistInfo.individuals.map { ArtistRef(it.name, it.browseId) }
+            } else if (artist.isNotBlank()) {
+                listOf(ArtistRef(artist, null))
+            } else emptyList()
+            val videoArtistId = videoArtistRefs.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
 
             val durationText = renderer.optJSONObject("lengthText")?.optString("simpleText", "0:00") ?: "0:00"
 
             // Detect content type and filter non-music
             val contentType = detectContentType(title, artist, durationText)
             if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
-                Log.d(TAG, "🎬 Filtering non-music from regular YouTube: $title ($contentType)")
+                Log.d(TAG, "Filtering non-music from regular YouTube: $title ($contentType)")
                 return null
             }
 
@@ -1464,10 +1510,12 @@ class YouTubeiService @Inject constructor(
                 id = videoId,
                 title = title,
                 artist = cleanArtistName(artist),
+                artistId = videoArtistId,
                 duration = parseDuration(durationText),
                 thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
                 category = "Music",
-                contentType = contentType
+                contentType = contentType,
+                artists = videoArtistRefs
             )
         } catch (e: Exception) {
             return null
@@ -1607,9 +1655,9 @@ class YouTubeiService @Inject constructor(
 
             if (candidates.isEmpty()) return null
 
-            // Select best match by name similarity
+            // Select best match by name similarity; require a genuine name match (score >= 15)
             val normalizedQuery = query.lowercase().replace(Regex("\\s+"), " ").trim()
-            return candidates.maxByOrNull { candidate ->
+            val best = candidates.maxByOrNull { candidate ->
                 var score = 0
                 val name = candidate.name.lowercase().replace(Regex("\\s+"), " ").trim()
                 if (name == normalizedQuery) score += 15
@@ -1618,7 +1666,14 @@ class YouTubeiService @Inject constructor(
                 if (!candidate.subscribersText.isNullOrBlank()) score += 3
                 if (!candidate.thumbnailUrl.isNullOrBlank()) score += 2
                 score
-            }
+            } ?: return null
+            // Require at least a partial name match to avoid returning random artists
+            val bestName = best.name.lowercase().replace(Regex("\\s+"), " ").trim()
+            val hasNameMatch = bestName == normalizedQuery ||
+                bestName.contains(normalizedQuery) ||
+                normalizedQuery.contains(bestName)
+            if (!hasNameMatch) return null
+            return best
         } catch (e: Exception) {
             Log.w(TAG, "Artist filter search failed, will fallback to mixed search", e)
             return null
@@ -1731,12 +1786,12 @@ class YouTubeiService @Inject constructor(
                     browseId = artistFilterResult.browseId
                     finalImage = artistFilterResult.thumbnailUrl
                     finalSubscribers = artistFilterResult.subscribersText
-                    Log.d(TAG, "🎯 Artist found via filter search: $resolvedName (browseId=$browseId)")
+                    Log.d(TAG, "Artist found via filter search: $resolvedName (browseId=$browseId)")
                 }
 
                 // ── Step 2: Fallback to mixed search if filter found nothing ──
                 if (browseId.isNullOrBlank()) {
-                    Log.d(TAG, "🔍 Artist filter search missed, falling back to mixed search")
+                    Log.d(TAG, "Artist filter search missed, falling back to mixed search")
                     val searchBody = Innertube.webRemixBody(language, region) {
                         put("query", normalizedName)
                     }
@@ -1818,27 +1873,27 @@ class YouTubeiService @Inject constructor(
                             "musicResponsiveHeaderRenderer",
                             "c4TabbedHeaderRenderer"
                         ).firstOrNull { headerObj?.has(it) == true } ?: "UNKNOWN"
-                        Log.d(TAG, "🎨 Artist browse header type: $headerType (region=$region)")
+                        Log.d(TAG, "Artist browse header type: $headerType (region=$region)")
 
                         if (resolvedName.isBlank()) {
                             resolvedName = extractArtistTitleFromBrowse(browseJson).orEmpty()
                         }
                         extractBestArtistHeaderImage(browseJson)?.let { image ->
-                            Log.d(TAG, "🎨 Artist image from browse: ${image.take(80)}...")
+                            Log.d(TAG, "Artist image from browse: ${image.take(80)}...")
                             finalImage = image
-                        } ?: Log.w(TAG, "⚠️ No artist image found from browse response")
+                        } ?: Log.w(TAG, "No artist image found from browse response")
 
                         // Try responsive header first (newer YTM format), then
                         // fall back to the generic deep-scan subscriber extraction.
                         val responsiveSubscribers = extractResponsiveHeaderSubscribers(browseJson)
                         if (!responsiveSubscribers.isNullOrBlank()) {
-                            Log.d(TAG, "🎨 Artist subscribers from responsive header: $responsiveSubscribers")
+                            Log.d(TAG, "Artist subscribers from responsive header: $responsiveSubscribers")
                             finalSubscribers = responsiveSubscribers
                         } else {
                             extractArtistSubscribersFromBrowse(browseJson)?.let { subscribers ->
-                                Log.d(TAG, "🎨 Artist subscribers from browse: $subscribers")
+                                Log.d(TAG, "Artist subscribers from browse: $subscribers")
                                 finalSubscribers = subscribers
-                            } ?: Log.w(TAG, "⚠️ No subscriber count found from browse response")
+                            } ?: Log.w(TAG, "No subscriber count found from browse response")
                         }
 
                         finalDescription = extractArtistDescription(browseJson)
@@ -1850,7 +1905,7 @@ class YouTubeiService @Inject constructor(
                             root = browseJson,
                             fallbackArtistName = resolvedName.ifBlank { normalizedName }
                         )
-                        Log.d(TAG, "🎨 Parsed ${parsedSections.size} sections: ${parsedSections.map { "${it.type}(${it.items.size} items)" }}")
+                        Log.d(TAG, "Parsed ${parsedSections.size} sections: ${parsedSections.map { "${it.type}(${it.items.size} items)" }}")
 
                         if (parsedSections.isNotEmpty()) {
                             sections = parsedSections
@@ -1858,7 +1913,6 @@ class YouTubeiService @Inject constructor(
                                 .filter { it.type == ArtistSectionType.TOP_SONGS }
                                 .flatMap { it.items }
                                 .distinctBy { it.id }
-                                .take(5)
                             albums = parsedSections
                                 .filter { it.type == ArtistSectionType.ALBUMS }
                                 .flatMap { it.items }
@@ -1957,7 +2011,7 @@ class YouTubeiService @Inject constructor(
                 )
             )
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to fetch artist profile from Innertube", e)
+            Log.e(TAG, "Failed to fetch artist profile from Innertube", e)
             Result.failure(e)
         }
     }
@@ -2703,7 +2757,7 @@ class YouTubeiService @Inject constructor(
         albumBrowseId: String
     ): Result<com.sonicmusic.app.domain.model.AlbumDetails> = withContext(Dispatchers.IO) {
         val browseId = albumBrowseId.trim()
-        Log.d(TAG, "🔍 getAlbumDetailsFromInnertube: ID = $browseId")
+        Log.d(TAG, "getAlbumDetailsFromInnertube: ID = $browseId")
         val rawResult = browseRaw(browseId)
         if (rawResult.isFailure) {
             return@withContext Result.failure(rawResult.exceptionOrNull() ?: Exception("Failed to fetch album raw browse"))
@@ -2716,6 +2770,8 @@ class YouTubeiService @Inject constructor(
             // 1. Header parsing (musicResponsiveHeaderRenderer or musicDetailHeaderRenderer)
             var headerTitle = ""
             val headerArtists = mutableListOf<String>()
+            val headerArtistRefs = mutableListOf<ArtistRef>()
+            var headerArtistBrowseId: String? = null
             var headerYear: String? = null
             var headerType: String? = null
             var headerThumbnail = ""
@@ -2758,7 +2814,7 @@ class YouTubeiService @Inject constructor(
                 .flatMap { sections ->
                     (0 until sections.length()).asSequence().mapNotNull { sections.optJSONObject(it) }
                 }
-                .firstOrNull { it.has("musicResponsiveHeaderRenderer") || it.has(" musicDetailHeaderRenderer") }
+                .firstOrNull { it.has("musicResponsiveHeaderRenderer") || it.has("musicDetailHeaderRenderer") }
                 ?: sectionLists.firstOrNull()?.optJSONObject(0)
             
             val headerObj = twoColumn?.optJSONObject("header") 
@@ -2769,7 +2825,7 @@ class YouTubeiService @Inject constructor(
             val detailHeader = headerObj?.optJSONObject("musicDetailHeaderRenderer")
             
             if (responsiveHeader != null) {
-                Log.d(TAG, "🔍 Found musicResponsiveHeaderRenderer")
+                Log.d(TAG, "Found musicResponsiveHeaderRenderer")
                 headerTitle = responsiveHeader.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "").orEmpty()
                 
                 val straplineTextOneRuns = responsiveHeader.optJSONObject("straplineTextOne")?.optJSONArray("runs")
@@ -2779,11 +2835,14 @@ class YouTubeiService @Inject constructor(
                 
                 val artistRefs = extractArtistAndAlbumRefs(straplineTextOneRuns ?: straplineRuns ?: subtitleRuns)
                 headerArtists.addAll(artistRefs.artists.map { it.name })
+                headerArtistRefs.addAll(artistRefs.artists.map { ArtistRef(it.name, it.browseId) })
+                headerArtistBrowseId = artistRefs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
                 
                 if (headerArtists.isEmpty()) {
                     val fb = extractFirstNonSeparatorRun(straplineTextOneRuns ?: straplineRuns ?: subtitleRuns)
                     if (fb.isNotBlank()) {
                         headerArtists.add(fb)
+                        headerArtistRefs.add(ArtistRef(fb, null))
                     }
                 }
                 
@@ -2816,7 +2875,7 @@ class YouTubeiService @Inject constructor(
                 headerThumbnail = extractHighestQualityThumbnail(thumbnails, "")
                 
             } else if (detailHeader != null) {
-                Log.d(TAG, "🔍 Found musicDetailHeaderRenderer")
+                Log.d(TAG, "Found musicDetailHeaderRenderer")
                 headerTitle = detailHeader.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "").orEmpty()
                 
                 val subtitleRuns = detailHeader.optJSONObject("subtitle")?.optJSONArray("runs")
@@ -2824,11 +2883,16 @@ class YouTubeiService @Inject constructor(
                 
                 val artistRefs = extractArtistAndAlbumRefs(subtitleRuns)
                 headerArtists.addAll(artistRefs.artists.map { it.name })
+                headerArtistRefs.addAll(artistRefs.artists.map { ArtistRef(it.name, it.browseId) })
+                if (headerArtistBrowseId == null) {
+                    headerArtistBrowseId = artistRefs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
+                }
                 
                 if (headerArtists.isEmpty() && subtitleRuns != null) {
                     val fb = extractFirstNonSeparatorRun(subtitleRuns)
                     if (fb.isNotBlank()) {
                         headerArtists.add(fb)
+                        headerArtistRefs.add(ArtistRef(fb, null))
                     }
                 }
                 
@@ -2891,7 +2955,7 @@ class YouTubeiService @Inject constructor(
                                 ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
                                 
                                 if (videoId.isBlank()) {
-                                    Log.w(TAG, "⚠️ Track at index $j has no videoId")
+                                    Log.w(TAG, "Track at index $j has no videoId")
                                     continue
                                 }
                                 
@@ -2901,6 +2965,8 @@ class YouTubeiService @Inject constructor(
                                 val title = extractMusicText(flexColumns.optJSONObject(0))
                                 
                                 val trackArtists = mutableListOf<String>()
+                                val trackArtistBrowseIds = mutableListOf<String>()
+                                val trackArtistRefs = mutableListOf<ArtistRef>()
                                 if (flexColumns.length() > 1) {
                                     val runs = flexColumns.optJSONObject(1)
                                         ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
@@ -2909,13 +2975,22 @@ class YouTubeiService @Inject constructor(
                                     val refs = extractArtistAndAlbumRefs(runs)
                                     if (refs.artists.isNotEmpty()) {
                                         trackArtists.addAll(refs.artists.map { it.name })
+                                        trackArtistBrowseIds.addAll(refs.artists.mapNotNull { it.browseId })
+                                        trackArtistRefs.addAll(refs.artists.map { ArtistRef(it.name, it.browseId) })
                                     } else {
                                         val fb = if (runs != null) extractFirstNonSeparatorRun(runs) else ""
-                                        if (fb.isNotBlank()) trackArtists.add(fb)
+                                        if (fb.isNotBlank()) {
+                                            trackArtists.add(fb)
+                                            trackArtistRefs.add(ArtistRef(fb, null))
+                                        }
                                     }
                                 }
                                 if (trackArtists.isEmpty()) {
                                     trackArtists.addAll(headerArtists)
+                                    trackArtistRefs.addAll(headerArtistRefs)
+                                    if (headerArtistBrowseId != null) {
+                                        trackArtistBrowseIds.add(headerArtistBrowseId)
+                                    }
                                 }
                                 
                                 var durationText = "0:00"
@@ -2943,7 +3018,9 @@ class YouTubeiService @Inject constructor(
                                         durationText = durationText,
                                         artists = trackArtists,
                                         albumBrowseId = browseId,
-                                        albumName = headerTitle
+                                        albumName = headerTitle,
+                                        artistBrowseIds = trackArtistBrowseIds,
+                                        artistRefs = trackArtistRefs
                                     )
                                 )
                             }
@@ -2961,7 +3038,7 @@ class YouTubeiService @Inject constructor(
                             .orEmpty()
                         
                         if (titleText.contains("Videos", ignoreCase = true) || titleText.contains(" Versions", ignoreCase = true)) {
-                            Log.d(TAG, "🔍 Found videos carousel section: $titleText")
+                            Log.d(TAG, "Found videos carousel section: $titleText")
                             val carouselContents = carouselShelf.optJSONArray("contents")
                             if (carouselContents != null) {
                                 for (j in 0 until carouselContents.length()) {
@@ -3080,7 +3157,7 @@ class YouTubeiService @Inject constructor(
             }
 
             if (nativeVideos.isEmpty() && songsList.isNotEmpty()) {
-                Log.d(TAG, "🔍 No native videos found. Running fallback search for top tracks...")
+                Log.d(TAG, "No native videos found. Running fallback search for top tracks...")
                 val topTracks = songsList.take(3)
                 
                 val searchResults = coroutineScope {
@@ -3121,7 +3198,7 @@ class YouTubeiService @Inject constructor(
                         )
                     )
                 }
-                Log.d(TAG, "🔍 Fallback videos fetched: ${nativeVideos.size}")
+                Log.d(TAG, "Fallback videos fetched: ${nativeVideos.size}")
             }
 
             val details = com.sonicmusic.app.domain.model.AlbumDetails(
@@ -3133,12 +3210,14 @@ class YouTubeiService @Inject constructor(
                 thumbnailUrl = headerThumbnail,
                 trackCount = headerTrackCount,
                 songs = songsList.distinctBy { it.videoId },
-                videos = nativeVideos.distinctBy { it.videoId }
+                videos = nativeVideos.distinctBy { it.videoId },
+                artistBrowseId = headerArtistBrowseId ?: songsList.flatMap { it.artistBrowseIds }.firstOrNull { it.isNotBlank() },
+                artistRefs = if (headerArtistRefs.isNotEmpty()) headerArtistRefs else songsList.flatMap { it.artistRefs }.distinctBy { it.name }
             )
             Result.success(details)
             
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to parse album details", e)
+            Log.e(TAG, "Failed to parse album details", e)
             Result.failure(e)
         }
     }
@@ -3183,6 +3262,13 @@ class YouTubeiService @Inject constructor(
                 playerChannelId = videoDetails.optString("channelId", "")
             )
 
+            val detailArtistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                artistInfo.individuals.map { ArtistRef(it.name, it.browseId) }
+            } else {
+                val chId = videoDetails.optString("channelId", "").takeIf { it.isNotBlank() }
+                listOf(ArtistRef(cleanArtistName(artistInfo.displayName), chId))
+            }
+
             Result.success(Song(
                 id = videoId,
                 title = videoDetails.optString("title", " Unknown"),
@@ -3194,7 +3280,8 @@ class YouTubeiService @Inject constructor(
                 },
                 duration = videoDetails.optInt("lengthSeconds", 0),
                 thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-                viewCount = videoDetails.optString("viewCount", "0").toLongOrNull()
+                viewCount = videoDetails.optString("viewCount", "0").toLongOrNull(),
+                artists = detailArtistRefs
             ))
         } catch (e: Exception) {
             Log.e(TAG, "Get details error", e)
@@ -3257,7 +3344,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🏠 Browsing YTMusic home for region: $region, cont=${!continuationToken.isNullOrBlank()}")
+            Log.d(TAG, "Browsing YTMusic home for region: $region, cont=${!continuationToken.isNullOrBlank()}")
 
             val requestBody = if (continuationToken.isNullOrBlank()) {
                 Innertube.webRemixBody(language, region) {
@@ -3291,12 +3378,12 @@ class YouTubeiService @Inject constructor(
             }
 
             val browseResult = parseHomeBrowseResult(responseBody)
-            Log.d(TAG, "✅ FEmusic_home returned ${browseResult.shelves.size} shelves, nextCont=${!browseResult.continuationToken.isNullOrBlank()}")
+            Log.d(TAG, "FEmusic_home returned ${browseResult.shelves.size} shelves, nextCont=${!browseResult.continuationToken.isNullOrBlank()}")
             Result.success(browseResult)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ FEmusic_home error", e)
+            Log.e(TAG, "FEmusic_home error", e)
             Result.failure(e)
         }
     }
@@ -3311,7 +3398,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🎭 Browsing moods & genres for region: $region")
+            Log.d(TAG, "Browsing moods & genres for region: $region")
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("browseId", YtmScopeConfig.PermittedBrowseIds.MOODS_AND_GENRES)
@@ -3334,12 +3421,12 @@ class YouTubeiService @Inject constructor(
             }
 
             val categories = parseMoodsAndGenresResponse(responseBody)
-            Log.d(TAG, "✅ Moods & genres returned ${categories.size} categories")
+            Log.d(TAG, "Moods & genres returned ${categories.size} categories")
             Result.success(categories)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Moods & genres error", e)
+            Log.e(TAG, "Moods & genres error", e)
             Result.failure(e)
         }
     }
@@ -3358,7 +3445,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "📊 Browsing charts (${chartType.name}) for region: $region")
+            Log.d(TAG, "Browsing charts (${chartType.name}) for region: $region")
 
             val requestBody = if (continuationToken.isNullOrBlank()) {
                 Innertube.webRemixBody(language, region) {
@@ -3378,7 +3465,9 @@ class YouTubeiService @Inject constructor(
 
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Charts failed: ${response.code}"))
+                Log.w(TAG, "Charts browse failed with HTTP ${response.code}, falling back to YTM chart search")
+                val fallbackSongs = searchSongs("top hits $region ${currentYear()}", 30).getOrDefault(emptyList())
+                return@withContext Result.success(BrowsePageResult(items = fallbackSongs))
             }
 
             val responseBody = response.body?.string()
@@ -3389,7 +3478,7 @@ class YouTubeiService @Inject constructor(
             val songs = parseChartsResponse(responseBody)
             val nextToken = extractBrowseContinuationToken(responseBody)
 
-            Log.d(TAG, "✅ Charts returned ${songs.size} songs, continuation=${!nextToken.isNullOrBlank()}")
+            Log.d(TAG, "Charts returned ${songs.size} songs, continuation=${!nextToken.isNullOrBlank()}")
             Result.success(
                 BrowsePageResult(
                     items = sanitizeSongResults(songs, limit = 0, offset = 0),
@@ -3399,7 +3488,7 @@ class YouTubeiService @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Charts browse error", e)
+            Log.e(TAG, "Charts browse error", e)
             Result.failure(e)
         }
     }
@@ -3417,7 +3506,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🎵 Browsing mood/genre playlist")
+            Log.d(TAG, "Browsing mood/genre playlist")
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("browseId", YtmScopeConfig.PermittedBrowseIds.MOODS_AND_GENRES_CATEGORY)
@@ -3446,12 +3535,12 @@ class YouTubeiService @Inject constructor(
                 offset = 0
             )
 
-            Log.d(TAG, "✅ Mood/genre playlist returned ${songs.size} songs")
+            Log.d(TAG, "Mood/genre playlist returned ${songs.size} songs")
             Result.success(songs)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Mood/genre playlist error", e)
+            Log.e(TAG, "Mood/genre playlist error", e)
             Result.failure(e)
         }
     }
@@ -3687,7 +3776,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🔥 Fetching real-time trending songs for region: $region")
+            Log.d(TAG, "Fetching real-time trending songs for region: $region")
 
             // FEmusic_charts without params returns the default "Top Songs" chart
             val requestBody = Innertube.webRemixBody(language, region) {
@@ -3703,8 +3792,9 @@ class YouTubeiService @Inject constructor(
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
-                Log.w(TAG, "Charts API failed with HTTP ${response.code}")
-                return@withContext Result.success(emptyList())
+                Log.w(TAG, "Charts API failed with HTTP ${response.code}, falling back to YTM trending search")
+                val fallbackResult = searchSongs("trending songs", limit).getOrDefault(emptyList())
+                return@withContext Result.success(fallbackResult)
             }
 
             val responseBody = response.body?.string()
@@ -3719,12 +3809,23 @@ class YouTubeiService @Inject constructor(
                 offset = 0
             )
 
-            Log.d(TAG, "✅ Got ${songs.size} trending songs for $region")
-            Result.success(songs)
+            if (songs.isNotEmpty()) {
+                Log.d(TAG, "Got ${songs.size} trending songs for $region")
+                return@withContext Result.success(songs)
+            }
+
+            Log.w(TAG, "Charts returned empty, falling back to search query for trending songs...")
+            val fallbackResult = searchSongs("top songs $region ${currentYear()}", limit)
+            val fallbackSongs = fallbackResult.getOrDefault(emptyList())
+            if (fallbackSongs.isNotEmpty()) {
+                return@withContext Result.success(fallbackSongs)
+            }
+            Result.success(emptyList())
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Trending songs fetch failed", e)
-            Result.success(emptyList())
+            Log.e(TAG, "Trending songs fetch failed", e)
+            val fallbackResult = runCatching { searchSongs("top trending songs", limit).getOrDefault(emptyList()) }.getOrDefault(emptyList())
+            Result.success(fallbackResult)
         }
     }
 
@@ -3745,7 +3846,7 @@ class YouTubeiService @Inject constructor(
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
             val countryName = getCountryDisplayName(region)
-            Log.d(TAG, "🎤 Fetching top artists for region: $region ($countryName)")
+            Log.d(TAG, "Fetching top artists for region: $region ($countryName)")
 
             val allArtists = mutableListOf<Song>()
             val seenIds = mutableSetOf<String>()
@@ -3775,7 +3876,7 @@ class YouTubeiService @Inject constructor(
                 }
             }
 
-            Log.d(TAG, "✅ Got ${allArtists.size} unique artists for $region")
+            Log.d(TAG, "Got ${allArtists.size} unique artists for $region")
             Result.success(allArtists.take(limit))
 
         } catch (e: Exception) {
@@ -3794,7 +3895,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "💿 Fetching top albums from charts for region: $region")
+            Log.d(TAG, "Fetching top albums from charts for region: $region")
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("browseId", YtmScopeConfig.PermittedBrowseIds.CHARTS)
@@ -3820,11 +3921,11 @@ class YouTubeiService @Inject constructor(
             }
 
             val albums = parseChartsAlbums(responseBody, limit)
-            Log.d(TAG, "✅ Got ${albums.size} top albums from charts for $region")
+            Log.d(TAG, "Got ${albums.size} top albums from charts for $region")
             Result.success(albums)
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Top albums fetch failed", e)
+            Log.e(TAG, "Top albums fetch failed", e)
             Result.success(emptyList())
         }
     }
@@ -4153,14 +4254,16 @@ class YouTubeiService @Inject constructor(
                         fallback = ""
                     )
 
+                    val resolvedArtistBrowseId = browseId.takeIf { it.startsWith("UC") } ?: effectiveId.takeIf { it.startsWith("UC") }
                     artists.add(Song(
                         id = effectiveId,
                         title = name,
                         artist = subtitle.takeIf { it.isNotBlank() } ?: "Artist",
-                        artistId = browseId.takeIf { it.startsWith("UC") },
+                        artistId = resolvedArtistBrowseId,
                         duration = 0,
                         thumbnailUrl = thumbnailUrl,
-                        contentType = ContentType.ARTIST
+                        contentType = ContentType.ARTIST,
+                        artists = listOf(ArtistRef(name = name, browseId = resolvedArtistBrowseId))
                     ))
                 } // End of shelfContents loop (i)
             } // End of shelves loop
@@ -4292,14 +4395,24 @@ class YouTubeiService @Inject constructor(
                         fallback = ""
                     )
 
+                    val albumSubtitleRefs = subtitleRuns?.let { extractArtistAndAlbumRefs(it) }
+                    val albumArtistRefs = if (albumSubtitleRefs != null && albumSubtitleRefs.artists.isNotEmpty()) {
+                        albumSubtitleRefs.artists.map { ArtistRef(it.name, it.browseId) }
+                    } else if (artistName.isNotBlank()) {
+                        listOf(ArtistRef(cleanArtistName(artistName), null))
+                    } else emptyList()
+                    val albumArtistId = albumArtistRefs.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
+
                     albums.add(Song(
                         id = browseId,
                         title = albumTitle,
                         artist = cleanArtistName(artistName),
+                        artistId = albumArtistId,
                         albumId = browseId,
                         duration = 0,
                         thumbnailUrl = thumbnailUrl,
-                        contentType = ContentType.ALBUM
+                        contentType = ContentType.ALBUM,
+                        artists = albumArtistRefs
                     ))
                 } // End of shelfContents loop (i)
             } // End of shelves loop
@@ -4384,11 +4497,13 @@ class YouTubeiService @Inject constructor(
                                 fallback = ""
                             )
 
+                            val resolvedArtistBrowseId = browseId.takeIf { it.startsWith("UC") }
                             artists.add(Song(
                                 id = browseId.ifBlank { name },
                                 title = name,
                                 artist = subtitle.takeIf { it.isNotBlank() } ?: "Artist",
-                                artistId = browseId.takeIf { it.startsWith("UC") },
+                                artistId = resolvedArtistBrowseId,
+                                artists = listOf(ArtistRef(name = name, browseId = resolvedArtistBrowseId)),
                                 duration = 0,
                                 thumbnailUrl = thumbnailUrl,
                                 contentType = ContentType.ARTIST
@@ -4448,12 +4563,20 @@ class YouTubeiService @Inject constructor(
                             if (albumTitle.isBlank()) continue
 
                             val subtitleRuns = twoRow.optJSONObject("subtitle")?.optJSONArray("runs")
+                            val albumArtistRefs = mutableListOf<ArtistRef>()
+                            var primaryArtistBrowseId: String? = null
                             val artistName = if (subtitleRuns != null) {
                                 val refs = extractArtistAndAlbumRefs(subtitleRuns)
+                                albumArtistRefs.addAll(refs.artists.map { ArtistRef(it.name, it.browseId) })
+                                primaryArtistBrowseId = refs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
                                 refs.artists.firstOrNull()?.name
                                     ?: extractFirstNonSeparatorRun(subtitleRuns)
                             } else {
                                 extractText(twoRow.optJSONObject("subtitle"))
+                            }
+                            val cleanedArtist = cleanArtistName(artistName)
+                            if (albumArtistRefs.isEmpty() && cleanedArtist.isNotBlank()) {
+                                albumArtistRefs.add(ArtistRef(cleanedArtist, primaryArtistBrowseId))
                             }
 
                             val thumbnails = twoRow.optJSONObject("thumbnailRenderer")
@@ -4469,7 +4592,9 @@ class YouTubeiService @Inject constructor(
                             albums.add(Song(
                                 id = browseId,
                                 title = albumTitle,
-                                artist = cleanArtistName(artistName),
+                                artist = cleanedArtist,
+                                artistId = primaryArtistBrowseId,
+                                artists = albumArtistRefs,
                                 albumId = browseId,
                                 duration = 0,
                                 thumbnailUrl = thumbnailUrl,
@@ -4497,7 +4622,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🆕 Fetching new releases for region: $region")
+            Log.d(TAG, "Fetching new releases for region: $region")
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("browseId", YtmScopeConfig.PermittedBrowseIds.NEW_RELEASES_ALBUMS)
@@ -4528,12 +4653,23 @@ class YouTubeiService @Inject constructor(
                 offset = 0
             )
 
-            Log.d(TAG, "✅ Got ${songs.size} new releases for $region")
-            Result.success(songs)
+            if (songs.isNotEmpty()) {
+                Log.d(TAG, "Got ${songs.size} new releases for $region")
+                return@withContext Result.success(songs)
+            }
+
+            Log.w(TAG, "New releases returned empty, falling back to search query...")
+            val fallbackResult = searchSongs("latest new songs $region ${currentYear()}", limit)
+            val fallbackSongs = fallbackResult.getOrDefault(emptyList())
+            if (fallbackSongs.isNotEmpty()) {
+                return@withContext Result.success(fallbackSongs)
+            }
+            Result.success(emptyList())
 
         } catch (e: Exception) {
-            Log.e(TAG, "❌ New releases fetch failed", e)
-            Result.success(emptyList())
+            Log.e(TAG, "New releases fetch failed", e)
+            val fallbackResult = runCatching { searchSongs("new music releases", limit).getOrDefault(emptyList()) }.getOrDefault(emptyList())
+            Result.success(fallbackResult)
         }
     }
 
@@ -4573,7 +4709,7 @@ class YouTubeiService @Inject constructor(
                     val decodedVisitorData = java.net.URLDecoder.decode(visitorData, "UTF-8")
                     val parsedCountry = parseCountryFromVisitorData(decodedVisitorData)
                     if (parsedCountry != null) {
-                        Log.d(TAG, "🌍 Innertube detected region from visitorData: $parsedCountry")
+                        Log.d(TAG, "Innertube detected region from visitorData: $parsedCountry")
                         return@withContext parsedCountry
                     }
                 } catch (e: Exception) {
@@ -4588,10 +4724,11 @@ class YouTubeiService @Inject constructor(
                 val params = serviceParam.optJSONArray("params") ?: continue
                 for (j in 0 until params.length()) {
                     val param = params.optJSONObject(j) ?: continue
-                    if (param.optString("key") == " country") {
+                    val key = param.optString("key").trim()
+                    if (key == "country" || key == "c") {
                         val country = param.optString("value")
                         if (!country.isNullOrBlank() && country.length == 2 && country.all { it.isLetter() }) {
-                            Log.d(TAG, "🌍 Innertube detected region: $country")
+                            Log.d(TAG, "Innertube detected region: $country")
                             return@withContext country.uppercase(Locale.US)
                         }
                     }
@@ -4678,7 +4815,7 @@ class YouTubeiService @Inject constructor(
             val fallback = fetchFallbackSearchSuggestions(normalizedQuery)
             Result.success(fallback)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Search suggestions error", e)
+            Log.e(TAG, "Search suggestions error", e)
             Result.success(fetchFallbackSearchSuggestions(normalizedQuery))
         }
     }
@@ -4940,12 +5077,20 @@ class YouTubeiService @Inject constructor(
                 val title = extractText(twoRow.optJSONObject("title"))
                 // ViTune-style: extract only artist runs from subtitle, not full text
                 val subtitleRuns = twoRow.optJSONObject("subtitle")?.optJSONArray("runs")
+                val itemArtistRefs = mutableListOf<ArtistRef>()
+                var primaryArtistBrowseId: String? = null
                 val artist = if (subtitleRuns != null) {
                     val refs = extractArtistAndAlbumRefs(subtitleRuns)
+                    itemArtistRefs.addAll(refs.artists.map { ArtistRef(it.name, it.browseId) })
+                    primaryArtistBrowseId = refs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
                     refs.artists.firstOrNull()?.name
                         ?: extractFirstNonSeparatorRun(subtitleRuns)
                 } else {
                     extractText(twoRow.optJSONObject("subtitle"))
+                }
+                val cleanedArtist = cleanArtistName(artist)
+                if (itemArtistRefs.isEmpty() && cleanedArtist.isNotBlank()) {
+                    itemArtistRefs.add(ArtistRef(cleanedArtist, primaryArtistBrowseId))
                 }
                 
                 val thumbnails = twoRow.optJSONObject("thumbnailRenderer")
@@ -4962,14 +5107,16 @@ class YouTubeiService @Inject constructor(
                 val contentType = detectContentType(title, artist, "3:00") // Default 3 min
 
                 if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
-                    Log.d(TAG, "🎬 Filtering non-music from browse: $title ($contentType)")
+                    Log.d(TAG, "Filtering non-music from browse: $title ($contentType)")
                     return null
                 }
 
                 return Song(
                     id = videoId,
                     title = title,
-                    artist = cleanArtistName(artist),
+                    artist = cleanedArtist,
+                    artistId = primaryArtistBrowseId,
+                    artists = itemArtistRefs,
                     duration = 0,
                     thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
                     category = "Music",
@@ -4994,7 +5141,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "🎵 Fetching Up Next for: $videoId")
+            Log.d(TAG, "Fetching Up Next for: $videoId")
             
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("videoId", videoId)
@@ -5025,12 +5172,12 @@ class YouTubeiService @Inject constructor(
                 offset = 0
             )
             
-            Log.d(TAG, "✅ Got ${queueItems.size} songs from Up Next")
+            Log.d(TAG, "Got ${queueItems.size} songs from Up Next")
             Result.success(Pair(queueItems, parsed.second))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Get Up Next error", e)
+            Log.e(TAG, "Get Up Next error", e)
             Result.failure(e)
         }
     }
@@ -5043,15 +5190,17 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "📻 Fetching Radio Mix for: $videoId")
+            Log.d(TAG, "Fetching Radio Mix for: $videoId")
             
             // RDAMVM is the prefix for "Radio Mix" playlists in YouTube Music
             // It stands for "Radio Mix" + videoId
             val playlistId = "RDAMVM$videoId"
             
             val requestBody = Innertube.webRemixBody(language, region) {
+                put("videoId", videoId)
                 put("playlistId", playlistId)
                 put("isAudioOnly", true)
+                put("enablePersistentPlaylistPanel", true)
             }
             
             val request = Innertube.musicPost(
@@ -5084,12 +5233,12 @@ class YouTubeiService @Inject constructor(
                 queueItems
             }
             
-            Log.d(TAG, "✅ Got ${filteredItems.size} songs from Radio Mix")
+            Log.d(TAG, "Got ${filteredItems.size} songs from Radio Mix")
             Result.success(Pair(filteredItems, parsed.second))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Get Radio Mix error", e)
+            Log.e(TAG, "Get Radio Mix error", e)
             Result.failure(e)
         }
     }
@@ -5315,6 +5464,13 @@ class YouTubeiService @Inject constructor(
                     }
                 }
             }
+
+            if (playlistPanel == null) {
+                playlistPanel = json.optJSONObject("contents")
+                    ?.optJSONObject("singleColumnMusicWatchNextResultsRenderer")
+                    ?.optJSONObject("playlist")
+                    ?.optJSONObject("playlistPanelRenderer")
+            }
             
             if (playlistPanel == null) return Pair(songs, null)
             
@@ -5343,8 +5499,10 @@ class YouTubeiService @Inject constructor(
                 
                 val durationText = extractText(item.optJSONObject("lengthText"))
                 val contentType = detectContentType(title, artist, durationText)
-                if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
-                    Log.d(TAG, "🎬 Filtering non-song queue item: $title ($contentType)")
+                // Accept SONG, VIDEO, and UNKNOWN from Radio Mix / Up Next — these are music-only endpoints.
+                // Only reject clearly non-music types (PODCAST, LIVE_STREAM, ALBUM, SHORT).
+                if (contentType == ContentType.PODCAST || contentType == ContentType.LIVE_STREAM || contentType == ContentType.ALBUM) {
+                    Log.d(TAG, "Filtering non-song queue item: $title ($contentType)")
                     continue
                 }
                 
@@ -5354,13 +5512,24 @@ class YouTubeiService @Inject constructor(
                     fallback = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
                 )
                 
+                val queueArtistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                    artistInfo.individuals.map { ArtistRef(it.name, it.browseId) }
+                } else if (refs.artists.isNotEmpty()) {
+                    refs.artists.map { ArtistRef(it.name, it.browseId) }
+                } else {
+                    listOf(ArtistRef(cleanArtistName(artist), null))
+                }
+                val primaryArtistBrowseId = queueArtistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
+                    ?: if (artistInfo.individuals.isNotEmpty()) {
+                        artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
+                    } else null
+
                 songs.add(Song(
                     id = videoId,
                     title = title,
                     artist = cleanArtistName(artist),
-                    artistId = if (artistInfo.individuals.isNotEmpty()) {
-                        artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
-                    } else null,
+                    artistId = primaryArtistBrowseId,
+                    artists = queueArtistRefs,
                     album = albumName,
                     albumId = albumBrowseId,
                     duration = parseDuration(durationText),
@@ -5391,7 +5560,7 @@ class YouTubeiService @Inject constructor(
         try {
             val region = getRequestRegion()
             val language = getLanguageForRegion(region)
-            Log.d(TAG, "📡 Fetching Queue Continuation with token: $continuationToken")
+            Log.d(TAG, "Fetching Queue Continuation with token: $continuationToken")
 
             val requestBody = Innertube.webRemixBody(language, region) {
                 put("continuation", continuationToken)
@@ -5420,12 +5589,12 @@ class YouTubeiService @Inject constructor(
                 offset = 0
             )
 
-            Log.d(TAG, "✅ Got ${queueItems.size} songs from queue continuation")
+            Log.d(TAG, "Got ${queueItems.size} songs from queue continuation")
             Result.success(Pair(queueItems, parsed.second))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Get Queue Continuation error", e)
+            Log.e(TAG, "Get Queue Continuation error", e)
             Result.failure(e)
         }
     }
@@ -5468,8 +5637,9 @@ class YouTubeiService @Inject constructor(
 
                         val durationText = extractText(item.optJSONObject("lengthText"))
                         val contentType = detectContentType(title, artist, durationText)
-                        if (contentType != ContentType.SONG && contentType != ContentType.UNKNOWN) {
-                            Log.d(TAG, "🎬 Filtering non-song queue continuation item: $title ($contentType)")
+                        // Accept SONG, VIDEO, and UNKNOWN — only reject clearly non-music types.
+                        if (contentType == ContentType.PODCAST || contentType == ContentType.LIVE_STREAM || contentType == ContentType.ALBUM) {
+                            Log.d(TAG, "Filtering non-song queue continuation item: $title ($contentType)")
                             continue
                         }
 
@@ -5479,13 +5649,24 @@ class YouTubeiService @Inject constructor(
                             fallback = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
                         )
 
+                        val queueArtistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                            artistInfo.individuals.map { ArtistRef(it.name, it.browseId) }
+                        } else if (refs.artists.isNotEmpty()) {
+                            refs.artists.map { ArtistRef(it.name, it.browseId) }
+                        } else {
+                            listOf(ArtistRef(cleanArtistName(artist), null))
+                        }
+                        val primaryArtistBrowseId = queueArtistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
+                            ?: if (artistInfo.individuals.isNotEmpty()) {
+                                artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
+                            } else null
+
                         songs.add(Song(
                             id = videoId,
                             title = title,
                             artist = cleanArtistName(artist),
-                            artistId = if (artistInfo.individuals.isNotEmpty()) {
-                                artistInfo.individuals.map { it.browseId.orEmpty() }.joinToString(",")
-                            } else null,
+                            artistId = primaryArtistBrowseId,
+                            artists = queueArtistRefs,
                             album = albumName,
                             albumId = albumBrowseId,
                             duration = parseDuration(durationText),
@@ -5634,7 +5815,7 @@ class YouTubeiService @Inject constructor(
         if (candidates.isEmpty()) return null
         val normalizedQuery = query.lowercase().replace(Regex("\\s+"), " ").trim()
 
-        return candidates.maxByOrNull { candidate ->
+        val best = candidates.maxByOrNull { candidate ->
             var score = 0
             val title = candidate.title.lowercase().replace(Regex("\\s+"), " ").trim()
             if (title == normalizedQuery) score += 10
@@ -5642,7 +5823,13 @@ class YouTubeiService @Inject constructor(
             if (!candidate.thumbnailUrl.isNullOrBlank()) score += 2
             if (!extractSubscriberSnippet(candidate.artist).isNullOrBlank()) score += 3
             score
-        }
+        } ?: return null
+        // Require name overlap — never return an unrelated artist
+        val bestTitle = best.title.lowercase().replace(Regex("\\s+"), " ").trim()
+        val hasNameMatch = bestTitle == normalizedQuery ||
+            bestTitle.contains(normalizedQuery) ||
+            normalizedQuery.contains(bestTitle)
+        return if (hasNameMatch) best else null
     }
 
     private fun selectBestLooseArtistCandidate(query: String, candidates: List<Song>): Song? {
@@ -5650,7 +5837,7 @@ class YouTubeiService @Inject constructor(
         val normalizedQuery = normalizeArtistToken(query)
         if (normalizedQuery.isBlank()) return null
 
-        return candidates
+        val best = candidates
             .filter { candidate ->
                 val candidateId = candidate.id.trim()
                 candidateId.isNotEmpty() && !isLikelyVideoId(candidateId)
@@ -5671,7 +5858,13 @@ class YouTubeiService @Inject constructor(
                 if (candidate.contentType == ContentType.SONG || candidate.contentType == ContentType.VIDEO) score -= 5
                 if (candidate.title.isBlank()) score -= 10
                 score
-            }
+            } ?: return null
+        // Require at least a partial name match — never return a completely unrelated result
+        val bestTitle = normalizeArtistToken(best.title)
+        val hasNameMatch = bestTitle == normalizedQuery ||
+            bestTitle.contains(normalizedQuery) ||
+            normalizedQuery.contains(bestTitle)
+        return if (hasNameMatch) best else null
     }
 
     private fun normalizeArtistBrowseId(rawId: String): String? {
@@ -6060,12 +6253,22 @@ class YouTubeiService @Inject constructor(
             normalizeAlbumThumbnail(thumbnailUrl, resolvedId)
         }
 
+        val sectionArtistRefs = if (subtitleRefs.artists.isNotEmpty()) {
+            subtitleRefs.artists.map { ArtistRef(it.name, it.browseId) }
+        } else if (artist.isNotBlank()) {
+            listOf(ArtistRef(artist, artistBrowseId))
+        } else {
+            emptyList()
+        }
+        val primaryArtistBrowseId = sectionArtistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId ?: artistBrowseId
+
         return if (contentType == ContentType.ALBUM) {
             Song(
                 id = resolvedId,
                 title = title,
                 artist = artist,
-                artistId = artistBrowseId,
+                artistId = primaryArtistBrowseId,
+                artists = sectionArtistRefs,
                 album = title,
                 albumId = resolvedId,
                 duration = 0,
@@ -6079,7 +6282,8 @@ class YouTubeiService @Inject constructor(
                 id = resolvedId,
                 title = title,
                 artist = artist,
-                artistId = artistBrowseId,
+                artistId = primaryArtistBrowseId,
+                artists = sectionArtistRefs,
                 album = albumName,
                 albumId = albumBrowseId,
                 duration = parseDuration(durationText),
@@ -6155,11 +6359,29 @@ class YouTubeiService @Inject constructor(
             normalizeAlbumThumbnail(thumbnailUrl, resolvedId)
         }
 
+        val itemArtistRefs = if (contentType == ContentType.ARTIST) {
+            val canonicalBrowseId = resolvedId.takeIf { it.startsWith("UC") }
+            listOf(ArtistRef(name = title, browseId = canonicalBrowseId))
+        } else if (subtitleRefs.artists.isNotEmpty()) {
+            subtitleRefs.artists.map { ArtistRef(it.name, it.browseId) }
+        } else if (artist.isNotBlank()) {
+            listOf(ArtistRef(artist, artistBrowseId))
+        } else {
+            emptyList()
+        }
+
+        val itemArtistId = if (contentType == ContentType.ARTIST) {
+            resolvedId.takeIf { it.startsWith("UC") }
+        } else {
+            itemArtistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId ?: artistBrowseId
+        }
+
         return Song(
             id = resolvedId,
             title = title,
             artist = artist,
-            artistId = artistBrowseId,
+            artistId = itemArtistId,
+            artists = itemArtistRefs,
             album = albumName,
             albumId = albumBrowseId,
             duration = parseDuration(subtitle),
@@ -6761,11 +6983,20 @@ class YouTubeiService @Inject constructor(
         val thumb = extractHighestQualityThumbnail(thumbnails, "")
         
         val subtitleRuns = renderer.optJSONObject("subtitle")?.optJSONArray("runs")
+        val albumArtistRefs = mutableListOf<ArtistRef>()
+        var primaryArtistBrowseId: String? = null
         val artist = if (subtitleRuns != null && subtitleRuns.length() > 0) {
-            com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(subtitleRuns.toRunList()).displayName
+            val refs = extractArtistAndAlbumRefs(subtitleRuns)
+            albumArtistRefs.addAll(refs.artists.map { ArtistRef(it.name, it.browseId) })
+            primaryArtistBrowseId = refs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
+            val extracted = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(subtitleRuns.toRunList()).displayName
+            extracted.ifBlank { refs.artists.firstOrNull()?.name ?: "" }
         } else {
             parseArtistFromSubtitle(subtitle)
         }.ifBlank { fallbackArtistName }
+        if (albumArtistRefs.isEmpty() && artist.isNotBlank()) {
+            albumArtistRefs.add(ArtistRef(artist, primaryArtistBrowseId))
+        }
         
         val year = parseYearToken(subtitle)
 
@@ -6773,6 +7004,8 @@ class YouTubeiService @Inject constructor(
             id = browseId,
             title = title,
             artist = artist,
+            artistId = primaryArtistBrowseId,
+            artists = albumArtistRefs,
             album = title,
             albumId = browseId,
             duration = 0,
@@ -6825,11 +7058,20 @@ class YouTubeiService @Inject constructor(
             ?.optJSONArray("thumbnails")
         val thumb = extractHighestQualityThumbnail(thumbnails, "")
         
+        val responsiveArtistRefs = mutableListOf<ArtistRef>()
+        var responsiveArtistBrowseId: String? = null
         val artist = if (subtitleRuns != null && subtitleRuns.length() > 0) {
-            com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(subtitleRuns.toRunList()).displayName
+            val refs = extractArtistAndAlbumRefs(subtitleRuns)
+            responsiveArtistRefs.addAll(refs.artists.map { ArtistRef(it.name, it.browseId) })
+            responsiveArtistBrowseId = refs.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
+            val extracted = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(subtitleRuns.toRunList()).displayName
+            extracted.ifBlank { refs.artists.firstOrNull()?.name ?: "" }
         } else {
             parseArtistFromSubtitle(subtitle)
         }.ifBlank { fallbackArtistName }
+        if (responsiveArtistRefs.isEmpty() && artist.isNotBlank()) {
+            responsiveArtistRefs.add(ArtistRef(artist, responsiveArtistBrowseId))
+        }
         
         val year = parseYearToken(subtitle)
 
@@ -6837,6 +7079,8 @@ class YouTubeiService @Inject constructor(
             id = browseId,
             title = title,
             artist = artist,
+            artistId = responsiveArtistBrowseId,
+            artists = responsiveArtistRefs,
             album = title,
             albumId = browseId,
             duration = 0,
@@ -7563,11 +7807,11 @@ class YouTubeiService @Inject constructor(
         region: String
     ): Result<ChannelProfileInfo> = withContext(Dispatchers.IO) {
         try {
-            val requestBody = Innertube.androidBody(language, region) {
+            val requestBody = Innertube.buildYtmContext(language, region) {
                 put("browseId", browseId)
             }
 
-            val request = Innertube.youtubeAndroidPost(
+            val request = Innertube.musicPost(
                 endpoint = Innertube.BROWSE,
                 body = requestBody,
                 acceptLanguage = getAcceptLanguageHeader(language, region)
@@ -7678,68 +7922,6 @@ class YouTubeiService @Inject constructor(
                     }
                 }
             }
-        }
-    }
-
-    suspend fun testAlbumBrowseRaw(browseId: String) = withContext(Dispatchers.IO) {
-        try {
-            val region = getRequestRegion()
-            val language = getLanguageForRegion(region)
-            val body = Innertube.webRemixBody(language, region) {
-                put("browseId", browseId)
-            }
-            val request = Innertube.musicPost(
-                endpoint = Innertube.BROWSE,
-                body = body,
-                acceptLanguage = getAcceptLanguageHeader(language, region)
-            )
-            val response = client.newCall(request).execute()
-            val code = response.code
-            val responseStr = response.body?.string().orEmpty()
-            
-            Log.d(TAG, "🧪 testAlbumBrowseRaw HTTP status: $code")
-            Log.d(TAG, "🧪 testAlbumBrowseRaw response length: ${responseStr.length}")
-            Log.d(TAG, "🧪 testAlbumBrowseRaw first 1500: ${responseStr.take(1500)}")
-            
-            val cacheFile = java.io.File("/data/data/com.sonicmusic.app/cache", " album_raw_${browseId.replace("[^a-zA-Z0-9_-]".toRegex(), " _")}.json")
-            cacheFile.parentFile?.mkdirs()
-            cacheFile.writeText(responseStr)
-            Log.d(TAG, "🧪 testAlbumBrowseRaw saved to: ${cacheFile.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ testAlbumBrowseRaw error", e)
-        }
-    }
-
-    suspend fun testNextEndpointRaw(videoId: String, playlistId: String?) = withContext(Dispatchers.IO) {
-        try {
-            val region = getRequestRegion()
-            val language = getLanguageForRegion(region)
-            val body = Innertube.webRemixBody(language, region) {
-                put("videoId", videoId)
-                if (playlistId != null) {
-                    put("playlistId", playlistId)
-                }
-                put("isAudioOnly", true)
-            }
-            val request = Innertube.musicPost(
-                endpoint = Innertube.NEXT,
-                body = body,
-                acceptLanguage = getAcceptLanguageHeader(language, region)
-            )
-            val response = client.newCall(request).execute()
-            val code = response.code
-            val responseStr = response.body?.string().orEmpty()
-            
-            Log.d(TAG, "🧪 testNextEndpointRaw HTTP status: $code")
-            Log.d(TAG, "🧪 testNextEndpointRaw response length: ${responseStr.length}")
-            Log.d(TAG, "🧪 testNextEndpointRaw first 1500: ${responseStr.take(1500)}")
-            
-            val cacheFile = java.io.File("/data/data/com.sonicmusic.app/cache", " next_raw_${videoId}_${playlistId.orEmpty().replace("[^a-zA-Z0-9_-]".toRegex(), " _")}.json")
-            cacheFile.parentFile?.mkdirs()
-            cacheFile.writeText(responseStr)
-            Log.d(TAG, "🧪 testNextEndpointRaw saved to: ${cacheFile.absolutePath}")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ testNextEndpointRaw error", e)
         }
     }
 }

@@ -213,8 +213,9 @@ dependencies {
     // Baseline Profiles
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     
-    // Material Color Utilities
+    // Material Color Utilities & Material Components
     implementation(libs.material.color.utilities)
+    implementation(libs.google.material)
     
     // NewPipe Extractor (YouTube stream extraction)
     implementation(libs.newpipe.extractor)

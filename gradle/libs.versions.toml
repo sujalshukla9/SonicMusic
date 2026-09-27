@@ -30,8 +30,10 @@ materialColorUtilities = "1.0.0-alpha01"
 work = "2.10.0"
 hiltWork = "1.2.0"
 graphics-shapes = "1.0.1"
+material = "1.12.0"
 
 [libraries]
+google-material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 androidx-graphics-shapes = { group = "androidx.graphics", name = "graphics-shapes", version.ref = "graphics-shapes" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

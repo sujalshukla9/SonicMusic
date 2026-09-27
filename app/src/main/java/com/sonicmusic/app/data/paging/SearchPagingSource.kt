@@ -5,7 +5,7 @@ import androidx.paging.PagingState
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.presentation.state.SearchFilters
+import com.sonicmusic.app.shared.state.SearchFilters
 import retrofit2.HttpException
 import java.io.IOException
 
@@ -79,10 +79,10 @@ class SearchPagingSource(
         return musicSongs.filter { song ->
             // Duration filter (user-selected)
             when (filters.duration) {
-                com.sonicmusic.app.presentation.state.DurationFilter.Any -> true
-                com.sonicmusic.app.presentation.state.DurationFilter.Short -> song.duration in 1..240
-                com.sonicmusic.app.presentation.state.DurationFilter.Medium -> song.duration in 241..600
-                com.sonicmusic.app.presentation.state.DurationFilter.Long -> song.duration > 600
+                com.sonicmusic.app.shared.state.DurationFilter.Any -> true
+                com.sonicmusic.app.shared.state.DurationFilter.Short -> song.duration in 1..240
+                com.sonicmusic.app.shared.state.DurationFilter.Medium -> song.duration in 241..600
+                com.sonicmusic.app.shared.state.DurationFilter.Long -> song.duration > 600
             }
         }
     }

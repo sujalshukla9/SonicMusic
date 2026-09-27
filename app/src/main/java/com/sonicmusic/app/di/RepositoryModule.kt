@@ -3,20 +3,20 @@ package com.sonicmusic.app.di
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.data.remote.source.NewPipeService
 import com.sonicmusic.app.data.remote.source.YouTubeiService
-import com.sonicmusic.app.data.repository.HistoryRepositoryImpl
-import com.sonicmusic.app.data.repository.ListenAgainRepositoryImpl
-import com.sonicmusic.app.data.repository.LocalMusicRepositoryImpl
-import com.sonicmusic.app.data.repository.PlaylistRepositoryImpl
-import com.sonicmusic.app.data.repository.QueueRepositoryImpl
-import com.sonicmusic.app.data.repository.RecentSearchRepositoryImpl
-import com.sonicmusic.app.data.repository.RecommendationRepositoryImpl
-import com.sonicmusic.app.data.repository.SearchRepositoryImpl
-import com.sonicmusic.app.data.repository.SearchSuggestionRepositoryImpl
+import com.sonicmusic.app.features.library.data.HistoryRepositoryImpl
+import com.sonicmusic.app.features.recommendations.data.ListenAgainRepositoryImpl
+import com.sonicmusic.app.features.library.data.LocalMusicRepositoryImpl
+import com.sonicmusic.app.features.library.data.PlaylistRepositoryImpl
+import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
+import com.sonicmusic.app.features.search.data.RecentSearchRepositoryImpl
+import com.sonicmusic.app.features.recommendations.data.RecommendationRepositoryImpl
+import com.sonicmusic.app.features.search.data.SearchRepositoryImpl
+import com.sonicmusic.app.features.search.data.SearchSuggestionRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
-import com.sonicmusic.app.data.repository.ArtistRepositoryImpl
-import com.sonicmusic.app.data.repository.AlbumRepositoryImpl
+import com.sonicmusic.app.features.artists.data.ArtistRepositoryImpl
+import com.sonicmusic.app.features.albums.data.AlbumRepositoryImpl
 import com.sonicmusic.app.domain.repository.AlbumRepository
-import com.sonicmusic.app.data.repository.LyricsRepositoryImpl
+import com.sonicmusic.app.features.library.data.LyricsRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.ListenAgainRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
@@ -31,8 +31,8 @@ import com.sonicmusic.app.domain.repository.ArtistRepository
 import com.sonicmusic.app.domain.repository.LyricsRepository
 import com.sonicmusic.app.domain.repository.PlayerRepository
 import com.sonicmusic.app.domain.repository.HomeRepository
-import com.sonicmusic.app.data.repository.PlayerRepositoryImpl
-import com.sonicmusic.app.data.repository.InnertubeHomeRepository
+import com.sonicmusic.app.features.player.data.PlayerRepositoryImpl
+import com.sonicmusic.app.features.home.data.InnertubeHomeRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -101,7 +101,7 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindUserTasteRepository(
-        impl: com.sonicmusic.app.data.repository.UserTasteRepositoryImpl
+        impl: com.sonicmusic.app.features.recommendations.data.UserTasteRepositoryImpl
     ): com.sonicmusic.app.domain.repository.UserTasteRepository
 
     @Binds
@@ -119,7 +119,7 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindQuickPicksRepository(
-        impl: com.sonicmusic.app.data.repository.QuickPicksRepositoryImpl
+        impl: com.sonicmusic.app.features.recommendations.data.QuickPicksRepositoryImpl
     ): com.sonicmusic.app.domain.repository.QuickPicksRepository
 
     @Binds
@@ -131,7 +131,7 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindBrowseRepository(
-        impl: com.sonicmusic.app.data.repository.BrowseRepositoryImpl
+        impl: com.sonicmusic.app.features.charts.data.BrowseRepositoryImpl
     ): com.sonicmusic.app.domain.repository.BrowseRepository
 
     @Binds
@@ -143,7 +143,7 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindChartsRepository(
-        impl: com.sonicmusic.app.data.repository.ChartsRepositoryImpl
+        impl: com.sonicmusic.app.features.charts.data.ChartsRepositoryImpl
     ): com.sonicmusic.app.domain.repository.ChartsRepository
 
     @Binds

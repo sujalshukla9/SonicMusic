@@ -19,7 +19,8 @@ data class ShelfItem(
     val duration: Int = 0,
     val thumbnailUrl: String,
     val viewCount: Long? = null,
-    val contentType: ContentType = ContentType.SONG
+    val contentType: ContentType = ContentType.SONG,
+    val artists: List<ArtistRef> = emptyList()
 ) {
     /**
      * Map this [ShelfItem] to the standard [Song] domain model.
@@ -34,6 +35,10 @@ data class ShelfItem(
         duration = duration,
         thumbnailUrl = thumbnailUrl,
         viewCount = viewCount,
-        contentType = contentType
+        contentType = contentType,
+        artists = if (artists.isNotEmpty()) artists else {
+            val ids = artistId?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+            if (artist.isNotBlank()) listOf(ArtistRef(artist, ids.firstOrNull())) else emptyList()
+        }
     )
 }

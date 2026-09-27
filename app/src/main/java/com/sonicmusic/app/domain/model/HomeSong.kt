@@ -14,7 +14,9 @@ data class HomeSong(
     val artists: List<String>,
     val album: String?,
     val thumbnailUrl: String,
-    val durationText: String?
+    val durationText: String?,
+    val artistBrowseIds: List<String> = emptyList(),
+    val artistRefs: List<ArtistRef> = emptyList()
 )
 
 /**

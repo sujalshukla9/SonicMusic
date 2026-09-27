@@ -7,11 +7,11 @@ package com.sonicmusic.app.data.remote.source
 object YtmScopeConfig {
 
     object ClientContext {
-        const val CLIENT_NAME = "WEB_REMIX"
-        const val CLIENT_VERSION = "1.20260601.01.00"
-        const val PLATFORM = "DESKTOP"
-        const val USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+        const val CLIENT_NAME = InnertubeConfig.ClientContext.CLIENT_NAME
+        const val CLIENT_VERSION = InnertubeConfig.ClientContext.CLIENT_VERSION
+        const val PLATFORM = InnertubeConfig.ClientContext.PLATFORM
+        const val USER_AGENT = InnertubeConfig.ClientContext.USER_AGENT
+        const val HOST = InnertubeConfig.ClientContext.HOST
     }
 
     object PermittedBrowseIds {
@@ -57,10 +57,8 @@ object YtmScopeConfig {
             "MUSIC_VIDEO_TYPE_PODCAST_EPISODE"
         )
 
-        // Case-insensitive regex blacklist for non-music / fan-edited / UGC edits
-        val TITLE_BLACKLIST_REGEX = Regex(
-            "(?i)(mashup|slowed|reverb|8d\\s+audio|lofi\\s+remix|tiktok|viral\\s+songs|compilation|fanmade|tribute|cover|live\\s+performance)"
-        )
+        // Case-insensitive regex blacklist for non-music / compilations / fan-edited / UGC edits
+        val TITLE_BLACKLIST_REGEX = InnertubeConfig.COMPILATION_OR_SPAM_REGEX
 
         const val REQUIRE_ARTIST_LINK_IF_TYPE_MISSING = true
     }

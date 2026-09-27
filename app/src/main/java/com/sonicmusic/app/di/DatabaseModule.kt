@@ -35,12 +35,18 @@ object DatabaseModule {
             }
         }
 
+        val migration11to12 = object : androidx.room.migration.Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE songs ADD COLUMN artistsJson TEXT DEFAULT NULL")
+            }
+        }
+
         val builder = Room.databaseBuilder(
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
         )
-            .addMigrations(migration9to10, migration10to11)
+            .addMigrations(migration9to10, migration10to11, migration11to12)
             .fallbackToDestructiveMigrationOnDowngrade()
 
         if (com.sonicmusic.app.BuildConfig.DEBUG) {
@@ -112,7 +118,7 @@ object DatabaseModule {
         val executor = Executors.newFixedThreadPool(4)
         val baseHttpFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
-        val dataSourceFactory = com.sonicmusic.app.player.playback.DynamicUserAgentHttpDataSourceFactory(baseHttpFactory)
+        val dataSourceFactory = com.sonicmusic.app.features.player.service.DynamicUserAgentHttpDataSourceFactory(baseHttpFactory)
             
         return androidx.media3.exoplayer.offline.DownloadManager(
             context,

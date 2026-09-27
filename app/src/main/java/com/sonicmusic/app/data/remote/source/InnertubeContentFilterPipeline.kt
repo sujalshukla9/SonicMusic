@@ -146,7 +146,7 @@ class InnertubePipelineOrchestrator @Inject constructor(
         // A. CACHING LAYER: Check if we have valid cached content
         val cached = shelfCache[cacheKey]
         if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS) {
-            Log.d(TAG, "♻️ Cache hit for shelf key: $cacheKey")
+            Log.d(TAG, "Cache hit for shelf key: $cacheKey")
             return@withContext cached.items
         }
 
@@ -184,11 +184,11 @@ class InnertubePipelineOrchestrator @Inject constructor(
 
             // Store in cache before returning
             shelfCache[cacheKey] = CacheEntry(cleanItems, System.currentTimeMillis())
-            Log.d(TAG, "✅ Cache updated for $cacheKey (${cleanItems.size} items)")
+            Log.d(TAG, "Cache updated for $cacheKey (${cleanItems.size} items)")
             
             cleanItems
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Pipeline failed for browseId $browseId", e)
+            Log.e(TAG, "Pipeline failed for browseId $browseId", e)
             emptyList()
         }
     }

@@ -8,7 +8,9 @@ data class ChartSong(
     val durationText: String?,
     val rank: Int?,
     val albumBrowseId: String? = null,
-    val albumName: String? = null
+    val albumName: String? = null,
+    val artistBrowseIds: List<String> = emptyList(),
+    val artistRefs: List<ArtistRef> = emptyList()
 )
 
 data class ChartArtist(

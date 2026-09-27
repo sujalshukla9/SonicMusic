@@ -1,7 +1,7 @@
 package com.sonicmusic.app.data.repository
 
 import android.util.Log
-import com.sonicmusic.app.data.downloadmanager.SongDownloadManager
+import com.sonicmusic.app.features.downloads.data.SongDownloadManager
 import com.sonicmusic.app.data.local.dao.FollowedArtistDao
 import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
 import com.sonicmusic.app.data.local.dao.SongDao
@@ -15,9 +15,9 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.repository.UserTasteRepository
-import com.sonicmusic.app.domain.usecase.NewReleaseScoringEngine
-import com.sonicmusic.app.domain.usecase.TrendingScoringEngine
-import com.sonicmusic.app.player.audio.AudioEngine
+import com.sonicmusic.app.features.recommendations.engine.NewReleaseScoringEngine
+import com.sonicmusic.app.features.recommendations.engine.TrendingScoringEngine
+import com.sonicmusic.app.features.player.audio.AudioEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -84,8 +84,11 @@ class SongRepositoryImpl @Inject constructor(
     override suspend fun getSongById(id: String): Result<Song> {
         // Try to get from database first
         val cachedSong = songDao.getSongById(id)
-        if (cachedSong != null && !cachedSong.albumId.isNullOrBlank()) {
+        if (cachedSong != null && cachedSong.title.isNotBlank() && cachedSong.artist.isNotBlank() && !cachedSong.albumId.isNullOrBlank()) {
             return Result.success(cachedSong.toSong())
+        }
+        if (cachedSong != null && (cachedSong.title.isBlank() || cachedSong.artist.isBlank())) {
+            songDao.deleteSong(id)
         }
 
         // Fetch from API
@@ -122,7 +125,7 @@ class SongRepositoryImpl @Inject constructor(
                 }
             }
             .onSuccess { song ->
-                val entityToInsert = if (cachedSong != null) {
+                val entityToInsert = if (cachedSong != null && cachedSong.title.isNotBlank()) {
                     song.toEntity().copy(
                         isLiked = cachedSong.isLiked,
                         likedAt = cachedSong.likedAt,
@@ -137,53 +140,7 @@ class SongRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String> {
-        val effectiveQuality = resolveQuality(quality)
-
-        // Prefer offline file when the song is downloaded.
-        songDownloadManager.getPlaybackFile(songId).getOrNull()?.let { localFile ->
-            val localUri = localFile.absolutePath
-            Log.d(TAG, "📦 Using offline file for song=$songId")
-            return Result.success(localUri)
-        }
-
-        // Check if we have a cached stream URL
-        val cachedSong = songDao.getSongById(songId)
-        if (cachedSong?.cachedStreamUrl != null &&
-            cachedSong.cacheExpiry != null && 
-            cachedSong.cacheExpiry > System.currentTimeMillis() &&
-            streamQualityCache[songId] == effectiveQuality
-        ) {
-            return Result.success(cachedSong.cachedStreamUrl)
-        }
-
-        val streamUrl = audioStreamExtractor.extractAudioStreamUrl(songId, effectiveQuality)
-            .getOrElse { return Result.failure(it) }
-
-        streamQualityCache[songId] = effectiveQuality
-
-        Log.d(
-            TAG,
-            "🎚️ Stream quality requested=${quality.name}, effective=${effectiveQuality.name}, source=innertube_aac, song=$songId",
-        )
-
-        // Cache the URL for 30 minutes (YouTube URLs expire quickly)
-        val expiry = System.currentTimeMillis() + (30 * 60 * 1000)
-        songDao.updateSong(
-            cachedSong?.copy(
-                cachedStreamUrl = streamUrl,
-                cacheExpiry = expiry,
-            ) ?: SongEntity(
-                id = songId,
-                title = "",
-                artist = "",
-                duration = 0,
-                thumbnailUrl = "",
-                cachedStreamUrl = streamUrl,
-                cacheExpiry = expiry,
-            ),
-        )
-
-        return Result.success(streamUrl)
+        return getStreamWithInfo(songId, quality).map { it.first }
     }
 
     override suspend fun getStreamWithInfo(
@@ -204,13 +161,16 @@ class SongRepositoryImpl @Inject constructor(
             return Result.success(localUri to localInfo)
         }
 
-        val cachedSong = songDao.getSongById(songId)
+        val cachedSong = songDao.getSongById(songId)?.takeIf { it.title.isNotBlank() && it.artist.isNotBlank() }
         if (cachedSong?.cachedStreamUrl != null &&
             cachedSong.cacheExpiry != null &&
             cachedSong.cacheExpiry > System.currentTimeMillis() &&
             streamQualityCache[songId] == effectiveQuality
         ) {
-            val cachedInfo = fallbackStreamInfo(quality = effectiveQuality)
+            // Confirm the cached URL's own InnerTube rendition. Do not inherit a
+            // video-level result from a different quality or codec.
+            val hasAtmos = audioStreamExtractor.detectDolbyAtmos(songId, cachedSong.cachedStreamUrl)
+            val cachedInfo = fallbackStreamInfo(quality = effectiveQuality).copy(hasDolbyAtmos = hasAtmos)
             audioEngine.updateStreamInfo(cachedInfo)
             return Result.success(cachedSong.cachedStreamUrl to cachedInfo)
         }
@@ -221,20 +181,14 @@ class SongRepositoryImpl @Inject constructor(
         streamQualityCache[songId] = effectiveQuality
 
         val expiry = System.currentTimeMillis() + (30 * 60 * 1000)
-        songDao.updateSong(
-            cachedSong?.copy(
-                cachedStreamUrl = streamUrl,
-                cacheExpiry = expiry,
-            ) ?: SongEntity(
-                id = songId,
-                title = "",
-                artist = "",
-                duration = 0,
-                thumbnailUrl = "",
-                cachedStreamUrl = streamUrl,
-                cacheExpiry = expiry,
-            ),
-        )
+        if (cachedSong != null) {
+            songDao.updateSong(
+                cachedSong.copy(
+                    cachedStreamUrl = streamUrl,
+                    cacheExpiry = expiry,
+                )
+            )
+        }
 
         audioEngine.updateStreamInfo(info)
         return Result.success(streamUrl to info)
@@ -269,12 +223,12 @@ class SongRepositoryImpl @Inject constructor(
         return try {
             val rawReleases = youTubeiService.getNewReleases(limit)
                 .getOrNull().orEmpty()
-            Log.d(TAG, "🆕 New Releases directly from YTM: ${rawReleases.size} songs")
+            Log.d(TAG, "New Releases directly from YTM: ${rawReleases.size} songs")
             Result.success(rawReleases.take(limit))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ New releases fetch failed", e)
+            Log.e(TAG, "New releases fetch failed", e)
             Result.success(emptyList())
         }
     }
@@ -283,12 +237,12 @@ class SongRepositoryImpl @Inject constructor(
         return try {
             val rawTrending = youTubeiService.getTrendingSongs(limit)
                 .getOrNull().orEmpty()
-            Log.d(TAG, "🔥 Trending directly from YTM: ${rawTrending.size} songs")
+            Log.d(TAG, "Trending directly from YTM: ${rawTrending.size} songs")
             Result.success(rawTrending.take(limit))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Trending fetch failed", e)
+            Log.e(TAG, "Trending fetch failed", e)
             Result.success(emptyList())
         }
     }
@@ -301,7 +255,7 @@ class SongRepositoryImpl @Inject constructor(
                 .filter(::isLikelyEnglishTrack)
 
             if (hits.isNotEmpty()) {
-                Log.d(TAG, "🌍 English hits directly from YTM: ${hits.size} songs")
+                Log.d(TAG, "English hits directly from YTM: ${hits.size} songs")
                 Result.success(hits.take(safeLimit))
             } else {
                 val year = Calendar.getInstance().get(Calendar.YEAR)
@@ -313,7 +267,7 @@ class SongRepositoryImpl @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "❌ English hits fetch failed", e)
+            Log.e(TAG, "English hits fetch failed", e)
             Result.success(emptyList())
         }
     }

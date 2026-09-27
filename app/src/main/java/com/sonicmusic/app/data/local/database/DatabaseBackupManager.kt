@@ -27,7 +27,7 @@ class DatabaseBackupManager @Inject constructor(
      */
     suspend fun backupDatabase(outputStream: OutputStream): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            Log.d(TAG, "📦 Starting database backup...")
+            Log.d(TAG, "Starting database backup...")
             // 1. Force a full checkpoint to commit as much as possible
             runCatching {
                 val db = database.openHelper.writableDatabase
@@ -79,7 +79,7 @@ class DatabaseBackupManager @Inject constructor(
                 }
             }
             outputStream.flush()
-            Log.d(TAG, "✅ Database and settings backup successfully written to ZIP stream.")
+            Log.d(TAG, "Database and settings backup successfully written to ZIP stream.")
             Unit
         }
     }
@@ -90,7 +90,7 @@ class DatabaseBackupManager @Inject constructor(
      */
     suspend fun restoreDatabase(inputStream: InputStream): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            Log.d(TAG, "📦 Starting database restore...")
+            Log.d(TAG, "Starting database restore...")
             // 1. Close current Room connection
             database.close()
 
@@ -164,7 +164,7 @@ class DatabaseBackupManager @Inject constructor(
                 }
             }
 
-            Log.d(TAG, "✅ Database and settings successfully restored.")
+            Log.d(TAG, "Database and settings successfully restored.")
             Unit
         }
     }

@@ -96,6 +96,14 @@ class RegionRepository @Inject constructor(
     }
 
     private suspend fun fetchAndSaveRegion() {
+        // 1. Primary: Dynamic detection directly from YouTube Music / InnerTube context
+        val innertubeResponse = runCatching { youTubeiService.detectCountryFromInnertube() }.getOrNull()
+        if (innertubeResponse != null && saveRegionFromInnertube(innertubeResponse)) {
+            android.util.Log.d("RegionRepository", "Resolved region dynamically from InnerTube context: $innertubeResponse")
+            return
+        }
+
+        // 2. Secondary: External IP geolocation APIs as fallback
         val primaryResponse = runCatching { regionApi.getRegion() }.getOrNull()
         if (primaryResponse != null && saveRegionFromResponse(primaryResponse)) {
             return
@@ -111,12 +119,7 @@ class RegionRepository @Inject constructor(
             return
         }
 
-        val innertubeResponse = runCatching { youTubeiService.detectCountryFromInnertube() }.getOrNull()
-        if (innertubeResponse != null && saveRegionFromInnertube(innertubeResponse)) {
-            return
-        }
-
-        android.util.Log.e("RegionRepository", " All region fetch attempts failed, falling back to locale")
+        android.util.Log.e("RegionRepository", "All region fetch attempts failed, falling back to locale")
         fallbackToLocale()
     }
 

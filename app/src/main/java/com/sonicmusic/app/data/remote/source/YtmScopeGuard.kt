@@ -116,7 +116,7 @@ object YtmScopeGuard {
         val filtered = items.filter { item ->
             // Step 3 (early rejection): Title blacklist
             if (isTitleBlacklisted(item.title)) {
-                logDebug("🚫 Filtered out (Title Blacklist): '${item.title}'")
+                logDebug("Filtered out (Title Blacklist): '${item.title}'")
                 return@filter false
             }
 
@@ -127,7 +127,7 @@ object YtmScopeGuard {
                     true
                 }
                 false -> {
-                    logDebug("🚫 Filtered out (Rejected videoType=${item.videoType}): '${item.title}' by '${item.artistName}'")
+                    logDebug("Filtered out (Rejected videoType=${item.videoType}): '${item.title}' by '${item.artistName}'")
                     false
                 }
                 null -> {
@@ -140,10 +140,10 @@ object YtmScopeGuard {
                         isOfficialArtist = item.isOfficialArtist
                     )
                     if (validArtist) {
-                        logDebug("⚠️ Fallback kept (Valid Artist Link): '${item.title}' by '${item.artistName}'")
+                        logDebug("Fallback kept (Valid Artist Link): '${item.title}' by '${item.artistName}'")
                         true
                     } else {
-                        logDebug("🚫 Filtered out (No valid artist link & missing videoType): '${item.title}' by '${item.artistName}'")
+                        logDebug("Filtered out (No valid artist link & missing videoType): '${item.title}' by '${item.artistName}'")
                         false
                     }
                 }

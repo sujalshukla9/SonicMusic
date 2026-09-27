@@ -2,7 +2,7 @@ package com.sonicmusic.app.domain.repository
 
 import androidx.paging.PagingData
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.presentation.state.SearchFilters
+import com.sonicmusic.app.shared.state.SearchFilters
 import kotlinx.coroutines.flow.Flow
 
 /**

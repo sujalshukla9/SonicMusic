@@ -211,7 +211,7 @@ object Innertube {
         return Request.Builder()
             .url(url)
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .header("Content-Type", " application/json")
+            .header("Content-Type", "application/json")
             .header("User-Agent", WEB_USER_AGENT)
             .header("X-Goog-Api-Key", API_KEY)
             .header("Accept-Language", acceptLanguage)
@@ -269,7 +269,7 @@ object Innertube {
         return Request.Builder()
             .url(url)
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .header("Content-Type", " application/json")
+            .header("Content-Type", "application/json")
             .header("User-Agent", ANDROID_USER_AGENT)
             .header("Accept-Language", acceptLanguage)
             .apply {
@@ -292,7 +292,7 @@ object Innertube {
         val parsed = raw.toHttpUrl()
         val builder = parsed.newBuilder()
         if (parsed.queryParameter("prettyPrint") == null) {
-            builder.addQueryParameter("prettyPrint", " false")
+            builder.addQueryParameter("prettyPrint", "false")
         }
         if (parsed.queryParameter("key") == null) {
             builder.addQueryParameter("key", key)

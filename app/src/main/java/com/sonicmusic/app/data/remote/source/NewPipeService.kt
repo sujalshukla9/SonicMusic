@@ -2,6 +2,7 @@ package com.sonicmusic.app.data.remote.source
 
 import android.util.Log
 import com.sonicmusic.app.core.util.ThumbnailUrlUtils
+import com.sonicmusic.app.domain.model.ArtistRef
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
@@ -37,8 +38,8 @@ class NewPipeService @Inject constructor() {
     companion object {
         private const val TAG = "NewPipeService"
         private var isInitialized = false
-        private const val CAPTCHA_COOLDOWN_MS = 15 * 60 * 1000L
-        private val ENGLISH_LOCALIZATION = Localization("en", " US")
+        private const val CAPTCHA_COOLDOWN_MS = 30 * 1000L // 30s cooldown instead of 15m
+        private val ENGLISH_LOCALIZATION = Localization("en", "US")
     }
 
     @Volatile
@@ -62,9 +63,9 @@ class NewPipeService @Inject constructor() {
                 ContentCountry.DEFAULT,
             )
             isInitialized = true
-            Log.d(TAG, "✅ NewPipe Extractor initialized")
+            Log.d(TAG, "NewPipe Extractor initialized")
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to initialize NewPipe", e)
+            Log.e(TAG, "Failed to initialize NewPipe", e)
         }
     }
 
@@ -78,9 +79,9 @@ class NewPipeService @Inject constructor() {
                 ENGLISH_LOCALIZATION,
                 ContentCountry(countryCode)
             )
-            Log.d(TAG, "🌍 NewPipe region updated to: $countryCode")
+            Log.d(TAG, "NewPipe region updated to: $countryCode")
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to update NewPipe region", e)
+            Log.e(TAG, "Failed to update NewPipe region", e)
         }
     }
 
@@ -103,37 +104,37 @@ class NewPipeService @Inject constructor() {
             return@withContext Result.failure(Exception("NewPipe temporarily blocked by reCAPTCHA"))
         }
 
-        Log.d(TAG, "🎵 Extracting audio for: $videoId (tier: ${quality.displayName})")
+        Log.d(TAG, "Extracting audio for: $videoId (tier: ${quality.displayName})")
         
         try {
             val url = "https://www.youtube.com/watch?v=$videoId"
             val streamInfo = StreamInfo.getInfo(NewPipe.getService(0), url)
             
             val audioStreams = streamInfo.audioStreams
-            Log.d(TAG, "📊 Found ${audioStreams.size} audio streams")
+            Log.d(TAG, "Found ${audioStreams.size} audio streams")
             
             if (audioStreams.isEmpty()) {
-                Log.e(TAG, "❌ No audio streams available")
+                Log.e(TAG, "No audio streams available")
                 return@withContext Result.failure(Exception("No audio streams available"))
             }
             
             // Log available streams for debugging
             audioStreams.forEach { stream ->
-                Log.d(TAG, "  📡 ${stream.format?.name}: ${stream.averageBitrate}kbps")
+                Log.d(TAG, "  ${stream.format?.name}: ${stream.averageBitrate}kbps")
             }
             
             // Select best stream based on quality preference with codec awareness
             val selectedStream = selectBestAudioStream(audioStreams, quality)
             
             if (selectedStream == null) {
-                Log.e(TAG, "❌ Could not select audio stream")
+                Log.e(TAG, "Could not select audio stream")
                 return@withContext Result.failure(Exception("Could not select audio stream"))
             }
             
             // Get the stream URL
             val streamUrl = selectedStream.content
             if (streamUrl.isNullOrEmpty()) {
-                Log.e(TAG, "❌ Stream URL is empty")
+                Log.e(TAG, "Stream URL is empty")
                 return@withContext Result.failure(Exception("Stream URL is empty"))
             }
             
@@ -155,18 +156,18 @@ class NewPipeService @Inject constructor() {
                 channelCount = 2,
             )
             
-            Log.d(TAG, "✅ Selected: ${info.fullDescription}")
-            Log.d(TAG, "🏷️ Quality: ${info.qualityBadge}")
-            Log.d(TAG, "🔗 URL: ${streamUrl.take(80)}...")
+            Log.d(TAG, "Selected: ${info.fullDescription}")
+            Log.d(TAG, "Quality: ${info.qualityBadge}")
+            Log.d(TAG, "URL: ${streamUrl.take(80)}...")
             
             Result.success(Pair(streamUrl, info))
             
         } catch (e: ReCaptchaException) {
             markCaptchaBlocked()
-            Log.w(TAG, "⚠️ NewPipe blocked by reCAPTCHA. Cooling down before next attempt.")
+            Log.w(TAG, "NewPipe blocked by reCAPTCHA. Cooling down before next attempt.")
             Result.failure(e)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Extraction failed: ${e.message}", e)
+            Log.e(TAG, "Extraction failed: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -244,13 +245,28 @@ class NewPipeService @Inject constructor() {
             // Use maxresdefault for highest quality thumbnail
             val thumbnailUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
             
+            val author = streamInfo.uploaderName ?: "Unknown Artist"
+            val artistInfo = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(
+                runs = null,
+                playerAuthor = author
+            )
+            val uploaderUrl = streamInfo.uploaderUrl.orEmpty()
+            val channelId = if (uploaderUrl.contains("/channel/")) {
+                uploaderUrl.substringAfter("/channel/").substringBefore("/").takeIf { it.startsWith("UC") }
+            } else null
+
+            val artistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                artistInfo.individuals.map { ArtistRef(it.name, it.browseId ?: channelId) }
+            } else {
+                listOf(ArtistRef(artistInfo.displayName, channelId))
+            }
+
             val song = Song(
                 id = videoId,
                 title = streamInfo.name,
-                artist = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(
-                    runs = null,
-                    playerAuthor = streamInfo.uploaderName ?: "Unknown Artist"
-                ).displayName,
+                artist = artistInfo.displayName,
+                artistId = channelId ?: artistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId,
+                artists = artistRefs,
                 duration = streamInfo.duration.toInt(),
                 thumbnailUrl = thumbnailUrl,
             )
@@ -258,7 +274,7 @@ class NewPipeService @Inject constructor() {
             Result.success(song)
         } catch (e: ReCaptchaException) {
             markCaptchaBlocked()
-            Log.w(TAG, "⚠️ NewPipe song details blocked by reCAPTCHA.")
+            Log.w(TAG, "NewPipe song details blocked by reCAPTCHA.")
             Result.failure(e)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get song details", e)
@@ -285,7 +301,7 @@ class NewPipeService @Inject constructor() {
             val targetSize = safeOffset + safeLimit
             val maxPagesToFetch = 20
 
-            Log.d(TAG, "🔍 Searching: $query (limit=$safeLimit, offset=$safeOffset)")
+            Log.d(TAG, "Searching: $query (limit=$safeLimit, offset=$safeOffset)")
 
             val service = getYouTubeService()
             val searchExtractor = service.getSearchExtractor(
@@ -325,15 +341,15 @@ class NewPipeService @Inject constructor() {
                 .drop(safeOffset)
                 .take(safeLimit)
 
-            Log.d(TAG, "✅ Found ${songs.size} songs (unique=${uniqueSongs.size}, pages=$fetchedPages)")
+            Log.d(TAG, "Found ${songs.size} songs (unique=${uniqueSongs.size}, pages=$fetchedPages)")
             Result.success(songs)
 
         } catch (e: ReCaptchaException) {
             markCaptchaBlocked()
-            Log.w(TAG, "⚠️ NewPipe search blocked by reCAPTCHA for query=\"$query\"")
+            Log.w(TAG, "NewPipe search blocked by reCAPTCHA for query=\"$query\"")
             Result.failure(e)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Search failed", e)
+            Log.e(TAG, "Search failed", e)
             Result.failure(e)
         }
     }
@@ -352,7 +368,7 @@ class NewPipeService @Inject constructor() {
 
         try {
             val safeLimit = limit.coerceAtLeast(1).coerceAtMost(2000)
-            Log.d(TAG, "🎤 Fetching songs for artist: $artistName (limit=$safeLimit)")
+            Log.d(TAG, "Fetching songs for artist: $artistName (limit=$safeLimit)")
 
             val service = getYouTubeService()
             val searchExtractor = service.getSearchExtractor(
@@ -395,17 +411,21 @@ class NewPipeService @Inject constructor() {
             }
 
             val songs = uniqueSongs.values.take(safeLimit)
-            Log.d(TAG, "✅ Found ${songs.size} songs for artist: $artistName (pages=$fetchedPages)")
+            Log.d(TAG, "Found ${songs.size} songs for artist: $artistName (pages=$fetchedPages)")
             Result.success(songs)
 
         } catch (e: ReCaptchaException) {
             markCaptchaBlocked()
-            Log.w(TAG, "⚠️ NewPipe artist search blocked by reCAPTCHA for artist=\"$artistName\"")
+            Log.w(TAG, "NewPipe artist search blocked by reCAPTCHA for artist=\"$artistName\"")
             Result.failure(e)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Artist songs fetch failed", e)
+            Log.e(TAG, "Artist songs fetch failed", e)
             Result.failure(e)
         }
+    }
+
+    fun resetCooldown() {
+        captchaBlockedUntilMs = 0L
     }
 
     private fun markCaptchaBlocked() {
@@ -421,13 +441,28 @@ class NewPipeService @Inject constructor() {
             val videoId = extractVideoId(item.url)
             if (videoId.isBlank()) return null
 
+            val author = item.uploaderName ?: "Unknown"
+            val artistInfo = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(
+                runs = null,
+                playerAuthor = author
+            )
+            val uploaderUrl = item.uploaderUrl.orEmpty()
+            val channelId = if (uploaderUrl.contains("/channel/")) {
+                uploaderUrl.substringAfter("/channel/").substringBefore("/").takeIf { it.startsWith("UC") }
+            } else null
+
+            val artistRefs = if (artistInfo.individuals.isNotEmpty()) {
+                artistInfo.individuals.map { ArtistRef(it.name, it.browseId ?: channelId) }
+            } else {
+                listOf(ArtistRef(artistInfo.displayName, channelId))
+            }
+
             Song(
                 id = videoId,
                 title = item.name,
-                artist = com.sonicmusic.app.data.remote.model.ArtistExtractor.extract(
-                    runs = null,
-                    playerAuthor = item.uploaderName ?: "Unknown"
-                ).displayName,
+                artist = artistInfo.displayName,
+                artistId = channelId ?: artistRefs.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId,
+                artists = artistRefs,
                 duration = item.duration.toInt(),
                 thumbnailUrl = selectBestThumbnailUrl(item, videoId)
             )
@@ -495,8 +530,8 @@ class NewPipeService @Inject constructor() {
      */
     private fun extractVideoId(url: String): String {
         return when {
-            url.contains("v=") -> url.substringAfter(" v=").substringBefore("&")
-            url.contains("youtu.be/") -> url.substringAfter(" youtu.be/").substringBefore("?")
+            url.contains("v=") -> url.substringAfter("v=").substringBefore("&")
+            url.contains("youtu.be/") -> url.substringAfter("youtu.be/").substringBefore("?")
             else -> url
         }
     }
