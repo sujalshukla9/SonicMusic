@@ -1,26 +1,79 @@
+# Built application files
+*.apk
+*.ap_
+*.aab
 
-# IDEs
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated build files
+bin/
+gen/
+out/
+build/
+*/build/
+/build/
+app/build/
+
+# Android Studio Navigation editor temp files
+.navigation/
+
+# IDE & Editor files
 .idea/
 .vscode/
-
 *.iml
-.gradle
-/local.properties
+*.iws
+*.ipr
+.idea_modules/
+captures/
+.externalNativeBuild/
+.cxx/
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-local.properties
 
-# Sensitive files
+# Gradle files
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+
+# Keystores & Signing Keys (Sensitive)
 *.jks
-*.apk
+*.keystore
+*.p12
+*.pem
+*.key
+*.pk8
+*.crt
 keystore/
+keystores/
+
+# Secrets, Properties & Environment configs (Sensitive)
+local.properties
+*local.properties
+secrets.properties
+signing.properties
+keystore.properties
+*.env
+*.env.*
+.env*
+google-services.json
+GoogleService-Info.plist
+oauth_keys.json
+credentials.json
+client_secrets*.json
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

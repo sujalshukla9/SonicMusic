@@ -1,0 +1,15 @@
+## This file is a template. Copy to local.properties and add your own credentials.
+## DO NOT commit local.properties to version control.
+
+# Location of Android SDK:
+# sdk.dir=C\:\\Users\\<YourUsername>\\AppData\\Local\\Android\\Sdk
+
+# Optional YouTube/Innertube API Keys:
+# INNERTUBE_API_KEY=
+# YOUTUBE_API_KEY=
+
+# Release Signing (Optional, falls back to debug config if omitted):
+# KEYSTORE_FILE=keystore/release.jks
+# KEYSTORE_PASSWORD=
+# KEY_ALIAS=
+# KEY_PASSWORD=
