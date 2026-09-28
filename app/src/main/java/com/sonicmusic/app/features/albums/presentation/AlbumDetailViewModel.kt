@@ -8,6 +8,7 @@ import com.sonicmusic.app.domain.model.AlbumTrack
 import com.sonicmusic.app.domain.model.AlbumVideo
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.toSong
 import com.sonicmusic.app.domain.repository.AlbumRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.shared.state.UiState
@@ -88,64 +89,5 @@ class AlbumDetailViewModel @Inject constructor(
         val primaryArtist = details.artists.firstOrNull() ?: "Unknown artist"
         val mappedVideo = video.toSong(primaryArtist)
         playerServiceConnection.playSongsLazy(listOf(mappedVideo), 0, songRepository)
-    }
-}
-
-private fun AlbumTrack.toSong(albumArtUrl: String): Song {
-    val refs = if (artistRefs.isNotEmpty()) {
-        artistRefs
-    } else {
-        artists.mapIndexed { index, name ->
-            com.sonicmusic.app.domain.model.ArtistRef(name, artistBrowseIds.getOrNull(index))
-        }
-    }
-    val combinedArtistId = if (artistBrowseIds.isNotEmpty()) {
-        artistBrowseIds.filter { it.isNotBlank() }.joinToString(",").takeIf { it.isNotBlank() }
-    } else {
-        refs.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
-    }
-    return Song(
-        id = videoId,
-        title = title,
-        artist = artists.joinToString(", "),
-        artistId = combinedArtistId,
-        album = albumName,
-        albumId = albumBrowseId,
-        duration = parseDuration(durationText),
-        thumbnailUrl = albumArtUrl,
-        category = "Music",
-        contentType = ContentType.SONG,
-        albumBrowseId = albumBrowseId,
-        albumName = albumName,
-        artists = refs
-    )
-}
-
-private fun AlbumVideo.toSong(albumArtist: String): Song {
-    return Song(
-        id = videoId,
-        title = title,
-        artist = albumArtist,
-        album = "Videos",
-        albumId = null,
-        duration = durationText?.let { parseDuration(it) } ?: 0,
-        thumbnailUrl = thumbnailUrl,
-        category = "Video",
-        contentType = ContentType.VIDEO,
-        artists = if (albumArtist.isNotBlank()) listOf(com.sonicmusic.app.domain.model.ArtistRef(albumArtist, null)) else emptyList()
-    )
-}
-
-private fun parseDuration(text: String): Int {
-    val parts = text.split(":")
-    return try {
-        when (parts.size) {
-            1 -> parts[0].toIntOrNull() ?: 0
-            2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
-            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
-            else -> 0
-        }
-    } catch (_: Exception) {
-        0
     }
 }

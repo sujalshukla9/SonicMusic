@@ -208,21 +208,21 @@ fun SongOptionsBottomSheet(
             if (onPlayNext != null) {
                 SongOptionsActionRow(
                     icon = Icons.Rounded.PlayArrow,
-                    label = " Play next",
+                    label = "Play next",
                     onClick = onPlayNext
                 )
             }
             if (onEnqueue != null) {
                 SongOptionsActionRow(
                     icon = Icons.AutoMirrored.Rounded.QueueMusic,
-                    label = " Enqueue",
+                    label = "Enqueue",
                     onClick = onEnqueue
                 )
             }
             if (onStartRadio != null) {
                 SongOptionsActionRow(
                     icon = Icons.Rounded.GraphicEq,
-                    label = " Start radio",
+                    label = "Start radio",
                     onClick = onStartRadio
                 )
             }
@@ -230,13 +230,13 @@ fun SongOptionsBottomSheet(
             // ── Playlist / Album ──────────────────────────────────────────────────
             SongOptionsActionRow(
                 icon = Icons.AutoMirrored.Rounded.PlaylistAdd,
-                label = " Add to playlist",
+                label = "Add to playlist",
                 onClick = onAddToPlaylist,
                 showTrailingArrow = true
             )
             SongOptionsActionRow(
                 icon = Icons.Rounded.Album,
-                label = " Go to album",
+                label = "Go to album",
                 onClick = onGoToAlbum
             )
 
@@ -260,7 +260,7 @@ fun SongOptionsBottomSheet(
                 val resolvedId = song.artistId?.split(",")?.getOrNull(idx)?.trim()?.takeIf { it.isNotBlank() }
                 SongOptionsActionRow(
                     icon = Icons.Rounded.Person,
-                    label = " More from $artistName",
+                    label = "More from $artistName",
                     onClick = { onMoreFromArtist(artistName, resolvedId) }
                 )
             }
@@ -268,12 +268,12 @@ fun SongOptionsBottomSheet(
             // ── YouTube Links ─────────────────────────────────────────────────────
             SongOptionsActionRow(
                 icon = Icons.Rounded.PlayArrow,
-                label = " Watch on YouTube",
+                label = "Watch on YouTube",
                 onClick = onWatchOnYouTube
             )
             SongOptionsActionRow(
                 icon = Icons.Rounded.MusicNote,
-                label = " Open in YouTube Music",
+                label = "Open in YouTube Music",
                 onClick = onOpenInYouTubeMusic
             )
 
@@ -297,7 +297,7 @@ fun SongOptionsBottomSheet(
                         )
                         Spacer(modifier = Modifier.width(16.dp))
                         Text(
-                            text = " Caching… ${downloadProgress.progress}%",
+                            text = "Caching… ${downloadProgress.progress}%",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = colorScheme.primary
@@ -318,14 +318,14 @@ fun SongOptionsBottomSheet(
             } else if (isDownloaded) {
                 SongOptionsActionRow(
                     icon = Icons.Rounded.DownloadDone,
-                    label = " Pre cached",
+                    label = "Pre cached",
                     onClick = { showDeleteConfirmation = true },
                     tint = colorScheme.primary
                 )
             } else {
                 SongOptionsActionRow(
                     icon = Icons.Rounded.Download,
-                    label = " Pre cache",
+                    label = "Pre cache",
                     onClick = onDownloadOffline
                 )
             }
@@ -334,7 +334,7 @@ fun SongOptionsBottomSheet(
             if (onRemoveFromQueue != null) {
                 SongOptionsActionRow(
                     icon = Icons.Rounded.Delete,
-                    label = " Remove from queue",
+                    label = "Remove from queue",
                     onClick = onRemoveFromQueue,
                     tint = colorScheme.error
                 )

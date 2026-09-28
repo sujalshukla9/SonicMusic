@@ -32,6 +32,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.PlaybackHistory
+import com.sonicmusic.app.domain.model.toSong
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.features.library.presentation.LibraryViewModel
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import com.sonicmusic.app.shared.components.SongThumbnail
@@ -305,10 +308,15 @@ private fun RecentlyPlayedListItem(
     history: PlaybackHistory,
     onClick: () -> Unit
 ) {
+    val song = remember(history) { history.toSong() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.HISTORY,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

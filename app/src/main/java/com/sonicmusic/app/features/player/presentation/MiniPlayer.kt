@@ -304,7 +304,7 @@ fun MiniPlayer(
                                     ) { playing ->
                                         Icon(
                                             imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                            contentDescription = if (playing) "Pause" else " Play",
+                                            contentDescription = if (playing) "Pause" else "Play",
                                             modifier = Modifier.size(28.dp)
                                         )
                                     }

@@ -22,6 +22,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -201,7 +203,11 @@ private fun SectionSongRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.RECOMMENDATION,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

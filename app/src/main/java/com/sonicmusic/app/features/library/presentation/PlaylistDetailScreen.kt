@@ -41,6 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.features.player.presentation.sheets.LocalSongActionSheetController
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.features.library.presentation.PlaylistDetailViewModel
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import sh.calvin.reorderable.ReorderableItem
@@ -392,6 +395,7 @@ fun PlaylistDetailScreen(
                             ) {
                                 PlaylistSongItem(
                                     song = song,
+                                    playlistId = playlistId,
                                     onClick = { 
                                         viewModel.playSong(song)
                                         onShowFullPlayer()
@@ -418,6 +422,7 @@ fun PlaylistDetailScreen(
                         // Cloud remote playlist is read-only
                         PlaylistSongItem(
                             song = song,
+                            playlistId = playlistId.takeIf { isLocal },
                             onClick = { 
                                 viewModel.playSong(song)
                                 onShowFullPlayer()
@@ -517,15 +522,23 @@ fun PlaylistDetailScreen(
 @Composable
 private fun PlaylistSongItem(
     song: Song,
+    playlistId: Long? = null,
     onClick: () -> Unit,
     onRemoveClick: () -> Unit,
     showRemove: Boolean,
     dragModifier: Modifier?
 ) {
+    val actionSheetController = LocalSongActionSheetController.current
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.PLAYLIST,
+                playlistId = playlistId,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -578,10 +591,16 @@ private fun PlaylistSongItem(
         }
 
         if (showRemove) {
-            IconButton(onClick = onRemoveClick) {
+            IconButton(onClick = {
+                actionSheetController.show(
+                    song = song,
+                    source = SongActionSource.PLAYLIST,
+                    playlistId = playlistId
+                )
+            }) {
                 Icon(
                     imageVector = Icons.Rounded.MoreVert,
-                    contentDescription = "Remove from playlist"
+                    contentDescription = "Song options"
                 )
             }
         }

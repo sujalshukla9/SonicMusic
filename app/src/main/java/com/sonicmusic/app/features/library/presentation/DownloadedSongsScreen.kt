@@ -35,6 +35,8 @@ import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.features.player.presentation.sheets.LocalSongActionSheetController
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.features.player.presentation.sheets.AddToPlaylistSheet
 import com.sonicmusic.app.features.library.presentation.DownloadedFilterType
 import com.sonicmusic.app.features.library.presentation.DownloadedSortType
@@ -79,8 +81,7 @@ fun DownloadedSongsScreen(
     var showAddToPlaylistSheet by remember { mutableStateOf(false) }
 
     // Single item click options sheet state
-    var selectedItemForMenu by remember { mutableStateOf<DownloadedSong?>(null) }
-    var showSingleItemMenu by remember { mutableStateOf(false) }
+    val actionSheetController = LocalSongActionSheetController.current
     var selectedItemForActiveMenu by remember { mutableStateOf<DownloadedSong?>(null) }
     var showActiveItemMenu by remember { mutableStateOf(false) }
 
@@ -589,13 +590,11 @@ fun DownloadedSongsScreen(
                                     },
                                     onLongClick = {
                                         if (!isMultiSelectMode) {
-                                            isMultiSelectMode = true
-                                            selectedSongs.add(song.videoId)
+                                            actionSheetController.show(song.toSong(), SongActionSource.DOWNLOADS)
                                         }
                                     },
                                     onMoreClick = {
-                                        selectedItemForMenu = song
-                                        showSingleItemMenu = true
+                                        actionSheetController.show(song.toSong(), SongActionSource.DOWNLOADS)
                                     }
                                 )
                             }
@@ -727,90 +726,7 @@ fun DownloadedSongsScreen(
         )
     }
 
-    // Completed Song Options Menu Bottom Sheet
-    if (showSingleItemMenu && selectedItemForMenu != null) {
-        val song = selectedItemForMenu!!
-        ModalBottomSheet(
-            onDismissRequest = { showSingleItemMenu = false },
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 24.dp)
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val imagePath = song.localThumbnailPath.takeIf { it.isNotEmpty() && File(it).exists() } ?: song.thumbnailUrl
-                    SongThumbnail(
-                        artworkUrl = imagePath,
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(8.dp)),
-                        contentDescription = null
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = song.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = song.artists,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-                // Options
-                ListItem(
-                    headlineContent = { Text("Play Next") },
-                    leadingContent = { Icon(Icons.Rounded.QueueMusic, null) },
-                    modifier = Modifier.clickable {
-                        // Play Next
-                        viewModel.playAllDownloadedSongs(false) // Trigger connection play next
-                        showSingleItemMenu = false
-                        Toast.makeText(context, "Added to Play Next", Toast.LENGTH_SHORT).show()
-                    }
-                )
-
-                ListItem(
-                    headlineContent = { Text("Add to Playlist") },
-                    leadingContent = { Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, null) },
-                    modifier = Modifier.clickable {
-                        showSingleItemMenu = false
-                        isMultiSelectMode = true
-                        selectedSongs.clear()
-                        selectedSongs.add(song.videoId)
-                        showAddToPlaylistSheet = true
-                    }
-                )
-
-                ListItem(
-                    headlineContent = { Text("Delete Download") },
-                    leadingContent = { Icon(Icons.Rounded.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                    modifier = Modifier.clickable {
-                        showSingleItemMenu = false
-                        handleDeleteSong(song)
-                    }
-                )
-            }
-        }
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

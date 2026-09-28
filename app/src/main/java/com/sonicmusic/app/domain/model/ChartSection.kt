@@ -1,6 +1,7 @@
 package com.sonicmusic.app.domain.model
 
 import androidx.compose.runtime.Immutable
+import kotlinx.serialization.Serializable
 
 /**
  * Domain model for a Charts section on the home page.
@@ -14,6 +15,7 @@ import androidx.compose.runtime.Immutable
  * @param country Country code or display name for the chart region
  */
 @Immutable
+@Serializable
 data class ChartSection(
     val title: String,
     val songs: List<Song>,

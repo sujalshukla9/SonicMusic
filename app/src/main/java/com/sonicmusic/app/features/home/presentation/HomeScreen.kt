@@ -98,6 +98,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.features.home.presentation.HomeViewModel
 import java.util.Calendar
 
@@ -894,16 +896,17 @@ private fun ContinueListeningCard(
 ) {
     val cardHeight = Dimens.continueListeningCardHeight
     val thumbSize = Dimens.continueListeningThumbSize
-    val interactionSource = remember { MutableInteractionSource() }
     Card(
-        onClick = onClick,
-        enabled = isEnabled,
-        interactionSource = interactionSource,
         modifier = modifier
             .fillMaxWidth()
             .height(cardHeight)
             .alpha(if (isEnabled) 1f else 0.4f)
-            .pressScale(interactionSource, enabled = isEnabled),
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -1152,9 +1155,15 @@ private fun ListenAgainGridItem(
 ) {
     val currentShape = LocalThumbnailShape.current.toComposeShape()
     Card(
-        onClick = onClick,
-        enabled = isEnabled,
-        modifier = modifier.aspectRatio(1f).alpha(if (isEnabled) 1f else 0.4f),
+        modifier = modifier
+            .aspectRatio(1f)
+            .alpha(if (isEnabled) 1f else 0.4f)
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            ),
         shape = currentShape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -1302,15 +1311,16 @@ private fun QuickPickCard(
 ) {
     val cw = Dimens.cardWidth
     val currentShape = LocalThumbnailShape.current.toComposeShape()
-    val interactionSource = remember { MutableInteractionSource() }
     Card(
-        onClick = onClick,
-        enabled = isEnabled,
-        interactionSource = interactionSource,
         modifier = Modifier
             .width(cw)
             .alpha(if (isEnabled) 1f else 0.4f)
-            .pressScale(interactionSource, enabled = isEnabled),
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            ),
         shape = currentShape,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
@@ -1514,7 +1524,12 @@ private fun LargeSongCard(
         modifier = Modifier
             .width(lcw)
             .alpha(if (isEnabled) 1f else 0.4f)
-            .pressable(onClick = onClick, enabled = isEnabled)
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            )
     ) {
         // Album art with play button overlay
         Box(
@@ -1599,7 +1614,12 @@ private fun MediumSongCard(
         modifier = Modifier
             .width(mcw)
             .alpha(if (isEnabled) 1f else 0.4f)
-            .pressable(onClick = onClick, enabled = isEnabled)
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            )
     ) {
         // Album art
         val currentShape = LocalThumbnailShape.current.toComposeShape()
@@ -1646,9 +1666,15 @@ private fun CompactSongRow(
     isEnabled: Boolean = true
 ) {
     Card(
-        onClick = onClick,
-        enabled = isEnabled,
-        modifier = Modifier.fillMaxWidth().alpha(if (isEnabled) 1f else 0.4f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (isEnabled) 1f else 0.4f)
+            .songPressable(
+                song = song,
+                source = SongActionSource.HOME,
+                enabled = isEnabled,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow

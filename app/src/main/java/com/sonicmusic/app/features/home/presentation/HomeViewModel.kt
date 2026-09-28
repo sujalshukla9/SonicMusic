@@ -74,6 +74,9 @@ class HomeViewModel @Inject constructor(
         fun artistSectionKey(artistId: String): String = "$SECTION_ARTIST_PREFIX$artistId"
     }
 
+    private val _homeUiState = MutableStateFlow(HomeUiState())
+    val homeUiState: StateFlow<HomeUiState> = _homeUiState.asStateFlow()
+
     private val _homeContent = MutableStateFlow<HomeContent>(HomeContent())
     val homeContent: StateFlow<HomeContent> = _homeContent.asStateFlow()
 
@@ -308,9 +311,19 @@ class HomeViewModel @Inject constructor(
 
 
     fun loadHomeContent() {
-        loadJob?.cancel()
+        // In-flight request deduplication: if already loading, reuse existing request
+        if (loadJob?.isActive == true) {
+            Log.d(TAG, "Home load already in flight, skipping duplicate request")
+            return
+        }
+
         loadJob = viewModelScope.launch {
-            _isLoading.value = true
+            val hasExisting = _homeContent.value.hasAnyContent()
+            _isLoading.value = !hasExisting
+            _homeUiState.value = _homeUiState.value.copy(
+                status = if (hasExisting) HomeStatus.CACHED else HomeStatus.LOADING,
+                isRefreshing = false
+            )
             _error.value = null
             try {
                 fetchHomeContent(forceRefresh = false)
@@ -320,20 +333,36 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    /** Pull-to-refresh handler — force reloads all sections. */
+    /** Pull-to-refresh handler — force reloads all sections while keeping existing content visible. */
     fun refreshHomeContent() {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _isRefreshing.value = true
+            _homeUiState.value = _homeUiState.value.copy(
+                status = HomeStatus.REFRESHING,
+                isRefreshing = true
+            )
             _refreshResult.value = null
             _error.value = null
             try {
                 fetchHomeContent(forceRefresh = true)
-                _refreshResult.value = if (_error.value == null) RefreshResult.SUCCESS else RefreshResult.ERROR
-            } catch (_: Exception) {
+                val isSuccess = _error.value == null
+                _refreshResult.value = if (isSuccess) RefreshResult.SUCCESS else RefreshResult.ERROR
+                _homeUiState.value = _homeUiState.value.copy(
+                    status = if (isSuccess) HomeStatus.SUCCESS else HomeStatus.ERROR,
+                    isRefreshing = false,
+                    lastUpdated = if (isSuccess) System.currentTimeMillis() else _homeUiState.value.lastUpdated
+                )
+            } catch (e: Exception) {
                 _refreshResult.value = RefreshResult.ERROR
+                _homeUiState.value = _homeUiState.value.copy(
+                    status = HomeStatus.ERROR,
+                    isRefreshing = false,
+                    error = e.message
+                )
+            } finally {
+                _isRefreshing.value = false
             }
-            _isRefreshing.value = false
         }
     }
 
@@ -345,11 +374,10 @@ class HomeViewModel @Inject constructor(
             runCatching { regionRepository.initializeRegion() }
                 .onFailure { error -> Log.w(TAG, "Region initialization failed before home load", error) }
 
-            var emissionCount = 0
             getHomeContentUseCase(forceRefresh).collect { content ->
-                if (forceRefresh) {
+                val mergedContent = if (forceRefresh) {
                     val current = _homeContent.value
-                    _homeContent.value = content.copy(
+                    content.copy(
                         listenAgain = if (content.listenAgain.isNotEmpty()) content.listenAgain else current.listenAgain,
                         recentlyPlayed = if (content.recentlyPlayed.isNotEmpty()) content.recentlyPlayed else current.recentlyPlayed,
                         quickPicks = if (content.quickPicks.isNotEmpty()) content.quickPicks else current.quickPicks,
@@ -363,17 +391,18 @@ class HomeViewModel @Inject constructor(
                         continuationToken = content.continuationToken ?: current.continuationToken
                     )
                 } else {
-                    _homeContent.value = content
+                    content
                 }
-                emissionCount++
-                
-                // Dismiss loading indicator as soon as online recommendations are ready
-                if (content.quickPicks.isNotEmpty() || 
-                    content.mixedForYou.isNotEmpty() || 
-                    content.trendingAlbums.isNotEmpty() || 
-                    content.englishHits.isNotEmpty() ||
-                    content.charts != null ||
-                    content.continuationShelves.isNotEmpty()) {
+
+                _homeContent.value = mergedContent
+                _homeUiState.value = _homeUiState.value.copy(
+                    status = if (forceRefresh) HomeStatus.REFRESHING else HomeStatus.SUCCESS,
+                    content = mergedContent,
+                    lastUpdated = System.currentTimeMillis()
+                )
+
+                // Dismiss loading indicator as soon as any content is ready
+                if (mergedContent.hasAnyContent()) {
                     _isLoading.value = false
                 }
             }
@@ -383,6 +412,10 @@ class HomeViewModel @Inject constructor(
             _isLoading.value = false
             Log.e(TAG, "Error loading home content (${System.currentTimeMillis() - startMs}ms)", e)
             _error.value = "Failed to load: ${e.message}"
+            _homeUiState.value = _homeUiState.value.copy(
+                status = if (_homeContent.value.hasAnyContent()) HomeStatus.CACHED else HomeStatus.ERROR,
+                error = e.message
+            )
         }
     }
 

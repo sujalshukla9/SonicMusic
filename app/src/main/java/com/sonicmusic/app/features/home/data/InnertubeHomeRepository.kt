@@ -10,7 +10,10 @@ import com.sonicmusic.app.domain.model.HomeSection
 import com.sonicmusic.app.domain.repository.HomeRepository
 import com.sonicmusic.app.domain.repository.QuickPicksRepository
 import com.sonicmusic.app.domain.repository.UserTasteRepository
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -38,6 +41,8 @@ class InnertubeHomeRepository @Inject constructor(
         private const val TAG = "InnertubeHomeRepo"
         private const val CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
     }
+
+    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Thread-safe in-memory cache mapped by "$region:$authenticated" cache keys
     private val feedCache = ConcurrentHashMap<String, CacheEntry>()
@@ -144,6 +149,9 @@ class InnertubeHomeRepository @Inject constructor(
      * @param forceRefresh If true, clears the memory cache first.
      * @return List of clean home sections containing official song tracks.
      */
+    // In-flight request deduplication map
+    private val inFlightHomeRequests = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<List<HomeSection>>>()
+
     suspend fun getHomeFeedInternal(customCookies: String? = null, forceRefresh: Boolean = false): List<HomeSection> = withContext(Dispatchers.IO) {
         val region = settingsDataStore.countryCode.first() ?: "US"
         val cacheKey = "$region:${customCookies != null}"
@@ -160,32 +168,46 @@ class InnertubeHomeRepository @Inject constructor(
             }
         }
 
-        try {
-            // 2. NETWORK LAYER: Fetch raw home JSON response
-            val rawJson = fetchHomeJson(region, customCookies)
-            if (rawJson.isNullOrBlank()) {
-                Log.w(TAG, "Empty or null response fetched from home feed.")
-                return@withContext emptyList()
-            }
-
-            // 3. PARSING LAYER: Parse JSON into raw shelves and handle nested items safely
-            val rawSections = parseHomeJson(rawJson)
-
-            // 4. SONG-ONLY FILTER LAYER: Exclude video/UGC types and filter empty shelves
-            val cleanRawSections = HomeContentFilter.filterSections(rawSections)
-
-            // 5. MAPPING LAYER: Map raw sections to finalized clean HomeSections
-            val finalSections = cleanRawSections.map(HomeMapper::mapToHomeSection)
-
-            // Cache the processed feed
-            feedCache[cacheKey] = CacheEntry(finalSections, System.currentTimeMillis())
-            Log.d(TAG, "Clean home feed pipeline succeeded. Cached ${finalSections.size} sections.")
-
-            finalSections
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to run clean home feed pipeline", e)
-            emptyList()
+        // In-flight deduplication: if request for this cacheKey is already running, join it
+        val runningDeferred = inFlightHomeRequests[cacheKey]
+        if (runningDeferred != null && runningDeferred.isActive) {
+            Log.d(TAG, "Joining existing in-flight home feed request for: $cacheKey")
+            return@withContext runningDeferred.await()
         }
+
+        val deferred = repoScope.async {
+            try {
+                // 2. NETWORK LAYER: Fetch raw home JSON response
+                val rawJson = fetchHomeJson(region, customCookies)
+                if (rawJson.isNullOrBlank()) {
+                    Log.w(TAG, "Empty or null response fetched from home feed.")
+                    return@async feedCache[cacheKey]?.sections ?: emptyList()
+                }
+
+                // 3. PARSING LAYER: Parse JSON into raw shelves and handle nested items safely
+                val rawSections = parseHomeJson(rawJson)
+
+                // 4. SONG-ONLY FILTER LAYER: Exclude video/UGC types and filter empty shelves
+                val cleanRawSections = HomeContentFilter.filterSections(rawSections)
+
+                // 5. MAPPING LAYER: Map raw sections to finalized clean HomeSections
+                val finalSections = cleanRawSections.map(HomeMapper::mapToHomeSection)
+
+                // Cache the processed feed
+                feedCache[cacheKey] = CacheEntry(finalSections, System.currentTimeMillis())
+                Log.d(TAG, "Clean home feed pipeline succeeded. Cached ${finalSections.size} sections.")
+
+                finalSections
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to run clean home feed pipeline", e)
+                feedCache[cacheKey]?.sections ?: emptyList()
+            } finally {
+                inFlightHomeRequests.remove(cacheKey)
+            }
+        }
+
+        inFlightHomeRequests[cacheKey] = deferred
+        deferred.await()
     }
 
     /**

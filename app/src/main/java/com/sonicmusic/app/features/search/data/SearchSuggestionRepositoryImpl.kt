@@ -166,9 +166,9 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                         } else if (browseEndpoint != null) {
                             id = browseEndpoint.optString("browseId", "")
                             type = when {
-                                id.startsWith("UC") || subtitle.contains(" Artist", ignoreCase = true) -> SuggestionType.ARTIST
-                                id.startsWith("MPRE") || subtitle.contains(" Album", ignoreCase = true) -> SuggestionType.ALBUM
-                                id.startsWith("VL") || subtitle.contains(" Playlist", ignoreCase = true) -> SuggestionType.PLAYLIST
+                                id.startsWith("UC") || subtitle.contains("Artist", ignoreCase = true) -> SuggestionType.ARTIST
+                                id.startsWith("MPRE") || subtitle.contains("Album", ignoreCase = true) -> SuggestionType.ALBUM
+                                id.startsWith("VL") || subtitle.contains("Playlist", ignoreCase = true) -> SuggestionType.PLAYLIST
                                 else -> SuggestionType.SONG
                             }
                         }

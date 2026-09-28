@@ -143,7 +143,7 @@ sealed class AppError(
             is SSLException -> SecurityError(throwable)
 
             is JSONException -> ParseError(
-                detail = throwable.message ?: " JSON",
+                detail = throwable.message ?: "JSON",
                 cause = throwable
             )
 
@@ -151,8 +151,8 @@ sealed class AppError(
                 // Generic I/O — could be network or disk
                 val msg = throwable.message?.lowercase() ?: ""
                 when {
-                    msg.contains(" timeout") -> Timeout(throwable)
-                    msg.contains(" reset") || msg.contains(" refused") -> NoInternet(throwable)
+                    msg.contains("timeout") -> Timeout(throwable)
+                    msg.contains("reset") || msg.contains("refused") -> NoInternet(throwable)
                     else -> Unknown(throwable)
                 }
             }

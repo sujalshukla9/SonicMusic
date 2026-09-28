@@ -13,3 +13,12 @@ data class PlaybackHistory(
     val playDuration: Int,
     val completed: Boolean
 )
+
+fun PlaybackHistory.toSong(): Song = Song(
+    id = songId,
+    title = title,
+    artist = artist,
+    duration = 0,
+    thumbnailUrl = thumbnailUrl,
+    contentType = ContentType.SONG
+)

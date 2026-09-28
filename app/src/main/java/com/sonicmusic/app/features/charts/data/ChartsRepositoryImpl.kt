@@ -653,7 +653,7 @@ class ChartsRepositoryImpl @Inject constructor(
 
     private fun upgradeThumbQuality(url: String, videoId: String): String {
         if (url.isEmpty()) return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        if (url.contains("lh3.googleusercontent.com") || url.contains(" yt3.ggpht.com")) {
+        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.ggpht.com")) {
             return url.replace(Regex("=w\\d+-h\\d+"), "=w540-h540")
         }
         if (url.contains("i.ytimg.com")) {

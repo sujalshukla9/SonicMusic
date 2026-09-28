@@ -87,38 +87,43 @@ class SearchRepositoryImpl @Inject constructor(
         } else {
             null
         }
-        cacheKey?.let { key ->
-            searchCache.get(key)?.let { entry ->
+        if (cacheKey != null) {
+            val entry = searchCache.get(cacheKey)
+            if (entry != null) {
                 if (entry.isValid()) {
-                    val cached = (entry.value as? CacheValue.Search)?.result ?: return@let
-                    return Result.success(cached)
+                    val cached = (entry.value as? CacheValue.Search)?.result
+                    if (cached != null) {
+                        return Result.success(cached)
+                    }
                 } else {
-                    searchCache.remove(key)
+                    searchCache.remove(cacheKey)
                 }
             }
         }
 
         return try {
             if (isTokenPagingRequest) {
-                // On first page, fire video search in parallel for the Videos section
-                val videoSearchResult = if (isInitialTokenPage) {
-                    coroutineScope {
+                // On first page, fire video search concurrently with song search for the Videos section
+                val (videoSearchResult, result) = coroutineScope {
+                    val videoDeferred = if (isInitialTokenPage) {
                         async {
                             youTubeiService.searchVideos(normalizedQuery, 20)
                                 .getOrNull()
                         }
-                    }.await()
-                } else {
-                    null
+                    } else {
+                        null
+                    }
+                    val songsDeferred = async {
+                        youTubeiService.searchSongsPage(
+                            query = normalizedQuery,
+                            continuationToken = safeContinuation,
+                            limit = safeLimit
+                        )
+                    }
+                    Pair(videoDeferred?.await(), songsDeferred.await())
                 }
                 val videoResults = videoSearchResult?.songs.orEmpty()
                 val videoContinuation = videoSearchResult?.continuationToken
-
-                val result = youTubeiService.searchSongsPage(
-                    query = normalizedQuery,
-                    continuationToken = safeContinuation,
-                    limit = safeLimit
-                )
 
                 result.fold(
                     onSuccess = { page ->
@@ -385,9 +390,9 @@ class SearchRepositoryImpl @Inject constructor(
     }
 
     private fun applyFilters(songs: List<Song>, filters: SearchFilters): List<Song> {
-        val strictSongs = songs.filter { it.isStrictSong() }
+        val typeFiltered = songs.filter { it.isAllowedContentType(filters.contentType) }
 
-        val durationFiltered = strictSongs.filter { song ->
+        val durationFiltered = typeFiltered.filter { song ->
             when (filters.duration) {
                 DurationFilter.Any -> true
                 DurationFilter.Short -> song.duration in 1..240
@@ -396,20 +401,11 @@ class SearchRepositoryImpl @Inject constructor(
             }
         }
 
-        val contentFiltered = durationFiltered.filter { song ->
-            when (filters.contentType) {
-                ContentTypeFilter.All -> true
-                ContentTypeFilter.Songs -> song.contentType == ContentType.SONG
-                ContentTypeFilter.Videos -> song.contentType == ContentType.VIDEO
-                ContentTypeFilter.Playlists -> song.contentType == ContentType.PLAYLIST
-            }
-        }
-
         return when (filters.sortBy) {
-            SortOption.Relevance -> contentFiltered
-            SortOption.ViewCount -> contentFiltered.sortedByDescending { it.viewCount ?: 0L }
-            SortOption.UploadDate -> contentFiltered.sortedByDescending { it.year ?: 0 }
-            SortOption.Rating -> contentFiltered
+            SortOption.Relevance -> durationFiltered
+            SortOption.ViewCount -> durationFiltered.sortedByDescending { it.viewCount ?: 0L }
+            SortOption.UploadDate -> durationFiltered.sortedByDescending { it.year ?: 0 }
+            SortOption.Rating -> durationFiltered
         }
     }
 
@@ -418,13 +414,15 @@ class SearchRepositoryImpl @Inject constructor(
         val countryName: String
     )
 
-    private fun Song.isStrictSong(): Boolean {
-        // Accept songs and videos from YouTube Music API
-        return when (contentType) {
-            ContentType.SONG -> true
-            ContentType.VIDEO -> true  // Music videos are valid search results
-            ContentType.UNKNOWN -> true // YTM API already returns songs-only
-            else -> false
+    private fun Song.isAllowedContentType(filter: ContentTypeFilter): Boolean {
+        return when (filter) {
+            ContentTypeFilter.All -> when (contentType) {
+                ContentType.SONG, ContentType.VIDEO, ContentType.UNKNOWN, ContentType.PLAYLIST -> true
+                else -> false
+            }
+            ContentTypeFilter.Songs -> contentType == ContentType.SONG || contentType == ContentType.UNKNOWN
+            ContentTypeFilter.Videos -> contentType == ContentType.VIDEO
+            ContentTypeFilter.Playlists -> contentType == ContentType.PLAYLIST
         }
     }
 }

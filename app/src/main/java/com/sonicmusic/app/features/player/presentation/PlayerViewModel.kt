@@ -310,18 +310,6 @@ class PlayerViewModel @Inject constructor(
             }
         }
         
-        // Set up callback for infinite queue (ViTune-style)
-        playerServiceConnection.setOnQueueNeedsMoreSongs { songId ->
-
-            if (_infiniteModeEnabled.value && !recommendationMutex.isLocked) {
-                val remaining = playerServiceConnection.getRemainingQueueSize()
-                val needed = (TARGET_QUEUE_SIZE - remaining).coerceAtLeast(1)
-                fetchAndAddRecommendations(songId, needed)
-            } else {
-
-            }
-        }
-        
         // Set up callback for URL expiration (retry with fresh URL)
         playerServiceConnection.setOnStreamUrlExpired { songId ->
             Log.d(TAG, "Stream URL expired for: $songId")
@@ -537,14 +525,9 @@ class PlayerViewModel @Inject constructor(
                     return@launch
                 }
 
-                val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
-                result.onSuccess { streamUrl ->
-                    playerServiceConnection.addToQueue(song, streamUrl)
-                    queueRepository.markSongAsQueued(song.id)
-                    Log.d(TAG, "Added to queue: ${song.title}")
-                }.onFailure {
-                    Log.e(TAG, "Failed to add to queue", it)
-                }
+                playerServiceConnection.addSongToQueue(song)
+                queueRepository.markSongAsQueued(song.id)
+                Log.d(TAG, "Added to queue: ${song.title}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error adding to queue", e)
             }
@@ -595,7 +578,7 @@ class PlayerViewModel @Inject constructor(
                     return@launch
                 }
 
-                playerServiceConnection.insertPlayNextLazy(song, songRepository)
+                playerServiceConnection.insertPlayNext(song)
                 queueRepository.markSongAsQueued(song.id)
                 _error.value = "Playing next: ${song.title}"
             } catch (e: Exception) {
@@ -785,13 +768,7 @@ class PlayerViewModel @Inject constructor(
      * Toggle infinite queue mode
      */
     fun toggleInfiniteMode() {
-        val newValue = !_infiniteModeEnabled.value
-        viewModelScope.launch {
-            settingsRepository.setAutoQueueSimilar(newValue)
-            _infiniteModeEnabled.value = newValue
-            queueRepository.setInfiniteMode(newValue)
-        }
-        Log.d(TAG, "Infinite mode: $newValue")
+        setInfiniteMode(!_infiniteModeEnabled.value)
     }
     
     /**
@@ -799,6 +776,7 @@ class PlayerViewModel @Inject constructor(
      */
     fun setInfiniteMode(enabled: Boolean) {
         _infiniteModeEnabled.value = enabled
+        playerServiceConnection.setInfiniteMode(enabled)
         viewModelScope.launch {
             settingsRepository.setAutoQueueSimilar(enabled)
             queueRepository.setInfiniteMode(enabled)
@@ -921,11 +899,7 @@ class PlayerViewModel @Inject constructor(
      * Force refresh recommendations (useful for manual trigger)
      */
     fun refreshRecommendations() {
-        currentSong.value?.let { song ->
-            lastRecommendationSongId = null // Reset to force new fetch
-            lastRecommendationRequestAt = 0L
-            fetchAndAddRecommendations(song.id)
-        }
+        playerServiceConnection.forcePrefetchRecommendations()
     }
 
     suspend fun resolveAlbumId(songId: String): String? {

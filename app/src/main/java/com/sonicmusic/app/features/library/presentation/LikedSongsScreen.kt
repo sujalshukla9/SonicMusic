@@ -34,10 +34,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.sonicmusic.app.features.player.presentation.sheets.LocalSongActionSheetController
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,6 +60,7 @@ fun LikedSongsScreen(
 ) {
     val likedSongs by viewModel.likedSongs.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val actionSheetController = LocalSongActionSheetController.current
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -165,7 +169,7 @@ fun LikedSongsScreen(
                     LikedSongItem(
                         song = song,
                         onClick = { viewModel.playSong(song); onShowFullPlayer() },
-                        onMoreClick = { /* TODO: Show options menu */ }
+                        onMoreClick = { actionSheetController.show(song, SongActionSource.LIKED_SONGS) }
                     )
                 }
             }
@@ -182,7 +186,11 @@ private fun LikedSongItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.LIKED_SONGS,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

@@ -190,7 +190,7 @@ class YouTubeiService @Inject constructor(
         val normalized = value?.trim()?.uppercase(Locale.US)
         if (normalized.isNullOrEmpty() || normalized.length != 2) return null
         if (!normalized.all { it.isLetter() }) return null
-        return if (normalized == "UK") " GB" else normalized
+        return if (normalized == "UK") "GB" else normalized
     }
 
     private val detectedRegion: String by lazy { detectUserRegion() }
@@ -600,14 +600,14 @@ class YouTubeiService @Inject constructor(
             val language = getLanguageForRegion(region)
 
             // Add "song" or "music" to query for better results
-            val musicQuery = if (!query.lowercase().contains("song") && !query.lowercase().contains(" music")) {
+            val musicQuery = if (!query.lowercase().contains("song") && !query.lowercase().contains("music")) {
                 "$query song"
             } else {
                 query
             }
             
             val requestBody = Innertube.buildYtmContext(language, region) {
-                put("query", query)
+                put("query", musicQuery)
                 put("params", Innertube.SearchFilter.Song.value)
             }
             
@@ -1162,10 +1162,10 @@ class YouTubeiService @Inject constructor(
             // Determine Type using typeText (first subtitle run) for reliable detection
             var contentType = ContentType.SONG
             val typeTextLower = typeText.trim().lowercase()
-            if (typeTextLower == "video" || typeTextLower.contains(" video")) contentType = ContentType.VIDEO
-            else if (typeTextLower == "artist" || id.startsWith(" UC")) contentType = ContentType.ARTIST
-            else if (typeTextLower == "album" || id.startsWith(" MPRE")) contentType = ContentType.ALBUM
-            else if (typeTextLower == "playlist" || id.startsWith(" VL")) contentType = ContentType.PLAYLIST
+            if (typeTextLower == "video" || typeTextLower.contains("video")) contentType = ContentType.VIDEO
+            else if (typeTextLower == "artist" || id.startsWith("UC")) contentType = ContentType.ARTIST
+            else if (typeTextLower == "album" || id.startsWith("MPRE")) contentType = ContentType.ALBUM
+            else if (typeTextLower == "playlist" || id.startsWith("VL")) contentType = ContentType.PLAYLIST
             
             // Explicit override for known browse ID prefixes
             if (id.startsWith("UC")) contentType = ContentType.ARTIST
@@ -2650,7 +2650,7 @@ class YouTubeiService @Inject constructor(
         limit: Int = 500
     ): Result<Pair<com.sonicmusic.app.domain.model.Playlist, List<Song>>> = withContext(Dispatchers.IO) {
         val rawPlaylistId = playlistId.trim()
-        val browseId = if (rawPlaylistId.startsWith("PL") && !rawPlaylistId.startsWith(" VL")) " VL$rawPlaylistId" else rawPlaylistId
+        val browseId = if (rawPlaylistId.startsWith("PL") && !rawPlaylistId.startsWith("VL")) "VL$rawPlaylistId" else rawPlaylistId
         if (browseId.isEmpty()) {
             return@withContext Result.failure(IllegalArgumentException("Playlist ID is empty"))
         }
@@ -3037,7 +3037,7 @@ class YouTubeiService @Inject constructor(
                             ?.optString("text", "")
                             .orEmpty()
                         
-                        if (titleText.contains("Videos", ignoreCase = true) || titleText.contains(" Versions", ignoreCase = true)) {
+                        if (titleText.contains("Videos", ignoreCase = true) || titleText.contains("Versions", ignoreCase = true)) {
                             Log.d(TAG, "Found videos carousel section: $titleText")
                             val carouselContents = carouselShelf.optJSONArray("contents")
                             if (carouselContents != null) {
@@ -4039,19 +4039,19 @@ class YouTubeiService @Inject constructor(
     private fun getArtistQueriesForRegion(countryName: String, regionCode: String): List<String> {
         val base = listOf(countryName)
         val regionSpecific = when (regionCode.uppercase()) {
-            "IN" -> listOf(" Bollywood", " Hindi music", " Punjabi music", " Tamil music", " Telugu music", " Indian pop", " playback singer")
-            "US" -> listOf(" pop music", " hip hop", " R&B", " country music", " rock music", " American pop")
-            "GB" -> listOf(" British pop", " UK music", " grime", " indie rock", " British rock")
-            "KR" -> listOf(" K-pop", " Korean pop", " Korean R&B", " Korean hip hop")
-            "JP" -> listOf(" J-pop", " Japanese pop", " anime music", " Japanese rock")
-            "BR" -> listOf(" sertanejo", " Brazilian pop", " MPB", " funk brasileiro", " pagode")
-            "MX" -> listOf(" reggaeton", " Latin pop", " Mexican music", " banda", " corridos")
-            "DE" -> listOf(" German pop", " Schlager", " German hip hop", " Deutsche Musik")
-            "FR" -> listOf(" French pop", " chanson", " French hip hop", " musique française")
-            "ES" -> listOf(" Spanish pop", " reggaeton", " Latin pop", " flamenco")
-            else -> listOf("pop music", " hip hop", " rock music", " trending music")
+            "IN" -> listOf("Bollywood", "Hindi music", "Punjabi music", "Tamil music", "Telugu music", "Indian pop", "playback singer")
+            "US" -> listOf("pop music", "hip hop", "R&B", "country music", "rock music", "American pop")
+            "GB" -> listOf("British pop", "UK music", "grime", "indie rock", "British rock")
+            "KR" -> listOf("K-pop", "Korean pop", "Korean R&B", "Korean hip hop")
+            "JP" -> listOf("J-pop", "Japanese pop", "anime music", "Japanese rock")
+            "BR" -> listOf("sertanejo", "Brazilian pop", "MPB", "funk brasileiro", "pagode")
+            "MX" -> listOf("reggaeton", "Latin pop", "Mexican music", "banda", "corridos")
+            "DE" -> listOf("German pop", "Schlager", "German hip hop", "Deutsche Musik")
+            "FR" -> listOf("French pop", "chanson", "French hip hop", "musique française")
+            "ES" -> listOf("Spanish pop", "reggaeton", "Latin pop", "flamenco")
+            else -> listOf("pop music", "hip hop", "rock music", "trending music")
         }
-        return base + regionSpecific + listOf("popular music", " trending")
+        return base + regionSpecific + listOf("popular music", "trending")
     }
 
     /**
@@ -4060,14 +4060,14 @@ class YouTubeiService @Inject constructor(
     private fun getAlbumQueriesForRegion(countryName: String, regionCode: String): List<String> {
         val base = listOf(countryName)
         val regionSpecific = when (regionCode.uppercase()) {
-            "IN" -> listOf(" Bollywood album", " Hindi album", " Punjabi album", " Tamil album", " new release India")
-            "US" -> listOf(" new album", " pop album", " hip hop album", " best album", " trending album")
-            "GB" -> listOf(" British album", " UK album", " indie album", " new release UK")
-            "KR" -> listOf(" K-pop album", " Korean album", " new release Korea")
-            "JP" -> listOf(" J-pop album", " Japanese album", " anime album")
-            else -> listOf("new album", " popular album", " best album", " top album")
+            "IN" -> listOf("Bollywood album", "Hindi album", "Punjabi album", "Tamil album", "new release India")
+            "US" -> listOf("new album", "pop album", "hip hop album", "best album", "trending album")
+            "GB" -> listOf("British album", "UK album", "indie album", "new release UK")
+            "KR" -> listOf("K-pop album", "Korean album", "new release Korea")
+            "JP" -> listOf("J-pop album", "Japanese album", "anime album")
+            else -> listOf("new album", "popular album", "best album", "top album")
         }
-        return base + regionSpecific + listOf("music album", " new release")
+        return base + regionSpecific + listOf("music album", "new release")
     }
 
     /**
@@ -4089,7 +4089,7 @@ class YouTubeiService @Inject constructor(
     }
 
     private fun isAlbumBrowseId(browseId: String): Boolean {
-        return browseId.startsWith("MPRE") || browseId.startsWith(" MPLA")
+        return browseId.startsWith("MPRE") || browseId.startsWith("MPLA")
     }
 
     /**
@@ -6487,8 +6487,8 @@ class YouTubeiService @Inject constructor(
         }
 
         if (id.startsWith("UC")) return ContentType.ARTIST
-        if (id.startsWith("MPRE") || id.startsWith(" MPLA")) return ContentType.ALBUM
-        if (id.startsWith("VL") || id.startsWith(" PL") || id.startsWith(" RD")) return ContentType.PLAYLIST
+        if (id.startsWith("MPRE") || id.startsWith("MPLA")) return ContentType.ALBUM
+        if (id.startsWith("VL") || id.startsWith("PL") || id.startsWith("RD")) return ContentType.PLAYLIST
 
         if (
             lowerSection.contains("related") ||
@@ -6499,13 +6499,13 @@ class YouTubeiService @Inject constructor(
             return ContentType.ARTIST
         }
         if (lowerSection.contains("featured on")) return ContentType.PLAYLIST
-        if (lowerSection.contains("album") || lowerSection.contains(" single") || lowerSection.contains(" ep")) {
+        if (lowerSection.contains("album") || lowerSection.contains("single") || lowerSection.contains("ep")) {
             return ContentType.ALBUM
         }
         if (lowerSection.contains("video")) return ContentType.VIDEO
 
         if (lowerSubtitle.contains("artist")) return ContentType.ARTIST
-        if (lowerSubtitle.contains("album") || lowerSubtitle.contains(" single") || lowerSubtitle.contains(" ep")) {
+        if (lowerSubtitle.contains("album") || lowerSubtitle.contains("single") || lowerSubtitle.contains("ep")) {
             return ContentType.ALBUM
         }
         if (lowerSubtitle.contains("playlist")) return ContentType.PLAYLIST
@@ -6524,10 +6524,10 @@ class YouTubeiService @Inject constructor(
             return keywords.any { keyword -> contains(keyword) }
         }
 
-        val songsKeywords = listOf("songs", " top songs", " popular songs", "노래", "曲", " canciones")
-        val albumsKeywords = listOf("album", " albums", "앨범", "アルバム", "álbum")
-        val singlesKeywords = listOf("single", " singles", " ep", "싱글", "シングル", " sencillo")
-        val videosKeywords = listOf("video", " videos", "동영상", "動画", " vídeo")
+        val songsKeywords = listOf("songs", "top songs", "popular songs", "노래", "曲", "canciones")
+        val albumsKeywords = listOf("album", "albums", "앨범", "アルバム", "álbum")
+        val singlesKeywords = listOf("single", "singles", "ep", "싱글", "シングル", "sencillo")
+        val videosKeywords = listOf("video", "videos", "동영상", "動画", "vídeo")
         val featuredOnKeywords = listOf("featured on", "참여", "フィーチャー")
         val relatedArtistsKeywords = listOf(
             "related artist",
@@ -6538,7 +6538,7 @@ class YouTubeiService @Inject constructor(
             "관련 아티스트",
             "似ているアーティスト"
         )
-        val playlistsKeywords = listOf("playlist", " playlists", "재생목록", "プレイリスト", " lista")
+        val playlistsKeywords = listOf("playlist", "playlists", "재생목록", "プレイリスト", "lista")
 
         if (normalizedTitle.containsAny(songsKeywords)) {
             return ArtistSectionType.TOP_SONGS
@@ -7351,10 +7351,10 @@ class YouTubeiService @Inject constructor(
         }
 
         var score = baseArea
-        if (pathLower.contains("avatar") || pathLower.contains(" channelmetadata")) {
+        if (pathLower.contains("avatar") || pathLower.contains("channelmetadata")) {
             score += 7_000_000_000L
         }
-        if (pathLower.contains("croppedsquare") || pathLower.contains(" foregroundthumbnail")) {
+        if (pathLower.contains("croppedsquare") || pathLower.contains("foregroundthumbnail")) {
             score += 3_500_000_000L
         }
         if (

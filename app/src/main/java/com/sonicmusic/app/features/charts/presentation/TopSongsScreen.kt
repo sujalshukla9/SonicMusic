@@ -14,6 +14,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,6 +30,8 @@ import com.sonicmusic.app.domain.model.ChartSong
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.features.charts.presentation.ChartsUiState
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.features.player.presentation.PlayerViewModel
 import com.sonicmusic.app.features.charts.presentation.TopSongsViewModel
 
@@ -131,11 +134,17 @@ private fun TopSongRow(
     index: Int,
     onClick: () -> Unit
 ) {
+    val canonicalSong = remember(song) { song.toSong() }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = canonicalSong,
+                source = SongActionSource.HOME,
+                onClick = onClick
+            )
             .padding(vertical = 8.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -321,43 +330,3 @@ private fun Modifier.surfaceColor() = this.background(
     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
 )
 
-private fun ChartSong.toSong(): Song {
-    val refs = if (artistRefs.isNotEmpty()) {
-        artistRefs
-    } else {
-        artists.mapIndexed { index, name ->
-            com.sonicmusic.app.domain.model.ArtistRef(name, artistBrowseIds.getOrNull(index))
-        }
-    }
-    val combinedArtistId = if (artistBrowseIds.isNotEmpty()) {
-        artistBrowseIds.filter { it.isNotBlank() }.joinToString(",").takeIf { it.isNotBlank() }
-    } else {
-        refs.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
-    }
-    return Song(
-        id = videoId,
-        title = title,
-        artist = artists.joinToString(", "),
-        artistId = combinedArtistId,
-        duration = parseDuration(durationText ?: "0:00"),
-        thumbnailUrl = thumbnailUrl,
-        contentType = ContentType.SONG,
-        albumBrowseId = albumBrowseId,
-        albumName = albumName,
-        artists = refs
-    )
-}
-
-private fun parseDuration(text: String): Int {
-    val parts = text.split(":")
-    return try {
-        when (parts.size) {
-            1 -> parts[0].toIntOrNull() ?: 0
-            2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
-            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
-            else -> 0
-        }
-    } catch (_: Exception) {
-        0
-    }
-}

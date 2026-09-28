@@ -195,7 +195,8 @@ fun ModernPlayerControls(
                     emptyList()
                 }
             }
-            val artistAnnotated = remember(effectiveArtists, artistText, albumState) {
+            val songTitle = state.title
+            val artistAnnotated = remember(effectiveArtists, artistText, albumState, songTitle) {
                 val builder = androidx.compose.ui.text.AnnotatedString.Builder()
                 if (effectiveArtists.isNotEmpty()) {
                     effectiveArtists.forEachIndexed { index, artistRef ->
@@ -211,7 +212,10 @@ fun ModernPlayerControls(
                     builder.append(artistText)
                     builder.pop()
                 }
-                if (albumState is AlbumLinkState.Available && albumState.name.isNotBlank()) {
+                if (albumState is AlbumLinkState.Available && 
+                    albumState.name.isNotBlank() && 
+                    !isAlbumRedundantWithSongTitle(albumState.name, songTitle)
+                ) {
                     builder.append(" • ")
                     builder.pushStringAnnotation("album", albumState.browseId)
                     builder.append(albumState.name)
@@ -291,7 +295,7 @@ fun ModernPlayerControls(
                 ) { isPlaying ->
                     Icon(
                         imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                        contentDescription = if (isPlaying) "Pause" else " Play",
+                        contentDescription = if (isPlaying) "Pause" else "Play",
                         modifier = Modifier.size(controlBtnSize * 0.44f),
                         tint = onAccentColor
                     )

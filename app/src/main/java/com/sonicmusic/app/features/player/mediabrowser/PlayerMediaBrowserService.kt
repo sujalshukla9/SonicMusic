@@ -325,56 +325,68 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         
         override fun onPlay() {
             Log.d(TAG, "onPlay")
-            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
-            androidx.core.content.ContextCompat.startForegroundService(
-                this@PlayerMediaBrowserService,
-                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
-                    action = PlaybackService.ACTION_PLAY
-                }
-            )
+            if (media3Controller != null) {
+                media3Controller?.play()
+            } else {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this@PlayerMediaBrowserService,
+                    Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                        action = PlaybackService.ACTION_PLAY
+                    }
+                )
+            }
         }
         
         override fun onPause() {
             Log.d(TAG, "onPause")
-            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
-            androidx.core.content.ContextCompat.startForegroundService(
-                this@PlayerMediaBrowserService,
-                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
-                    action = PlaybackService.ACTION_PAUSE
-                }
-            )
+            if (media3Controller != null) {
+                media3Controller?.pause()
+            } else {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this@PlayerMediaBrowserService,
+                    Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                        action = PlaybackService.ACTION_PAUSE
+                    }
+                )
+            }
         }
         
         override fun onSkipToPrevious() {
             Log.d(TAG, "onSkipToPrevious")
-            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
-            androidx.core.content.ContextCompat.startForegroundService(
-                this@PlayerMediaBrowserService,
-                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
-                    action = PlaybackService.ACTION_PREVIOUS
-                }
-            )
+            if (media3Controller != null) {
+                media3Controller?.seekToPrevious()
+            } else {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this@PlayerMediaBrowserService,
+                    Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                        action = PlaybackService.ACTION_PREVIOUS
+                    }
+                )
+            }
         }
         
         override fun onSkipToNext() {
             Log.d(TAG, "onSkipToNext")
-            // ANDROID 8 FIX: Use startForegroundService() instead of startService()
-            androidx.core.content.ContextCompat.startForegroundService(
-                this@PlayerMediaBrowserService,
-                Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
-                    action = PlaybackService.ACTION_NEXT
-                }
-            )
+            if (media3Controller != null) {
+                media3Controller?.seekToNext()
+            } else {
+                androidx.core.content.ContextCompat.startForegroundService(
+                    this@PlayerMediaBrowserService,
+                    Intent(this@PlayerMediaBrowserService, PlaybackService::class.java).apply {
+                        action = PlaybackService.ACTION_NEXT
+                    }
+                )
+            }
         }
         
         override fun onSeekTo(pos: Long) {
             Log.d(TAG, "onSeekTo: $pos")
-            // Seek is not easily done via intent, but the MediaSession in PlaybackService handles it
+            media3Controller?.seekTo(pos)
         }
         
         override fun onSkipToQueueItem(id: Long) {
             Log.d(TAG, "onSkipToQueueItem: $id")
-            // Queue navigation is handled by the MediaSession in PlaybackService
+            media3Controller?.seekToDefaultPosition(id.toInt())
         }
         
         override fun onPlayFromSearch(query: String?, extras: Bundle?) {

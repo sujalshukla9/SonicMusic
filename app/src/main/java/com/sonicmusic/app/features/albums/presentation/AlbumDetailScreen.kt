@@ -35,6 +35,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.AlbumDetails
 import com.sonicmusic.app.domain.model.AlbumTrack
 import com.sonicmusic.app.domain.model.AlbumVideo
+import com.sonicmusic.app.domain.model.toSong
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.shared.state.UiState
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import com.sonicmusic.app.shared.components.SongRowSkeleton
@@ -205,6 +209,7 @@ fun AlbumDetailScreen(
                                     ) { video ->
                                         VideoCard(
                                             video = video,
+                                            artist = details.artists.joinToString(", "),
                                             onClick = {
                                                 viewModel.playVideo(video, details)
                                                 onShowFullPlayer()
@@ -387,10 +392,16 @@ private fun AlbumSongItem(
     albumArtUrl: String?,
     onClick: () -> Unit
 ) {
+    val song = remember(track, albumArtUrl) { track.toSong(albumArtUrl) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.ALBUM,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -447,14 +458,21 @@ private fun AlbumSongItem(
 @Composable
 private fun VideoCard(
     video: AlbumVideo,
+    artist: String = "",
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val song = remember(video, artist) { video.toSong(artist) }
+
     Card(
-        onClick = onClick,
         modifier = modifier
             .width(180.dp)
-            .padding(vertical = 4.dp),
+            .padding(vertical = 4.dp)
+            .songPressable(
+                song = song,
+                source = SongActionSource.ALBUM,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)

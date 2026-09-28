@@ -20,6 +20,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.sonicmusic.app.domain.model.SearchSuggestionItem
 import com.sonicmusic.app.domain.model.SuggestionType
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.shared.components.SongThumbnail
 
 @Composable
@@ -206,12 +208,24 @@ private fun RichContentSuggestionRow(
 ) {
     val isArtist = item.type == SuggestionType.ARTIST
     val thumbnailShape = if (isArtist) CircleShape else RoundedCornerShape(8.dp)
+    val isSongOrVideo = item.type == SuggestionType.SONG || item.type == SuggestionType.VIDEO
 
-    Row(
-        modifier = Modifier
+    val rowModifier = if (isSongOrVideo) {
+        Modifier
+            .fillMaxWidth()
+            .songPressable(
+                song = item.toSong(),
+                source = SongActionSource.SEARCH,
+                onClick = onClick
+            )
+    } else {
+        Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+    }
+
+    Row(
+        modifier = rowModifier.padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(

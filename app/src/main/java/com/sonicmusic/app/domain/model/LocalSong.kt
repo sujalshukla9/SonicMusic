@@ -20,3 +20,13 @@ data class LocalSong(
             "content://media/external/audio/albumart/$it"
         }
 }
+
+fun LocalSong.toSong(): Song = Song(
+    id = "local_$id",
+    title = title,
+    artist = artist,
+    album = album,
+    duration = duration,
+    thumbnailUrl = albumArtUri ?: "",
+    contentType = ContentType.SONG
+)

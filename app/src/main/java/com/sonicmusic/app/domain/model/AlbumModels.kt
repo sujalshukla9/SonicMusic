@@ -32,3 +32,70 @@ data class AlbumVideo(
     val thumbnailUrl: String,
     val durationText: String?
 )
+
+fun AlbumTrack.toSong(albumArtUrl: String? = null): Song {
+    val refs = if (artistRefs.isNotEmpty()) {
+        artistRefs
+    } else {
+        artists.mapIndexed { index, name ->
+            ArtistRef(name, artistBrowseIds.getOrNull(index))
+        }
+    }
+    val combinedArtistId = if (artistBrowseIds.isNotEmpty()) {
+        artistBrowseIds.filter { it.isNotBlank() }.joinToString(",").takeIf { it.isNotBlank() }
+    } else {
+        refs.mapNotNull { it.browseId }.joinToString(",").takeIf { it.isNotBlank() }
+    }
+    val durationSeconds = try {
+        val parts = durationText.split(":")
+        when (parts.size) {
+            1 -> parts[0].toIntOrNull() ?: 0
+            2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
+            else -> 0
+        }
+    } catch (_: Exception) { 0 }
+
+    return Song(
+        id = videoId,
+        title = title,
+        artist = artists.joinToString(", ").ifBlank { "Unknown artist" },
+        artistId = combinedArtistId,
+        album = albumName,
+        albumId = albumBrowseId,
+        duration = durationSeconds,
+        thumbnailUrl = albumArtUrl.takeIf { !it.isNullOrBlank() } ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+        category = "Music",
+        contentType = ContentType.SONG,
+        albumBrowseId = albumBrowseId,
+        albumName = albumName,
+        artists = refs
+    )
+}
+
+fun AlbumVideo.toSong(albumArtist: String = ""): Song {
+    val durationSeconds = try {
+        durationText?.let { text ->
+            val parts = text.split(":")
+            when (parts.size) {
+                1 -> parts[0].toIntOrNull() ?: 0
+                2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+                3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
+                else -> 0
+            }
+        } ?: 0
+    } catch (_: Exception) { 0 }
+
+    return Song(
+        id = videoId,
+        title = title,
+        artist = albumArtist,
+        album = "Videos",
+        albumId = null,
+        duration = durationSeconds,
+        thumbnailUrl = thumbnailUrl,
+        category = "Video",
+        contentType = ContentType.VIDEO,
+        artists = if (albumArtist.isNotBlank()) listOf(ArtistRef(albumArtist, null)) else emptyList()
+    )
+}

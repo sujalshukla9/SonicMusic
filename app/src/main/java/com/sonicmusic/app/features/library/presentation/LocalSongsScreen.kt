@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -23,6 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.LocalSong
+import com.sonicmusic.app.domain.model.toSong
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.features.library.presentation.LibraryViewModel
 import com.sonicmusic.app.shared.components.permissions.AudioStoragePermissionHandler
 import androidx.compose.runtime.LaunchedEffect
@@ -164,10 +168,15 @@ private fun LocalSongItem(
     song: LocalSong,
     onClick: () -> Unit
 ) {
+    val canonicalSong = remember(song) { song.toSong() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = canonicalSong,
+                source = SongActionSource.LIBRARY,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

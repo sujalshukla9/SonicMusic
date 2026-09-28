@@ -28,12 +28,13 @@ class GetHomeContentUseCase @Inject constructor(
     private val userTasteRepository: UserTasteRepository,
     private val listenAgainRepository: ListenAgainRepository,
     private val quickPicksRepository: QuickPicksRepository,
-    private val browseRepository: BrowseRepository
+    private val browseRepository: BrowseRepository,
+    private val homeCacheDataSource: com.sonicmusic.app.features.home.data.HomeCacheDataSource
 ) {
     companion object {
         private const val HOME_SECTION_LIMIT = 20
         private const val TOP_ARTIST_SECTION_COUNT = 4
-        private const val SECTION_TIMEOUT_MS = 8_000L
+        private const val SECTION_TIMEOUT_MS = 6_000L
         private const val ARTIST_SECTION_SONG_LIMIT = 10
         private val NON_ENGLISH_LANGUAGE_MARKERS = setOf(
             "hindi",
@@ -52,7 +53,18 @@ class GetHomeContentUseCase @Inject constructor(
 
     operator fun invoke(forceRefresh: Boolean = false): Flow<HomeContent> = flow {
         val startMs = System.currentTimeMillis()
-        var currentContent = HomeContent()
+
+        // ════════ STAGE 0: Instant Memory & Disk Cache (Goal: < 15ms) ════════
+        var currentContent = homeCacheDataSource.getCachedHome(ignoreTtl = true) ?: HomeContent()
+        if (currentContent.hasAnyContent()) {
+            emit(currentContent)
+            Log.d("GetHomeContent", "Stage 0 (Instant Cache Hit) emitted in ${System.currentTimeMillis() - startMs}ms")
+            val isFresh = homeCacheDataSource.isCacheValid()
+            if (!forceRefresh && isFresh) {
+                Log.d("GetHomeContent", "Home cache is fresh within TTL, skipping background refresh")
+                return@flow
+            }
+        }
 
         // ════════ STAGE 1a: Instant Local DB (Goal: < 50ms) ════════
         coroutineScope {
@@ -69,8 +81,8 @@ class GetHomeContentUseCase @Inject constructor(
             val recentlyPlayed = distinctSongs(recentlyPlayedDeferred.await(), HOME_SECTION_LIMIT)
 
             currentContent = currentContent.copy(
-                listenAgain = listenAgain,
-                recentlyPlayed = recentlyPlayed
+                listenAgain = if (listenAgain.isNotEmpty()) listenAgain else currentContent.listenAgain,
+                recentlyPlayed = if (recentlyPlayed.isNotEmpty()) recentlyPlayed else currentContent.recentlyPlayed
             )
             emit(currentContent)
             Log.d("GetHomeContent", "Stage 1a (Instant DB) emitted in ${System.currentTimeMillis() - startMs}ms")
@@ -92,14 +104,14 @@ class GetHomeContentUseCase @Inject constructor(
                 limit = HOME_SECTION_LIMIT
             )
 
-            currentContent = currentContent.copy(
-                quickPicks = quickPicks
-            )
-            emit(currentContent)
+            if (quickPicks.isNotEmpty()) {
+                currentContent = currentContent.copy(quickPicks = quickPicks)
+                emit(currentContent)
+            }
             Log.d("GetHomeContent", "Stage 1b (Quick Picks) emitted in ${System.currentTimeMillis() - startMs}ms")
         }
 
-        // ════════ STAGE 2: Primary Remote Content (Goal: < 800ms) ════════
+        // ════════ STAGE 2: Primary Remote Content (Mixed for You from InnerTube) ════════
         coroutineScope {
             val mixedForYouDeferred = async {
                 fetchSongsSection { browseRepository.getMixedForYou(HOME_SECTION_LIMIT, forceRefresh = forceRefresh) }
@@ -107,29 +119,32 @@ class GetHomeContentUseCase @Inject constructor(
 
             val mixedForYou = distinctSongs(mixedForYouDeferred.await(), HOME_SECTION_LIMIT)
 
-            currentContent = currentContent.copy(
-                mixedForYou = mixedForYou
-            )
-            emit(currentContent)
+            if (mixedForYou.isNotEmpty()) {
+                currentContent = currentContent.copy(mixedForYou = mixedForYou)
+                emit(currentContent)
+            }
             Log.d("GetHomeContent", "Stage 2 (Primary Network) emitted in ${System.currentTimeMillis() - startMs}ms")
         }
 
-        // ════════ STAGE 3: Secondary & Lazy Content ════════
+        // ════════ STAGE 3: Secondary Shelves (Batched to prevent socket congestion) ════════
         coroutineScope {
-            val englishHitsDeferred = async {
-                fetchSongsSection { songRepository.getEnglishHits(HOME_SECTION_LIMIT * 2) }
-            }
-            val artistsDeferred = async {
-                fetchArtistSection { recommendationRepository.getTopArtistSongs(TOP_ARTIST_SECTION_COUNT) }
-            }
-            val forgottenDeferred = async {
-                fetchSongsSection { recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT) }
-            }
+            // Batch 3a: High-interest discovery
             val trendingAlbumsDeferred = async {
                 fetchSongsSection { browseRepository.getTrendingAlbums(HOME_SECTION_LIMIT, forceRefresh = forceRefresh) }
             }
             val chartsDeferred = async {
                 fetchCharts(forceRefresh = forceRefresh)
+            }
+            val englishHitsDeferred = async {
+                fetchSongsSection { songRepository.getEnglishHits(HOME_SECTION_LIMIT * 2) }
+            }
+
+            // Batch 3b: Lower-priority / lazy shelves
+            val artistsDeferred = async {
+                fetchArtistSection { recommendationRepository.getTopArtistSongs(TOP_ARTIST_SECTION_COUNT) }
+            }
+            val forgottenDeferred = async {
+                fetchSongsSection { recommendationRepository.getForgottenFavorites(HOME_SECTION_LIMIT) }
             }
             val homeShelvesDeferred = async {
                 withTimeoutOrNull(SECTION_TIMEOUT_MS) {
@@ -137,11 +152,11 @@ class GetHomeContentUseCase @Inject constructor(
                 }
             }
 
+            val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
+            val charts = chartsDeferred.await()
             val englishHitsRaw = distinctSongs(englishHitsDeferred.await(), HOME_SECTION_LIMIT * 2)
             val artistSectionsRaw = artistsDeferred.await()
             val forgottenRaw = distinctSongs(forgottenDeferred.await(), HOME_SECTION_LIMIT)
-            val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
-            val charts = chartsDeferred.await()
             val homeShelvesResult = homeShelvesDeferred.await()
 
             val englishHits = distinctSongs(
@@ -158,16 +173,19 @@ class GetHomeContentUseCase @Inject constructor(
             val artistSections = normalizeArtistSections(artistSectionsRaw)
 
             currentContent = currentContent.copy(
-                forgottenFavorites = forgottenFavorites,
-                englishHits = englishHits,
-                artists = artistSections,
-                trendingAlbums = trendingAlbums,
-                charts = charts,
-                continuationShelves = homeShelvesResult?.first.orEmpty(),
-                continuationToken = homeShelvesResult?.second
+                trendingAlbums = if (trendingAlbums.isNotEmpty()) trendingAlbums else currentContent.trendingAlbums,
+                charts = charts ?: currentContent.charts,
+                englishHits = if (englishHits.isNotEmpty()) englishHits else currentContent.englishHits,
+                artists = if (artistSections.isNotEmpty()) artistSections else currentContent.artists,
+                forgottenFavorites = if (forgottenFavorites.isNotEmpty()) forgottenFavorites else currentContent.forgottenFavorites,
+                continuationShelves = if (homeShelvesResult?.first?.isNotEmpty() == true) homeShelvesResult.first else currentContent.continuationShelves,
+                continuationToken = homeShelvesResult?.second ?: currentContent.continuationToken
             )
             emit(currentContent)
-            Log.d("GetHomeContent", "Stage 3 (Secondary Network) completed in ${System.currentTimeMillis() - startMs}ms")
+
+            // Cache the full normalized snapshot to Memory + Room Disk Cache
+            homeCacheDataSource.saveHomeCache(currentContent)
+            Log.d("GetHomeContent", "Stage 3 (Secondary Network & Cache Persist) completed in ${System.currentTimeMillis() - startMs}ms")
         }
     }
 

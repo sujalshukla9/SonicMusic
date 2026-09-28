@@ -1,8 +1,10 @@
 package com.sonicmusic.app.domain.model
 
 import androidx.compose.runtime.Immutable
+import kotlinx.serialization.Serializable
 
 @Immutable
+@Serializable
 data class ContinuationShelf(
     val id: String,
     val title: String,
@@ -11,6 +13,7 @@ data class ContinuationShelf(
 )
 
 @Immutable
+@Serializable
 data class HomeContent(
     val listenAgain: List<Song> = emptyList(),
     val quickPicks: List<Song> = emptyList(),
@@ -24,9 +27,22 @@ data class HomeContent(
     val mixedForYou: List<Song> = emptyList(),
     val continuationShelves: List<ContinuationShelf> = emptyList(),
     val continuationToken: String? = null
-)
+) {
+    fun hasAnyContent(): Boolean =
+        listenAgain.isNotEmpty() ||
+        quickPicks.isNotEmpty() ||
+        forgottenFavorites.isNotEmpty() ||
+        englishHits.isNotEmpty() ||
+        artists.isNotEmpty() ||
+        trendingAlbums.isNotEmpty() ||
+        charts?.songs?.isNotEmpty() == true ||
+        recentlyPlayed.isNotEmpty() ||
+        mixedForYou.isNotEmpty() ||
+        continuationShelves.isNotEmpty()
+}
 
 @Immutable
+@Serializable
 data class ArtistSection(
     val artist: Artist,
     val songs: List<Song>

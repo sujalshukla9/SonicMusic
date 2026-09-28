@@ -63,17 +63,27 @@ class PlayerServiceConnection @Inject constructor(
     private val songSourceResolver: com.sonicmusic.app.data.repository.SongSourceResolver,
     private val playbackStateDataStore: com.sonicmusic.app.data.local.datastore.PlaybackStateDataStore,
     private val songRepository: dagger.Lazy<com.sonicmusic.app.domain.repository.SongRepository>,
-    private val queueRepository: dagger.Lazy<com.sonicmusic.app.domain.repository.QueueRepository>
+    private val queueRepository: dagger.Lazy<com.sonicmusic.app.domain.repository.QueueRepository>,
+    private val youTubeiService: dagger.Lazy<com.sonicmusic.app.data.remote.source.YouTubeiService>,
+    private val settingsRepository: dagger.Lazy<com.sonicmusic.app.data.repository.SettingsRepository>
 ) {
     companion object {
         private const val TAG = "SonicConnection"
-        private const val QUEUE_LOW_THRESHOLD = 5 // Trigger replenishment when 5 or fewer songs remain ahead
-        private const val QUEUE_CHECK_COOLDOWN_MS = 1000L // Fast queue replenishment
-        private const val PRELOAD_THRESHOLD = 7 // Start preloading earlier
-        private const val POSITION_UPDATE_INTERVAL_MS = 250L // ~4fps — visually smooth for a progress bar, 3x fewer recompositions
-        const val MAX_QUEUE_SIZE = 20 // Strictly cap queue size to at most 20 songs
-        const val TARGET_RECOMMENDATIONS = 19 // Seed song + 19 recommendations = 20 songs
+        private const val QUEUE_CHECK_COOLDOWN_MS = 1500L
+        private const val PRELOAD_THRESHOLD = 7
+        private const val POSITION_UPDATE_INTERVAL_MS = 250L
+
+        // Configurable queue recommendation thresholds (Prompt Section 7)
+        const val INITIAL_RECOMMENDATION_COUNT = 15 // 1 seed + 14 recommendations = 15 initial
+        const val PREFETCH_THRESHOLD = 5            // Trigger background prefetch when remaining songs <= 5
+        const val QUEUE_LOW_THRESHOLD = PREFETCH_THRESHOLD
+        const val PREFETCH_BATCH_SIZE = 10          // Fetch 10 songs per batch
+        const val MAXIMUM_QUEUE_RECOMMENDATIONS = 50 // Cap queue up to 50 songs (no starvation, no 20-song truncation)
+        const val MAX_QUEUE_SIZE = MAXIMUM_QUEUE_RECOMMENDATIONS
+        const val TARGET_RECOMMENDATIONS = INITIAL_RECOMMENDATION_COUNT - 1
     }
+
+    @Volatile private var activeRadioContinuationToken: String? = null
 
     // MediaController for communication with PlaybackService
     private var mediaController: MediaController? = null
@@ -90,11 +100,21 @@ class PlayerServiceConnection @Inject constructor(
     private var lastRadioSeedSongId: String? = null
     private val radioMutex = kotlinx.coroutines.sync.Mutex()
     private val replenishmentMutex = kotlinx.coroutines.sync.Mutex()
+    private var unshuffledQueueSnapshot: List<Song>? = null
 
     init {
         // Immediately restore previously played song and queue on startup
         scope.launch {
             restoreSavedPlaybackState()
+        }
+
+        // Keep infinite queue mode aligned with user settings
+        scope.launch {
+            runCatching {
+                settingsRepository.get().autoQueueSimilar.collect { enabled ->
+                    _infiniteModeEnabled.value = enabled
+                }
+            }
         }
     }
 
@@ -181,6 +201,17 @@ class PlayerServiceConnection @Inject constructor(
     // Track if queue needs more songs (for UI indication)
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private val _infiniteModeEnabled = MutableStateFlow(true)
+    val infiniteModeEnabled: StateFlow<Boolean> = _infiniteModeEnabled.asStateFlow()
+
+    fun setInfiniteMode(enabled: Boolean) {
+        _infiniteModeEnabled.value = enabled
+        Log.d(TAG, "PlayerServiceConnection infiniteMode set to: $enabled")
+        if (enabled) {
+            checkQueueAndRequestMore()
+        }
+    }
 
     // Apple Music-style: current stream quality info
     private val _currentStreamInfo = MutableStateFlow<AudioStreamInfo?>(null)
@@ -293,29 +324,41 @@ class PlayerServiceConnection @Inject constructor(
                     }
                     lastSongId = null
 
-                    // ── AUTO-ADVANCE FIX ─────────────────────────────
-                    // ExoPlayer enters STATE_ENDED when the last item in
-                    // its playlist finishes.  Songs may have been lazily
-                    // appended to the controller *after* the playlist was
-                    // originally set (background URL resolution).  Try to
-                    // advance to the next item immediately before falling
-                    // back to requesting more recommendations.
+                    // 1. Advance through controller if it already has next preloaded items
                     val ctrl = mediaController
                     if (ctrl != null) {
-                        val nextIdx = ctrl.currentMediaItemIndex + 1
-                        if (nextIdx < ctrl.mediaItemCount) {
-                            Log.d(TAG, "STATE_ENDED: Auto-advancing to index $nextIdx (count=${ctrl.mediaItemCount})")
-                            ctrl.seekTo(nextIdx, 0L)
+                        val nextCtrlIdx = ctrl.currentMediaItemIndex + 1
+                        if (nextCtrlIdx < ctrl.mediaItemCount) {
+                            Log.d(TAG, "STATE_ENDED: Auto-advancing in controller to index $nextCtrlIdx (count=${ctrl.mediaItemCount})")
+                            ctrl.seekTo(nextCtrlIdx, 0L)
                             ctrl.prepare()
                             ctrl.play()
-                            return // Successfully advanced — skip queue refill
+                            return
                         }
                     }
-                    // ─────────────────────────────────────────────────
+
+                    // 2. Advance through songQueue if next songs exist
+                    val curIdx = _currentQueueIndex.value
+                    if (curIdx < songQueue.size - 1) {
+                        Log.d(TAG, "STATE_ENDED: Advancing songQueue to index ${curIdx + 1} (${songQueue.size} songs total)")
+                        skipToQueueItem(curIdx + 1)
+                        return
+                    } else if (songQueue.isNotEmpty() && _repeatMode.value == Player.REPEAT_MODE_ALL) {
+                        Log.d(TAG, "STATE_ENDED: Repeat All active, looping to start")
+                        skipToQueueItem(0)
+                        return
+                    } else if (_infiniteModeEnabled.value) {
+                        Log.d(TAG, "STATE_ENDED: End of queue reached with infinite mode ON, loading fresh recommendations")
+                        reachedEndOfQueue = true
+                        isWaitingForNextTrack = true
+                        _isBuffering.value = true
+                        _currentSong.value?.let { song ->
+                            prefetchQueueRecommendations(song.id, playImmediatelyWhenReady = true)
+                        }
+                        return
+                    }
 
                     reachedEndOfQueue = true
-                    // Check if we need more songs
-                    checkQueueAndRequestMore()
                 }
                 Player.STATE_IDLE -> {
                     _isBuffering.value = false
@@ -849,11 +892,12 @@ class PlayerServiceConnection @Inject constructor(
 
     /**
      * Play a single song and dynamically generate fresh YouTube Music recommendations
-     * based on that song, loading a maximum of 20 songs into the queue.
+     * based on that song, loading INITIAL_RECOMMENDATION_COUNT (15 songs total) into the queue.
      */
     fun playSongWithRadio(song: Song) {
         radioJob?.cancel()
         lastRadioSeedSongId = song.id
+        activeRadioContinuationToken = null
 
         // 1. Immediate UI feedback
         preparePlayback(song)
@@ -884,17 +928,28 @@ class PlayerServiceConnection @Inject constructor(
                 }
 
                 Log.d(TAG, "Fetching fresh radio recommendations for ${song.title} (${song.id})")
-                val relatedResult = qRepo.getRelatedSongs(song.id, TARGET_RECOMMENDATIONS)
-                val recommendations = relatedResult.getOrNull().orEmpty()
-                val candidateList = if (recommendations.isNotEmpty()) {
-                    recommendations
+
+                // Primary source: YouTube Music native Radio Mix (RDAMVM)
+                val radioResult = youTubeiService.get().getRadioMix(song.id).getOrNull()
+                val candidateList = if (radioResult != null && radioResult.first.isNotEmpty()) {
+                    activeRadioContinuationToken = radioResult.second
+                    radioResult.first
                 } else {
-                    qRepo.getSongMix(song.id, TARGET_RECOMMENDATIONS).getOrDefault(emptyList())
+                    val upNextResult = youTubeiService.get().getUpNext(song.id).getOrNull()
+                    if (upNextResult != null && upNextResult.first.isNotEmpty()) {
+                        activeRadioContinuationToken = upNextResult.second
+                        upNextResult.first
+                    } else {
+                        qRepo.getRelatedSongs(song.id, TARGET_RECOMMENDATIONS).getOrNull().orEmpty()
+                    }
                 }
 
                 val finalCandidates = candidateList
-                    .filter { it.id != song.id }
+                    .asSequence()
+                    .filter { it.id.isNotBlank() && it.id != song.id }
+                    .distinctBy { it.id }
                     .take(TARGET_RECOMMENDATIONS)
+                    .toList()
 
                 if (finalCandidates.isNotEmpty() && lastRadioSeedSongId == song.id && isActive) {
                     val currentSessionId = queueSessionId.get()
@@ -909,8 +964,7 @@ class PlayerServiceConnection @Inject constructor(
                                     songQueue.add(rec)
                                 }
                             }
-                            // Hard cap to MAX_QUEUE_SIZE (20)
-                            while (songQueue.size > MAX_QUEUE_SIZE) {
+                            while (songQueue.size > MAXIMUM_QUEUE_RECOMMENDATIONS) {
                                 songQueue.removeAt(songQueue.lastIndex)
                             }
                         }
@@ -931,6 +985,7 @@ class PlayerServiceConnection @Inject constructor(
                         songRepository = songRepository.get(),
                         expectedSessionId = currentSessionId
                     )
+                    Log.d(TAG, "Radio queue initialized with ${songQueue.size} songs for ${song.title}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error fetching radio recommendations for ${song.title}", e)
@@ -939,7 +994,38 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     /**
-     * Hydrate remaining songs in background, prioritizing upcoming tracks first
+     * Synchronizes ExoPlayer's upcoming media items to mirror songQueue starting
+     * from currentQueueIndex + 1.
+     * Never interrupts the currently playing media item.
+     */
+    fun syncUpcomingMediaItems() {
+        val controller = mediaController ?: return
+        val currentIdx = _currentQueueIndex.value
+        if (currentIdx !in songQueue.indices) return
+
+        val currentPlayingCtrlIdx = controller.currentMediaItemIndex
+        val upcomingQueueSongs = songQueue.drop(currentIdx + 1).take(5)
+
+        // Remove all unplayed media items following currentPlayingCtrlIdx
+        while (controller.mediaItemCount > currentPlayingCtrlIdx + 1) {
+            controller.removeMediaItem(currentPlayingCtrlIdx + 1)
+        }
+
+        // Add upcoming items that have resolved stream URLs in order
+        val itemsToAdd = upcomingQueueSongs.mapNotNull { song ->
+            val url = streamUrlCache[song.id]
+            if (url != null) createMediaItem(song, url) else null
+        }
+
+        if (itemsToAdd.isNotEmpty()) {
+            controller.addMediaItems(itemsToAdd)
+        }
+    }
+
+    /**
+     * Hydrate remaining songs in background.
+     * Pre-resolves upcoming tracks and syncs forward playlist into ExoPlayer.
+     * Preceding history tracks are cached in streamUrlCache only and never queued ahead of playing song.
      */
     private fun hydrateQueueRemaining(
         songs: List<Song>,
@@ -953,19 +1039,15 @@ class PlayerServiceConnection @Inject constructor(
 
         scope.launch(Dispatchers.IO) {
             try {
-                // Priority: next upcoming songs first (1..N), then previous songs (0..startIndex-1)
                 val upcomingSongs = songs.drop(startIndex + 1)
                 val precedingSongs = songs.take(startIndex)
-                val orderedHydration = upcomingSongs + precedingSongs
 
-                for (batch in orderedHydration.chunked(2)) {
-                    if (!isActive) break
-                    if (expectedSessionId != queueSessionId.get()) break
-                    delay(250) // Give network & CPU to foreground playback
+                // 1. Upcoming tracks hydration (high priority)
+                for (batch in upcomingSongs.chunked(3)) {
+                    if (!isActive || expectedSessionId != queueSessionId.get()) break
+                    delay(150)
 
                     val urlMap = mutableMapOf<String, String>()
-                    val validSongs = mutableListOf<Song>()
-
                     coroutineScope {
                         batch.map { song ->
                             async {
@@ -977,42 +1059,58 @@ class PlayerServiceConnection @Inject constructor(
                                         is com.sonicmusic.app.data.repository.SongSource.Unavailable -> null
                                     }
                                     if (url != null) {
-                                        synchronized(urlMap) {
-                                            urlMap[song.id] = url
-                                            validSongs.add(song)
-                                        }
+                                        synchronized(urlMap) { urlMap[song.id] = url }
                                     }
+                                    Unit
                                 } catch (e: Exception) {
                                     Log.w(TAG, "Failed to get URL for ${song.id}")
                                 }
-                                Unit
                             }
                         }.awaitAll()
                     }
 
-                    if (validSongs.isNotEmpty()) {
+                    if (urlMap.isNotEmpty()) {
                         withContext(Dispatchers.Main) {
                             if (expectedSessionId != queueSessionId.get()) return@withContext
                             updateStreamUrls(urlMap)
-
-                            val controller = mediaController
-                            if (controller != null) {
-                                val existingControllerIds = mutableSetOf<String>()
-                                repeat(controller.mediaItemCount) { idx ->
-                                    existingControllerIds.add(controller.getMediaItemAt(idx).mediaId)
-                                }
-
-                                validSongs.forEach { song ->
-                                    val url = urlMap[song.id] ?: return@forEach
-                                    if (!existingControllerIds.contains(song.id)) {
-                                        controller.addMediaItem(createMediaItem(song, url))
-                                        existingControllerIds.add(song.id)
-                                    }
-                                }
-                            }
+                            syncUpcomingMediaItems()
                         }
                     }
                 }
+
+                // 2. Preceding history tracks hydration (cached for instant back navigation, NEVER added to player)
+                for (batch in precedingSongs.chunked(4)) {
+                    if (!isActive || expectedSessionId != queueSessionId.get()) break
+                    val urlMap = mutableMapOf<String, String>()
+                    coroutineScope {
+                        batch.map { song ->
+                            async {
+                                try {
+                                    val source = songSourceResolver.getSongStreamSource(song.id)
+                                    val url = when (source) {
+                                        is com.sonicmusic.app.data.repository.SongSource.Local -> source.filePath
+                                        is com.sonicmusic.app.data.repository.SongSource.Remote -> source.streamUrl
+                                        is com.sonicmusic.app.data.repository.SongSource.Unavailable -> null
+                                    }
+                                    if (url != null) {
+                                        synchronized(urlMap) { urlMap[song.id] = url }
+                                    }
+                                    Unit
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed to cache history URL for ${song.id}")
+                                }
+                            }
+                        }.awaitAll()
+                    }
+
+                    if (urlMap.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            if (expectedSessionId != queueSessionId.get()) return@withContext
+                            updateStreamUrls(urlMap)
+                        }
+                    }
+                }
+
                 Log.d(TAG, "Finished background queue hydration for session $expectedSessionId")
             } catch (e: Exception) {
                 Log.e(TAG, "Error in queue hydration", e)
@@ -1250,12 +1348,6 @@ class PlayerServiceConnection @Inject constructor(
         Log.d(TAG, "Added ${newSongs.size} songs to queue, total: ${songQueue.size}")
     }
 
-    /**
-     * Add a single song to the queue
-     */
-    fun addToQueue(song: Song, streamUrl: String) {
-        addToQueue(listOf(song), mapOf(song.id to streamUrl))
-    }
 
     /**
      * Update stream URLs for existing songs (used for background loading)
@@ -1327,7 +1419,7 @@ class PlayerServiceConnection @Inject constructor(
      * If next song exists in queue, advances directly to it (resolving URL immediately if not yet in player).
      * If at the end of queue:
      * - In REPEAT_MODE_ALL: loops back to the start of the queue.
-     * - Otherwise: requests more radio songs (auto-play).
+     * - If infiniteModeEnabled: pre-fetches next recommendations and plays immediately.
      */
     fun skipToNext() {
         val controller = mediaController ?: return
@@ -1340,11 +1432,13 @@ class PlayerServiceConnection @Inject constructor(
         } else if (totalQueueSize > 0 && controller.repeatMode == Player.REPEAT_MODE_ALL) {
             // Loop back to start of queue in repeat all mode
             skipToQueueItem(0)
-        } else {
-            // End of queue reached — request radio recommendations
+        } else if (_infiniteModeEnabled.value) {
+            // End of queue reached with infinite mode ON — request radio recommendations and start playing immediately
+            Log.d(TAG, "skipToNext: End of queue reached with infinite mode ON, loading recommendations")
             isWaitingForNextTrack = true
+            _isBuffering.value = true
             _currentSong.value?.let { song ->
-                onQueueNeedsMoreSongs?.invoke(song.id)
+                prefetchQueueRecommendations(song.id, playImmediatelyWhenReady = true)
             }
         }
     }
@@ -1393,8 +1487,8 @@ class PlayerServiceConnection @Inject constructor(
      * Skip to a specific item in the queue - YouTube Music Style
      * 
      * Works reliably even when background hydration is still processing remaining songs.
-     * If the item is already added to MediaController, seeks directly.
-     * If not yet added to MediaController, resolves stream URL on demand and plays immediately.
+     * Sets the target song as the active media item in MediaController, plays immediately,
+     * and syncs the upcoming queue items.
      * 
      * @param index The index in songQueue to skip to
      */
@@ -1406,29 +1500,26 @@ class PlayerServiceConnection @Inject constructor(
         pendingSeekIndex = null
         isWaitingForNextTrack = false
 
-        // Check if the item already exists in the controller
-        val count = controller.mediaItemCount
-        var foundControllerIndex = -1
-        for (i in 0 until count) {
-            if (controller.getMediaItemAt(i).mediaId == targetSong.id) {
-                foundControllerIndex = i
-                break
-            }
-        }
+        Log.d(TAG, "Skipping to queue item: $index (${targetSong.title})")
+        _currentSong.value = targetSong
+        _currentQueueIndex.value = index
+        persistCurrentState(targetSong, songQueue.toList(), index, 0L)
+        audioEngine.clearStreamInfo()
+        resolveAndApplyStreamInfo(targetSong.id)
 
-        if (foundControllerIndex != -1) {
-            Log.d(TAG, "Skipping to queue item: $index (controller index: $foundControllerIndex, song: ${targetSong.title})")
-            _currentSong.value = targetSong
-            _currentQueueIndex.value = index
-            controller.seekTo(foundControllerIndex, 0L)
+        val cachedUrl = streamUrlCache[targetSong.id]
+        if (cachedUrl != null) {
+            val mediaItem = createMediaItem(targetSong, cachedUrl)
+            controller.setMediaItem(mediaItem)
             controller.prepare()
             controller.play()
+            _isPlaying.value = true
+            _isBuffering.value = false
+            syncUpcomingMediaItems()
             preResolveUpcomingTracks(index)
         } else {
-            // Track is in songQueue but not yet added to mediaController (e.g. pending URL resolution)
-            Log.d(TAG, "Queue item $index (${targetSong.title}) not in controller yet — resolving on demand")
-            _currentSong.value = targetSong
-            _currentQueueIndex.value = index
+            // Track is in songQueue but stream URL not cached yet — resolve on demand
+            Log.d(TAG, "Queue item $index (${targetSong.title}) not in cache — resolving on demand")
             _isBuffering.value = true
 
             scope.launch {
@@ -1442,14 +1533,16 @@ class PlayerServiceConnection @Inject constructor(
 
                     if (url != null) {
                         streamUrlCache[targetSong.id] = url
-                        val mediaItem = createMediaItem(targetSong, url)
-                        val insertPos = controller.mediaItemCount
-                        controller.addMediaItem(mediaItem)
-                        controller.seekTo(insertPos, 0L)
-                        controller.prepare()
-                        controller.play()
-                        _isBuffering.value = false
-                        preResolveUpcomingTracks(index)
+                        if (_currentQueueIndex.value == index) {
+                            val mediaItem = createMediaItem(targetSong, url)
+                            controller.setMediaItem(mediaItem)
+                            controller.prepare()
+                            controller.play()
+                            _isPlaying.value = true
+                            _isBuffering.value = false
+                            syncUpcomingMediaItems()
+                            preResolveUpcomingTracks(index)
+                        }
                     } else {
                         _playbackError.value = "Failed to load track"
                         _isBuffering.value = false
@@ -1465,9 +1558,9 @@ class PlayerServiceConnection @Inject constructor(
 
     /**
      * Insert song to play next (immediately after currently playing song)
-     * YouTube Music Style
+     * Instant UI update + background stream preloading.
      */
-    fun insertPlayNext(song: Song, streamUrl: String) {
+    fun insertPlayNext(song: Song) {
         val currentIdx = _currentQueueIndex.value
         val safeTargetIndex = (currentIdx + 1).coerceIn(0, songQueue.size)
 
@@ -1478,29 +1571,25 @@ class PlayerServiceConnection @Inject constructor(
                 // Already currently playing
                 return
             }
-            removeFromQueue(existingIndex)
+            songQueue.removeAt(existingIndex)
         }
 
-        val finalInsertIndex = (currentIdx + 1).coerceIn(0, songQueue.size)
-        streamUrlCache[song.id] = streamUrl
-        songQueue.add(finalInsertIndex, song)
+        val finalInsertIndex = if (existingIndex != -1 && existingIndex < safeTargetIndex) {
+            currentIdx.coerceIn(0, songQueue.size)
+        } else {
+            (currentIdx + 1).coerceIn(0, songQueue.size)
+        }
+
+        synchronized(songQueue) {
+            songQueue.add(finalInsertIndex, song)
+        }
         _queue.value = songQueue.toList()
-
-        mediaController?.let { controller ->
-            val mediaItem = createMediaItem(song, streamUrl)
-            val controllerInsertIndex = (controller.currentMediaItemIndex + 1).coerceIn(0, controller.mediaItemCount)
-            controller.addMediaItem(controllerInsertIndex, mediaItem)
-        }
+        persistCurrentState(_currentSong.value, songQueue.toList(), _currentQueueIndex.value, _currentPosition.value)
 
         Log.d(TAG, "Inserted play next at index $finalInsertIndex: ${song.title}")
-    }
 
-    /**
-     * Insert song to play next with background URL resolution
-     * YouTube Music Style
-     */
-    fun insertPlayNextLazy(song: Song, songRepository: com.sonicmusic.app.domain.repository.SongRepository) {
-        scope.launch {
+        // Preload stream URL in background and sync with player
+        scope.launch(Dispatchers.IO) {
             try {
                 val source = songSourceResolver.getSongStreamSource(song.id)
                 val url = when (source) {
@@ -1509,14 +1598,67 @@ class PlayerServiceConnection @Inject constructor(
                     is com.sonicmusic.app.data.repository.SongSource.Unavailable -> null
                 }
                 if (url != null) {
-                    insertPlayNext(song, url)
-                } else {
-                    Log.w(TAG, "Could not resolve stream URL for play next: ${song.title}")
+                    streamUrlCache[song.id] = url
+                    withContext(Dispatchers.Main) {
+                        syncUpcomingMediaItems()
+                    }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error in insertPlayNextLazy", e)
+                Log.w(TAG, "Failed to resolve stream for play next (${song.title})", e)
             }
         }
+    }
+
+    fun insertPlayNext(song: Song, streamUrl: String) {
+        streamUrlCache[song.id] = streamUrl
+        insertPlayNext(song)
+    }
+
+    fun insertPlayNextLazy(song: Song, songRepository: com.sonicmusic.app.domain.repository.SongRepository) {
+        insertPlayNext(song)
+    }
+
+    /**
+     * Add single song to the end of the queue.
+     * Instant UI update + background stream preloading.
+     */
+    fun addSongToQueue(song: Song) {
+        if (songQueue.isEmpty() && _currentSong.value == null) {
+            playSongWithRadio(song)
+            return
+        }
+
+        synchronized(songQueue) {
+            songQueue.add(song)
+        }
+        _queue.value = songQueue.toList()
+        persistCurrentState(_currentSong.value, songQueue.toList(), _currentQueueIndex.value, _currentPosition.value)
+
+        Log.d(TAG, "Added song to end of queue: ${song.title} (size: ${songQueue.size})")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                val source = songSourceResolver.getSongStreamSource(song.id)
+                val url = when (source) {
+                    is com.sonicmusic.app.data.repository.SongSource.Local -> source.filePath
+                    is com.sonicmusic.app.data.repository.SongSource.Remote -> source.streamUrl
+                    is com.sonicmusic.app.data.repository.SongSource.Unavailable -> null
+                }
+                if (url != null) {
+                    streamUrlCache[song.id] = url
+                    withContext(Dispatchers.Main) {
+                        syncUpcomingMediaItems()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to resolve stream for added song (${song.title})", e)
+            }
+        }
+    }
+
+    fun addToQueue(song: Song, streamUrl: String) {
+        streamUrlCache[song.id] = streamUrl
+        addSongToQueue(song)
     }
 
     /**
@@ -1526,7 +1668,8 @@ class PlayerServiceConnection @Inject constructor(
         if (currentIndex < 0) return
         val upcoming = listOfNotNull(
             songQueue.getOrNull(currentIndex + 1),
-            songQueue.getOrNull(currentIndex + 2)
+            songQueue.getOrNull(currentIndex + 2),
+            songQueue.getOrNull(currentIndex + 3)
         )
         if (upcoming.isEmpty()) return
 
@@ -1543,17 +1686,15 @@ class PlayerServiceConnection @Inject constructor(
                         if (url != null) {
                             streamUrlCache[song.id] = url
                             withContext(Dispatchers.Main) {
-                                val controller = mediaController ?: return@withContext
-                                val exists = (0 until controller.mediaItemCount).any { 
-                                    controller.getMediaItemAt(it).mediaId == song.id 
-                                }
-                                if (!exists) {
-                                    controller.addMediaItem(createMediaItem(song, url))
-                                }
+                                syncUpcomingMediaItems()
                             }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Pre-resolve failed for ${song.id}: ${e.message}")
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        syncUpcomingMediaItems()
                     }
                 }
             }
@@ -1634,10 +1775,51 @@ class PlayerServiceConnection @Inject constructor(
 
     /**
      * Toggle shuffle mode
+     * Genuinely shuffles upcoming songs in the queue and updates UI,
+     * preserving original playlist order snapshot to restore when toggled off.
      */
     fun toggleShuffle() {
-        mediaController?.let { controller ->
-            controller.shuffleModeEnabled = !controller.shuffleModeEnabled
+        val newShuffle = !_shuffleEnabled.value
+        _shuffleEnabled.value = newShuffle
+        mediaController?.shuffleModeEnabled = newShuffle
+
+        val currentIdx = _currentQueueIndex.value
+        if (songQueue.isEmpty()) return
+
+        if (newShuffle) {
+            // Save original queue snapshot to restore later
+            unshuffledQueueSnapshot = songQueue.toList()
+
+            // Keep played/current songs, shuffle upcoming songs
+            val head = songQueue.take(currentIdx + 1)
+            val upcoming = songQueue.drop(currentIdx + 1).shuffled()
+            synchronized(songQueue) {
+                songQueue.clear()
+                songQueue.addAll(head + upcoming)
+            }
+            _queue.value = songQueue.toList()
+            persistCurrentState(_currentSong.value, songQueue.toList(), currentIdx, _currentPosition.value)
+            syncUpcomingMediaItems()
+        } else {
+            // Restore from snapshot if available
+            val snapshot = unshuffledQueueSnapshot
+            if (snapshot != null) {
+                val currentSongId = _currentSong.value?.id
+                val originalCurrentIdx = snapshot.indexOfFirst { it.id == currentSongId }
+                if (originalCurrentIdx != -1) {
+                    val head = songQueue.take(currentIdx + 1)
+                    val playedIds = head.map { it.id }.toSet()
+                    val unplayedFromOriginal = snapshot.drop(originalCurrentIdx + 1).filterNot { playedIds.contains(it.id) }
+                    synchronized(songQueue) {
+                        songQueue.clear()
+                        songQueue.addAll(head + unplayedFromOriginal)
+                    }
+                    _queue.value = songQueue.toList()
+                    persistCurrentState(_currentSong.value, songQueue.toList(), currentIdx, _currentPosition.value)
+                    syncUpcomingMediaItems()
+                }
+                unshuffledQueueSnapshot = null
+            }
         }
     }
 
@@ -1663,69 +1845,84 @@ class PlayerServiceConnection @Inject constructor(
         songQueue.clear()
         streamUrlCache.clear()
         lazyQueueHydrationJobs.set(0)
+        unshuffledQueueSnapshot = null
         _queue.value = emptyList()
         _currentQueueIndex.value = -1
         _currentSong.value = null
         reachedEndOfQueue = false
         isWaitingForNextTrack = false
         pendingSeekIndex = null
-    }
-
-    /**
-     * Reorder item in queue
-     */
-    fun reorderQueue(fromIndex: Int, toIndex: Int) {
-        if (fromIndex == toIndex) return
-        
-        mediaController?.let { controller ->
-            // Move in player if valid
-            if (fromIndex in 0 until controller.mediaItemCount && toIndex in 0 until controller.mediaItemCount) {
-                controller.moveMediaItem(fromIndex, toIndex)
-            }
-            
-            // Move in local queue
-            if (fromIndex in songQueue.indices && toIndex in songQueue.indices) {
-                val item = songQueue.removeAt(fromIndex)
-                songQueue.add(toIndex, item)
-                _queue.value = songQueue.toList()
-                
-                // Update current index if needed
-                val currentId = _currentSong.value?.id
-                if (currentId != null) {
-                    val newIndex = songQueue.indexOfFirst { it.id == currentId }
-                    if (newIndex != -1) {
-                        _currentQueueIndex.value = newIndex
-                    }
-                }
-            }
+        scope.launch {
+            playbackStateDataStore.clearPlaybackState()
         }
     }
 
     /**
+     * Reorder item in queue
+     * Rearranges songQueue and seamlessly syncs upcoming media items to ExoPlayer.
+     */
+    fun reorderQueue(fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        if (fromIndex !in songQueue.indices || toIndex !in songQueue.indices) return
+
+        val currentSongId = _currentSong.value?.id
+        synchronized(songQueue) {
+            val item = songQueue.removeAt(fromIndex)
+            songQueue.add(toIndex, item)
+        }
+        _queue.value = songQueue.toList()
+
+        // Update current index if current song was moved or affected
+        if (currentSongId != null) {
+            val newIndex = songQueue.indexOfFirst { it.id == currentSongId }
+            if (newIndex != -1) {
+                _currentQueueIndex.value = newIndex
+            }
+        }
+
+        persistCurrentState(_currentSong.value, songQueue.toList(), _currentQueueIndex.value, _currentPosition.value)
+        syncUpcomingMediaItems()
+    }
+
+    /**
      * Remove item from queue
+     * Handles removing currently playing track or history/upcoming tracks smoothly.
      */
     fun removeFromQueue(index: Int) {
-        mediaController?.let { controller ->
-            if (index in 0 until controller.mediaItemCount) {
-                controller.removeMediaItem(index)
-            }
-            
-            // Remove from local queue
-            if (index in songQueue.indices) {
-                val removedSong = songQueue.removeAt(index)
-                streamUrlCache.remove(removedSong.id)
-                _queue.value = songQueue.toList()
-                
-                // Update current index
-                val currentId = _currentSong.value?.id
-                if (currentId != null) {
-                    val newIndex = songQueue.indexOfFirst { it.id == currentId }
-                    if (newIndex != -1) {
-                        _currentQueueIndex.value = newIndex
-                    }
+        if (index !in songQueue.indices) return
+
+        val currentIdx = _currentQueueIndex.value
+        val removedSong: Song
+
+        synchronized(songQueue) {
+            removedSong = songQueue.removeAt(index)
+        }
+        streamUrlCache.remove(removedSong.id)
+
+        when {
+            // Case A: Removing the currently playing song
+            index == currentIdx -> {
+                if (songQueue.isEmpty()) {
+                    clearQueue()
+                } else {
+                    val targetIndex = index.coerceAtMost(songQueue.size - 1)
+                    _queue.value = songQueue.toList()
+                    skipToQueueItem(targetIndex)
+                    checkQueueAndRequestMore()
                 }
-                
-                // Check if we need more songs after removal
+            }
+            // Case B: Removing a preceding / history song
+            index < currentIdx -> {
+                _currentQueueIndex.value = currentIdx - 1
+                _queue.value = songQueue.toList()
+                persistCurrentState(_currentSong.value, songQueue.toList(), _currentQueueIndex.value, _currentPosition.value)
+                checkQueueAndRequestMore()
+            }
+            // Case C: Removing an upcoming song
+            else -> {
+                _queue.value = songQueue.toList()
+                persistCurrentState(_currentSong.value, songQueue.toList(), currentIdx, _currentPosition.value)
+                syncUpcomingMediaItems()
                 checkQueueAndRequestMore()
             }
         }
@@ -1743,120 +1940,160 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     /**
-     * Check if queue needs more songs and request them.
-     * Dynamically replenishes recommendations based on the currently playing track
-     * maintaining a maximum 20-song window.
+     * Check if queue needs more songs and prefetch them before the queue runs dry.
+     * Uses songQueue size instead of MediaController count to prevent false depletion triggers.
      */
     private fun checkQueueAndRequestMore() {
-        val controller = mediaController ?: return
+        if (!_infiniteModeEnabled.value) return
         val currentSong = _currentSong.value ?: return
 
         if (lazyQueueHydrationJobs.get() > 0) {
             return
         }
-        
-        // Debounce: only check once every few seconds
+
+        // Debounce: only check once every 1.5 seconds
         val now = System.currentTimeMillis()
         if (now - lastQueueCheckTime < QUEUE_CHECK_COOLDOWN_MS) {
             return
         }
-        
-        val currentIndex = controller.currentMediaItemIndex
-        val totalItems = controller.mediaItemCount
-        val remaining = totalItems - currentIndex - 1
-        
-        if (remaining <= QUEUE_LOW_THRESHOLD || reachedEndOfQueue) {
+
+        val currentIndex = _currentQueueIndex.value
+        val totalItems = songQueue.size
+        val remaining = (totalItems - currentIndex - 1).coerceAtLeast(0)
+
+        if (remaining <= PREFETCH_THRESHOLD || reachedEndOfQueue) {
             lastQueueCheckTime = now
             reachedEndOfQueue = false
-            
-            Log.d(TAG, "Queue low ($remaining ahead) or ended, replenishing recommendations for ${currentSong.title}...")
-            _isLoadingMore.value = true
-            replenishQueueRecommendations(currentSong.id)
-            onQueueNeedsMoreSongs?.invoke(currentSong.id)
-            
-            // Reset loading state after a delay
-            queueCheckJob?.cancel()
-            queueCheckJob = scope.launch {
-                delay(5000)
-                _isLoadingMore.value = false
-            }
+
+            Log.d(TAG, "Queue low ($remaining ahead in songQueue) or ended, prefetching recommendations for ${currentSong.title}...")
+            prefetchQueueRecommendations(currentSong.id)
         }
     }
 
     /**
-     * Dynamically replenish fresh recommendations based on the seed song
-     * while capping the loaded queue to at most MAX_QUEUE_SIZE (20 songs).
+     * Manually trigger recommendation prefetch (e.g. from user menu action).
      */
-    private fun replenishQueueRecommendations(currentSongId: String) {
+    fun forcePrefetchRecommendations() {
+        val currentSong = _currentSong.value ?: return
+        prefetchQueueRecommendations(currentSong.id)
+    }
+
+    /**
+     * Prefetch fresh recommendations in background using InnerTube continuation or RadioMix.
+     * Appends PREFETCH_BATCH_SIZE (10) songs at a time up to MAXIMUM_QUEUE_RECOMMENDATIONS (50).
+     *
+     * Never prunes previous songs from index 0. Playback is never blocked.
+     */
+    private fun prefetchQueueRecommendations(currentSongId: String, playImmediatelyWhenReady: Boolean = false) {
         scope.launch(Dispatchers.IO) {
             if (!replenishmentMutex.tryLock()) {
+                Log.d(TAG, "Queue prefetch already running, skipping duplicate trigger")
                 return@launch
             }
+            _isLoadingMore.value = true
             try {
-                val controller = mediaController ?: return@launch
-                val currentIndex = controller.currentMediaItemIndex
-                val totalItems = controller.mediaItemCount
+                val currentIndex = _currentQueueIndex.value
+                val totalItems = songQueue.size
                 val remainingAhead = (totalItems - currentIndex - 1).coerceAtLeast(0)
 
-                if (remainingAhead > QUEUE_LOW_THRESHOLD && !reachedEndOfQueue) {
+                if (remainingAhead > PREFETCH_THRESHOLD && !reachedEndOfQueue && !playImmediatelyWhenReady) {
                     return@launch
                 }
 
-                val qRepo = queueRepository.get()
-                val needed = (MAX_QUEUE_SIZE - remainingAhead - 1).coerceIn(3, 10)
-                val related = qRepo.getRelatedSongs(currentSongId, needed).getOrNull().orEmpty()
-                val freshSongs = if (related.isNotEmpty()) related else qRepo.getSongMix(currentSongId, needed).getOrDefault(emptyList())
+                if (totalItems >= MAXIMUM_QUEUE_RECOMMENDATIONS && !playImmediatelyWhenReady) {
+                    Log.d(TAG, "Queue already at maximum recommendations ($totalItems >= $MAXIMUM_QUEUE_RECOMMENDATIONS)")
+                    return@launch
+                }
 
+                val currentSessionId = queueSessionId.get()
+                Log.d(TAG, "Prefetching recommendations (remaining: $remainingAhead, contToken=${!activeRadioContinuationToken.isNullOrBlank()})...")
+
+                // 1. Fetch fresh recommendations batch from InnerTube continuation or RadioMix
+                var fetchedSongs = emptyList<Song>()
+                val token = activeRadioContinuationToken
+                if (!token.isNullOrBlank()) {
+                    val continuationResult = youTubeiService.get().getQueueContinuation(token).getOrNull()
+                    if (continuationResult != null && continuationResult.first.isNotEmpty()) {
+                        fetchedSongs = continuationResult.first
+                        activeRadioContinuationToken = continuationResult.second
+                        Log.d(TAG, "Fetched ${fetchedSongs.size} continuation tracks (hasNext=${!continuationResult.second.isNullOrBlank()})")
+                    }
+                }
+
+                if (fetchedSongs.isEmpty()) {
+                    val seedId = lastRadioSeedSongId ?: currentSongId
+                    val radioResult = youTubeiService.get().getRadioMix(seedId).getOrNull()
+                    if (radioResult != null && radioResult.first.isNotEmpty()) {
+                        fetchedSongs = radioResult.first
+                        activeRadioContinuationToken = radioResult.second
+                    } else {
+                        val upNextResult = youTubeiService.get().getUpNext(seedId).getOrNull()
+                        if (upNextResult != null && upNextResult.first.isNotEmpty()) {
+                            fetchedSongs = upNextResult.first
+                            activeRadioContinuationToken = upNextResult.second
+                        }
+                    }
+                }
+
+                // 2. Strict Deduplication & Filtering
                 val existingIds = synchronized(songQueue) { songQueue.map { it.id }.toSet() }
-                val newCandidates = freshSongs.filterNot { existingIds.contains(it.id) }
+                val newCandidates = fetchedSongs
+                    .asSequence()
+                    .filter { it.id.isNotBlank() && it.id != currentSongId && !existingIds.contains(it.id) }
+                    .distinctBy { it.id }
+                    .take(PREFETCH_BATCH_SIZE)
+                    .toList()
 
                 if (newCandidates.isNotEmpty()) {
-                    val currentSessionId = queueSessionId.get()
                     withContext(Dispatchers.Main) {
-                        val currentQueueList = songQueue.toMutableList()
-                        val currentIdx = _currentQueueIndex.value
+                        if (currentSessionId != queueSessionId.get()) {
+                            Log.d(TAG, "Playback session changed during prefetch, discarding batch")
+                            return@withContext
+                        }
 
-                        val songsToAdd = newCandidates.take(MAX_QUEUE_SIZE - remainingAhead - 1)
-                        val excess = (currentQueueList.size + songsToAdd.size) - MAX_QUEUE_SIZE
-                        var prunedCount = 0
-
-                        if (excess > 0 && currentIdx > 0) {
-                            val canPrune = minOf(excess, currentIdx)
-                            repeat(canPrune) {
-                                if (controller.mediaItemCount > 1) {
-                                    controller.removeMediaItem(0)
-                                    currentQueueList.removeAt(0)
-                                    prunedCount++
+                        // Append to songQueue without pruning previous songs!
+                        synchronized(songQueue) {
+                            newCandidates.forEach { candidate ->
+                                if (songQueue.none { it.id == candidate.id }) {
+                                    songQueue.add(candidate)
                                 }
                             }
-                        }
-
-                        val updatedIndex = (currentIdx - prunedCount).coerceAtLeast(0)
-                        _currentQueueIndex.value = updatedIndex
-
-                        currentQueueList.addAll(songsToAdd)
-                        synchronized(songQueue) {
-                            songQueue.clear()
-                            songQueue.addAll(currentQueueList.take(MAX_QUEUE_SIZE))
+                            while (songQueue.size > MAXIMUM_QUEUE_RECOMMENDATIONS) {
+                                songQueue.removeAt(songQueue.lastIndex)
+                            }
                         }
                         _queue.value = songQueue.toList()
-                        persistCurrentState(_currentSong.value, songQueue.toList(), updatedIndex, _currentPosition.value)
+                        persistCurrentState(_currentSong.value, songQueue.toList(), _currentQueueIndex.value, _currentPosition.value)
 
+                        val qRepo = queueRepository.get()
                         if (qRepo is QueueRepositoryImpl) {
-                            songsToAdd.forEach { qRepo.markSongAsQueued(it.id) }
+                            newCandidates.forEach { qRepo.markSongAsQueued(it.id) }
                         }
 
+                        // Background hydration of upcoming stream URLs
                         hydrateQueueRemaining(
                             songs = songQueue.toList(),
-                            startIndex = updatedIndex,
+                            startIndex = _currentQueueIndex.value,
                             songRepository = songRepository.get(),
                             expectedSessionId = currentSessionId
                         )
+                        Log.d(TAG, "Prefetched and appended ${newCandidates.size} songs. Total queue: ${songQueue.size}")
+
+                        if (playImmediatelyWhenReady) {
+                            val nextIndex = _currentQueueIndex.value + 1
+                            if (nextIndex in songQueue.indices) {
+                                Log.d(TAG, "playImmediatelyWhenReady=true: Advancing to index $nextIndex")
+                                skipToQueueItem(nextIndex)
+                            }
+                        }
                     }
+                } else {
+                    Log.d(TAG, "No fresh unique recommendations returned")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error replenishing queue recommendations", e)
+                Log.e(TAG, "Error in queue prefetch (playback continues uninterrupted)", e)
             } finally {
+                _isLoadingMore.value = false
                 replenishmentMutex.unlock()
             }
         }

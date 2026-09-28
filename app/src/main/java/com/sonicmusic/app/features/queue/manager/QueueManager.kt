@@ -72,7 +72,7 @@ class QueueManager @Inject constructor(
         }
 
         val isFromAlbum = (seedSong?.albumBrowseId != null) || 
-                          (playlistId != null && (playlistId.startsWith("MPRE") || playlistId.startsWith(" MPLA")))
+                          (playlistId != null && (playlistId.startsWith("MPRE") || playlistId.startsWith("MPLA")))
         if (isFromAlbum) {
             activeAlbumBrowseId = seedSong?.albumBrowseId ?: initialSeed?.albumBrowseId
             activeAlbumName = seedSong?.albumName ?: initialSeed?.albumName

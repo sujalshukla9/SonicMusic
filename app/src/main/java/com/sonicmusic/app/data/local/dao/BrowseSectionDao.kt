@@ -28,6 +28,12 @@ interface BrowseSectionDao {
     suspend fun getValidCache(key: String, now: Long): BrowseSectionEntity?
 
     /**
+     * Get a cached section by key regardless of expiry (used for instant cache-first display while refreshing in background).
+     */
+    @Query("SELECT * FROM browse_section_cache WHERE sectionKey = :key LIMIT 1")
+    suspend fun getCache(key: String): BrowseSectionEntity?
+
+    /**
      * Insert or replace a cache entry.
      */
     @Insert(onConflict = OnConflictStrategy.REPLACE)

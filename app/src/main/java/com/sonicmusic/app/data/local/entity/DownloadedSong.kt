@@ -40,4 +40,12 @@ data class DownloadedSong(
     val artist: String get() = artists
     val filePath: String get() = localFilePath
     val fileSize: Long get() = fileSizeBytes
+
+    fun toSong(): com.sonicmusic.app.domain.model.Song = com.sonicmusic.app.domain.model.Song(
+        id = videoId,
+        title = title,
+        artist = artists,
+        duration = (durationMs / 1000).toInt(),
+        thumbnailUrl = thumbnailUrl
+    )
 }

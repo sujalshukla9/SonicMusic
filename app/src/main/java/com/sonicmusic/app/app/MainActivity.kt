@@ -199,10 +199,10 @@ sealed class Screen(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    object Home : Screen("home", " Home", Icons.Rounded.Home, Icons.Rounded.Home)
-    object Search : Screen("search", " Search", Icons.Rounded.Search, Icons.Rounded.Search)
-    object Library : Screen("library", " Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic)
-    object Settings : Screen("settings", " Settings", Icons.Rounded.Settings, Icons.Rounded.Settings)
+    object Home : Screen("home", "Home", Icons.Rounded.Home, Icons.Rounded.Home)
+    object Search : Screen("search", "Search", Icons.Rounded.Search, Icons.Rounded.Search)
+    object Library : Screen("library", "Library", Icons.Rounded.LibraryMusic, Icons.Rounded.LibraryMusic)
+    object Settings : Screen("settings", "Settings", Icons.Rounded.Settings, Icons.Rounded.Settings)
 }
 
 // Sub-screens (no bottom nav)
@@ -345,6 +345,7 @@ fun SonicMusicApp(
     Box(modifier = Modifier.fillMaxSize()) {
         if (onboardingCompleted != null && onboardingCompleted != false) {
             val navController = rememberNavController()
+            val songActionSheetController = remember { com.sonicmusic.app.features.player.presentation.sheets.SongActionSheetController() }
             val context = androidx.compose.ui.platform.LocalContext.current
             var showFullPlayer by remember { mutableStateOf(false) }
             val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -354,54 +355,106 @@ fun SonicMusicApp(
                 keyboardController?.hide()
                 showFullPlayer = true
             }
-            
-            // Get current route
-            val navBackStackEntry by navController.currentBackStackEntryAsState()
-            val currentDestination = navBackStackEntry?.destination
 
-            // Global Error Handling (Player)
-            val playerViewModel: com.sonicmusic.app.features.player.presentation.PlayerViewModel = androidx.hilt.navigation.compose.hiltViewModel()
-            val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
-            val playbackError by playerViewModel.playbackError.collectAsStateWithLifecycle(initialValue = null)
-            val playerError by playerViewModel.error.collectAsStateWithLifecycle(initialValue = null)
-            val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
-            val dynamicState = LocalDynamicThemeState.current
-            val colorScheme = MaterialTheme.colorScheme
-            
-            val backgroundTop = remember(colorScheme.surface, dynamicState.seedColor) {
-                Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f))
-            }
-            val backgroundMid = remember(colorScheme.surface, dynamicState.seedColor) {
-                Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f))
-            }
-            val navBarContainer = colorScheme.surfaceContainerHigh
-            val navBarIndicator = colorScheme.secondaryContainer
+            androidx.compose.runtime.CompositionLocalProvider(
+                com.sonicmusic.app.features.player.presentation.sheets.LocalSongActionSheetController provides songActionSheetController
+            ) {
+                // Get current route
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentDestination = navBackStackEntry?.destination
 
-            androidx.compose.runtime.LaunchedEffect(playbackError, playerError) {
-                val errorMsg = playbackError ?: playerError
-                errorMsg?.let {
-                    snackbarHostState.showSnackbar(it)
-                    playerViewModel.clearError()
+                // Global Error Handling (Player)
+                val playerViewModel: com.sonicmusic.app.features.player.presentation.PlayerViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
+                val playbackError by playerViewModel.playbackError.collectAsStateWithLifecycle(initialValue = null)
+                val playerError by playerViewModel.error.collectAsStateWithLifecycle(initialValue = null)
+                val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+                val dynamicState = LocalDynamicThemeState.current
+                val colorScheme = MaterialTheme.colorScheme
+                
+                val backgroundTop = remember(colorScheme.surface, dynamicState.seedColor) {
+                    Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f))
                 }
-            }
-            
-            // Show bottom nav on main screens only
-            val showBottomNav = bottomNavItems.any { it.route == currentDestination?.route }
-            val isMedium = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
-            val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
+                val backgroundMid = remember(colorScheme.surface, dynamicState.seedColor) {
+                    Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f))
+                }
+                val navBarContainer = colorScheme.surfaceContainerHigh
+                val navBarIndicator = colorScheme.secondaryContainer
 
-            if (isExpanded) {
-                // Tablet / Foldable open landscape
-                PermanentNavigationDrawer(
-                    drawerContent = {
-                        PermanentDrawerSheet(
-                            drawerContainerColor = navBarContainer,
-                            drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                androidx.compose.runtime.LaunchedEffect(playbackError, playerError) {
+                    val errorMsg = playbackError ?: playerError
+                    errorMsg?.let {
+                        snackbarHostState.showSnackbar(it)
+                        playerViewModel.clearError()
+                    }
+                }
+                
+                // Show bottom nav on main screens only
+                val showBottomNav = bottomNavItems.any { it.route == currentDestination?.route }
+                val isMedium = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
+                val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
+
+                if (isExpanded) {
+                    // Tablet / Foldable open landscape
+                    PermanentNavigationDrawer(
+                        drawerContent = {
+                            PermanentDrawerSheet(
+                                drawerContainerColor = navBarContainer,
+                                drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                            ) {
+                                Spacer(Modifier.height(12.dp))
+                                bottomNavItems.forEach { screen ->
+                                    val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                                    androidx.compose.material3.NavigationDrawerItem(
+                                        icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
+                                        label = { Text(screen.title) },
+                                        selected = selected,
+                                        onClick = {
+                                            navController.navigate(screen.route) {
+                                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                                                launchSingleTop = true
+                                                restoreState = true
+                                            }
+                                        },
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                                        colors = androidx.compose.material3.NavigationDrawerItemDefaults.colors(
+                                            selectedContainerColor = navBarIndicator,
+                                            unselectedContainerColor = Color.Transparent,
+                                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    )
+                                }
+                                Spacer(modifier = Modifier.weight(1f))
+                                // Could place MiniPlayer here or outside
+                            }
+                        }
+                    ) {
+                        MainScaffoldContent(
+                            navController = navController,
+                            showFullPlayer = openFullPlayer,
+                            isFullPlayerVisible = showFullPlayer,
+                            backgroundTop = backgroundTop,
+                            backgroundMid = backgroundMid,
+                            navBarContainer = navBarContainer,
+                            isCompact = false
+                        )
+                    }
+                } else if (isMedium) {
+                    // Landscape phone / Foldable half open
+                    Row(Modifier.fillMaxSize()) {
+                        NavigationRail(
+                            containerColor = navBarContainer,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            header = {
+                                val fallbackTitle = bottomNavItems.firstOrNull { it.route == currentDestination?.route }?.title
+                                if (fallbackTitle != null) Spacer(Modifier.height(8.dp))
+                            }
                         ) {
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(8.dp))
                             bottomNavItems.forEach { screen ->
                                 val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                                androidx.compose.material3.NavigationDrawerItem(
+                                NavigationRailItem(
                                     icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
                                     label = { Text(screen.title) },
                                     selected = selected,
@@ -412,182 +465,141 @@ fun SonicMusicApp(
                                             restoreState = true
                                         }
                                     },
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                                    colors = androidx.compose.material3.NavigationDrawerItemDefaults.colors(
-                                        selectedContainerColor = navBarIndicator,
-                                        unselectedContainerColor = Color.Transparent,
+                                    colors = NavigationRailItemDefaults.colors(
                                         selectedIconColor = MaterialTheme.colorScheme.primary,
-                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        indicatorColor = navBarIndicator,
+                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 )
                             }
-                            Spacer(modifier = Modifier.weight(1f))
-                            // Could place MiniPlayer here or outside
                         }
-                    }
-                ) {
-                    MainScaffoldContent(
-                        navController = navController,
-                        showFullPlayer = openFullPlayer,
-                        isFullPlayerVisible = showFullPlayer,
-                        backgroundTop = backgroundTop,
-                        backgroundMid = backgroundMid,
-                        navBarContainer = navBarContainer,
-                        isCompact = false
-                    )
-                }
-            } else if (isMedium) {
-                // Landscape phone / Foldable half open
-                Row(Modifier.fillMaxSize()) {
-                    NavigationRail(
-                        containerColor = navBarContainer,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        header = {
-                            val fallbackTitle = bottomNavItems.firstOrNull { it.route == currentDestination?.route }?.title
-                            if (fallbackTitle != null) Spacer(Modifier.height(8.dp))
-                        }
-                    ) {
-                        Spacer(Modifier.height(8.dp))
-                        bottomNavItems.forEach { screen ->
-                            val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                            NavigationRailItem(
-                                icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
-                                label = { Text(screen.title) },
-                                selected = selected,
-                                onClick = {
-                                    navController.navigate(screen.route) {
-                                        popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                        launchSingleTop = true
-                                        restoreState = true
-                                    }
-                                },
-                                colors = NavigationRailItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                                    indicatorColor = navBarIndicator,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            )
-                        }
-                    }
-                    MainScaffoldContent(
-                        navController = navController,
-                        showFullPlayer = openFullPlayer,
-                        isFullPlayerVisible = showFullPlayer,
-                        backgroundTop = backgroundTop,
-                        backgroundMid = backgroundMid,
-                        navBarContainer = navBarContainer,
-                        isCompact = false
-                    )
-                }
-            } else {
-                // Compact: Traditional Phone Layout
-                Scaffold(
-                    modifier = Modifier.fillMaxSize(),
-                    containerColor = Color.Transparent,
-                    contentWindowInsets = WindowInsets(0),
-                    bottomBar = {
-                        if (!showFullPlayer && (showBottomNav || currentSong != null)) {
-                            Column {
-                                // MiniPlayer sits above the navigation bar
-                                MiniPlayer(
-                                    backgroundColorOverride = navBarContainer,
-                                    onExpand = openFullPlayer
-                                )
-                                
-                                AnimatedVisibility(visible = showBottomNav) {
-                                    // ViTune-style Bottom Navigation Bar
-                                    NavigationBar(
-                                        containerColor = navBarContainer,
-                                        contentColor = MaterialTheme.colorScheme.onSurface,
-                                        tonalElevation = 3.dp,
-                                        windowInsets = WindowInsets.navigationBars
-                                    ) {
-                                        bottomNavItems.forEach { screen ->
-                                            val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                                            NavigationBarItem(
-                                                icon = {
-                                                    Icon(
-                                                        imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
-                                                        contentDescription = screen.title
-                                                    )
-                                                },
-                                                label = { Text(screen.title) },
-                                                selected = selected,
-                                                alwaysShowLabel = true,
-                                                colors = NavigationBarItemDefaults.colors(
-                                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                                                    indicatorColor = navBarIndicator,
-                                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                                ),
-                                                onClick = {
-                                                    navController.navigate(screen.route) {
-                                                        popUpTo(navController.graph.findStartDestination().id) {
-                                                            saveState = true
-                                                        }
-                                                        launchSingleTop = true
-                                                        restoreState = true
-                                                    }
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                                
-                                // If bottom nav is hidden, we only draw system nav bar spacer if a song is playing
-                                if (!showBottomNav && currentSong != null) {
-                                    Spacer(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .windowInsetsBottomHeight(WindowInsets.navigationBars)
-                                            .background(navBarContainer)
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) }
-            ) { paddingValues ->
-                MainScaffoldContent(
-                    navController = navController,
-                    showFullPlayer = openFullPlayer,
-                    isFullPlayerVisible = showFullPlayer,
-                    backgroundTop = backgroundTop,
-                    backgroundMid = backgroundMid,
-                    navBarContainer = navBarContainer,
-                    isCompact = true,
-                    paddingValues = paddingValues
-                )
-            }
-            }
-            
-            // Full Player - modal overlay
-            if (showFullPlayer) {
-                androidx.compose.runtime.DisposableEffect(Unit) {
-                    focusManager.clearFocus(force = true)
-                    keyboardController?.hide()
-                    onDispose { }
-                }
-                FullPlayerScreen(
-                    onDismiss = { showFullPlayer = false },
-                    onOpenArtist = { artistName, browseId ->
-                        showFullPlayer = false
-                        navController.navigate(SubScreens.artistDetail(artistName, browseId))
-                    },
-                    onOpenAlbum = { albumId, title, artist, thumbnailUrl ->
-                        showFullPlayer = false
-                        navigateToAlbum(
+                        MainScaffoldContent(
                             navController = navController,
-                            context = context,
-                            browseId = albumId,
-                            title = title,
-                            artist = artist,
-                            thumbnailUrl = thumbnailUrl
+                            showFullPlayer = openFullPlayer,
+                            isFullPlayerVisible = showFullPlayer,
+                            backgroundTop = backgroundTop,
+                            backgroundMid = backgroundMid,
+                            navBarContainer = navBarContainer,
+                            isCompact = false
                         )
                     }
+                } else {
+                    // Compact: Traditional Phone Layout
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        containerColor = Color.Transparent,
+                        contentWindowInsets = WindowInsets(0),
+                        bottomBar = {
+                            if (!showFullPlayer && (showBottomNav || currentSong != null)) {
+                                Column {
+                                    // MiniPlayer sits above the navigation bar
+                                    MiniPlayer(
+                                        backgroundColorOverride = navBarContainer,
+                                        onExpand = openFullPlayer
+                                    )
+                                    
+                                    AnimatedVisibility(visible = showBottomNav) {
+                                        // ViTune-style Bottom Navigation Bar
+                                        NavigationBar(
+                                            containerColor = navBarContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSurface,
+                                            tonalElevation = 3.dp,
+                                            windowInsets = WindowInsets.navigationBars
+                                        ) {
+                                            bottomNavItems.forEach { screen ->
+                                                val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                                                NavigationBarItem(
+                                                    icon = {
+                                                        Icon(
+                                                            imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
+                                                            contentDescription = screen.title
+                                                        )
+                                                    },
+                                                    label = { Text(screen.title) },
+                                                    selected = selected,
+                                                    alwaysShowLabel = true,
+                                                    colors = NavigationBarItemDefaults.colors(
+                                                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                                        indicatorColor = navBarIndicator,
+                                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    ),
+                                                    onClick = {
+                                                        navController.navigate(screen.route) {
+                                                            popUpTo(navController.graph.findStartDestination().id) {
+                                                                saveState = true
+                                                            }
+                                                            launchSingleTop = true
+                                                            restoreState = true
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                    
+                                    // If bottom nav is hidden, we only draw system nav bar spacer if a song is playing
+                                    if (!showBottomNav && currentSong != null) {
+                                        Spacer(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                                                .background(navBarContainer)
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) }
+                    ) { paddingValues ->
+                        MainScaffoldContent(
+                            navController = navController,
+                            showFullPlayer = openFullPlayer,
+                            isFullPlayerVisible = showFullPlayer,
+                            backgroundTop = backgroundTop,
+                            backgroundMid = backgroundMid,
+                            navBarContainer = navBarContainer,
+                            isCompact = true,
+                            paddingValues = paddingValues
+                        )
+                    }
+                }
+                
+                // Full Player - modal overlay
+                if (showFullPlayer) {
+                    androidx.compose.runtime.DisposableEffect(Unit) {
+                        focusManager.clearFocus(force = true)
+                        keyboardController?.hide()
+                        onDispose { }
+                    }
+                    FullPlayerScreen(
+                        onDismiss = { showFullPlayer = false },
+                        onOpenArtist = { artistName, browseId ->
+                            showFullPlayer = false
+                            navController.navigate(SubScreens.artistDetail(artistName, browseId))
+                        },
+                        onOpenAlbum = { albumId, title, artist, thumbnailUrl ->
+                            showFullPlayer = false
+                            navigateToAlbum(
+                                navController = navController,
+                                context = context,
+                                browseId = albumId,
+                                title = title,
+                                artist = artist,
+                                thumbnailUrl = thumbnailUrl
+                            )
+                        }
+                    )
+                }
+
+                // Global Reusable Song Action Sheet Host
+                com.sonicmusic.app.features.player.presentation.sheets.GlobalSongActionSheetHost(
+                    controller = songActionSheetController,
+                    navController = navController,
+                    onShowFullPlayer = openFullPlayer
                 )
             }
         } else {

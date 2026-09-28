@@ -480,7 +480,7 @@ class SongDownloadManager @Inject constructor(
             try {
                 // Resolve extension from streamUrl or default to opus
                 val streamUrl = download.request.uri.toString()
-                val ext = if (streamUrl.contains("mime=audio%2Fmp4") || streamUrl.contains(" mime=audio/mp4") || download.request.mimeType?.contains(" mp4") == true) " m4a" else " opus"
+                val ext = if (streamUrl.contains("mime=audio%2Fmp4") || streamUrl.contains("mime=audio/mp4") || download.request.mimeType?.contains("mp4") == true) "m4a" else "opus"
                 
                 val destMusicDir = File(context.getExternalFilesDir(null), "Music").apply { mkdirs() }
                 val destFile = File(destMusicDir, "$videoId.$ext")

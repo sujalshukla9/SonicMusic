@@ -3,12 +3,12 @@ package com.sonicmusic.app.data.remote.model
 object ArtistExtractor {
     
     private val TYPE_LABELS = setOf(
-        "Song", " Video", " EP", " Single", " Album", " Playlist",
-        "Podcast", " Episode", " Station", " Profile", " Artist",
+        "Song", "Video", "EP", "Single", "Album", "Playlist",
+        "Podcast", "Episode", "Station", "Profile", "Artist",
         // Localized labels
-        "Canción", " Vídeo", " Chanson", " Vidéo",
+        "Canción", "Vídeo", "Chanson", "Vidéo",
         "曲", "動画", "歌曲", "影片",
-        "Lied", " Musik", " Bài hát", "Песня"
+        "Lied", "Musik", "Bài hát", "Песня"
     )
     
     private val YEAR_REGEX = Regex("^\\d{4}$")

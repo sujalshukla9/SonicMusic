@@ -27,9 +27,9 @@ class LocalMusicRepositoryImpl @Inject constructor(
     companion object {
         // Includes common music/container extensions seen on Android devices.
         private val SUPPORTED_AUDIO_EXTENSIONS = setOf(
-            "mp3", " aac", " m4a", " m4b", " flac", " wav", " wave", " ogg", " oga", " opus", " webm",
-            "alac", " aif", " aiff", " aifc", " amr", "3gp", "3gpp", "3g2", " mp2", " mka", " wma",
-            "ape", " wv", " ac3", " eac3", " dts", " mid", " midi"
+            "mp3", "aac", "m4a", "m4b", "flac", "wav", "wave", "ogg", "oga", "opus", "webm",
+            "alac", "aif", "aiff", "aifc", "amr", "3gp", "3gpp", "3g2", "mp2", "mka", "wma",
+            "ape", "wv", "ac3", "eac3", "dts", "mid", "midi"
         )
     }
 
@@ -100,7 +100,7 @@ class LocalMusicRepositoryImpl @Inject constructor(
                 append(" AND ${MediaStore.Audio.Media.SIZE} > 0")
             }
         }
-        val selectionArgs = arrayOf("audio/%", " application/ogg")
+        val selectionArgs = arrayOf("audio/%", "application/ogg")
 
         val sortOrder = "${MediaStore.Audio.Media.TITLE} ASC"
 
@@ -127,7 +127,7 @@ class LocalMusicRepositoryImpl @Inject constructor(
                 val id = cursor.getLong(idColumn)
                 val title = cursor.getString(titleColumn) ?: "Unknown Title"
                 val artistRaw = cursor.getString(artistColumn).orEmpty()
-                val artist = if (artistRaw.isBlank() || artistRaw == "<unknown>") " Unknown Artist" else artistRaw
+                val artist = if (artistRaw.isBlank() || artistRaw == "<unknown>") "Unknown Artist" else artistRaw
                 val album = cursor.getString(albumColumn)
                 val durationMs = cursor.getLong(durationColumn)
                 val duration = (durationMs / 1000L).toInt().coerceAtLeast(0)

@@ -82,6 +82,9 @@ import com.sonicmusic.app.domain.model.ArtistProfileSectionType
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.features.artists.presentation.ArtistDetailViewModel
 
 /**
@@ -978,7 +981,11 @@ private fun ArtistTopSongItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.ARTIST,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1129,7 +1136,11 @@ private fun VideoCard(
     Column(
         modifier = Modifier
             .width(200.dp)
-            .clickable(onClick = onClick)
+            .songPressable(
+                song = song,
+                source = SongActionSource.ARTIST,
+                onClick = onClick
+            )
     ) {
         Surface(
             modifier = Modifier

@@ -66,6 +66,9 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.theme.LocalThumbnailShape
 import com.sonicmusic.app.theme.toComposeShape
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
@@ -329,6 +332,7 @@ fun QueueSheet(
                         item(key = "now_playing_${song.id}", contentType = " now_playing") {
                             NowPlayingCard(
                                 song = song,
+                                queueIndex = safeIndex,
                                 onClick = { onPlay(safeIndex) }
                             )
                         }
@@ -395,6 +399,7 @@ fun QueueSheet(
                                         trackNumber = relativeIndex + 1,
                                         isPlaying = false,
                                         isDimmed = false,
+                                        queueIndex = absoluteIndex,
                                         onClick = { onPlay(absoluteIndex) },
                                         onRemove = {
                                             onRemove(absoluteIndex)
@@ -473,6 +478,7 @@ fun QueueSheet(
                                     trackNumber = index + 1,
                                     isPlaying = false,
                                     isDimmed = true,
+                                    queueIndex = null,
                                     onClick = { onPlay(index) },
                                     onRemove = null,
                                     dragModifier = null
@@ -528,6 +534,7 @@ private fun SectionHeader(
 @Composable
 private fun NowPlayingCard(
     song: Song,
+    queueIndex: Int,
     onClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
@@ -535,7 +542,13 @@ private fun NowPlayingCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .songPressable(
+                song = song,
+                source = SongActionSource.QUEUE,
+                queueIndex = queueIndex,
+                onClick = onClick
+            ),
         shape = RoundedCornerShape(16.dp),
         color = colorScheme.primaryContainer.copy(alpha = 0.18f),
         tonalElevation = 1.dp
@@ -543,7 +556,6 @@ private fun NowPlayingCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -621,6 +633,7 @@ private fun TrackItem(
     trackNumber: Int,
     isPlaying: Boolean,
     isDimmed: Boolean,
+    queueIndex: Int? = null,
     onClick: () -> Unit,
     onRemove: (() -> Unit)?,
     dragModifier: Modifier?,
@@ -632,7 +645,12 @@ private fun TrackItem(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .songCombinedClickable(
+                song = song,
+                source = SongActionSource.QUEUE,
+                queueIndex = queueIndex,
+                onClick = onClick
+            )
             .alpha(contentAlpha)
             .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically

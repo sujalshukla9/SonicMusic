@@ -38,12 +38,12 @@ data class AudioStreamInfo(
             isEnhanced && isHighRes -> "Enhanced · Hi-Res"
             isEnhanced -> "Enhanced"
             // AAC at 256kbps (our primary best quality)
-            (codec.equals("AAC", true) || codec.equals(" AAC-LC", true)) && bitrate >= 256 -> " AAC 256"
-            codec.equals("AAC-HE", true) -> " HE-AAC"
-            codec.equals("AAC", true) || codec.equals(" AAC-LC", true) -> " AAC"
+            (codec.equals("AAC", true) || codec.equals("AAC-LC", true)) && bitrate >= 256 -> "AAC 256"
+            codec.equals("AAC-HE", true) -> "HE-AAC"
+            codec.equals("AAC", true) || codec.equals("AAC-LC", true) -> "AAC"
             // OPUS only shown when it's actually selected (last resort)
-            codec.equals("OPUS", true) && bitrate >= 256 -> " Hi-Res"
-            codec.equals("OPUS", true) -> " OPUS"
+            codec.equals("OPUS", true) && bitrate >= 256 -> "Hi-Res"
+            codec.equals("OPUS", true) -> "OPUS"
             else -> codec.uppercase()
         }
 
@@ -76,12 +76,12 @@ data class AudioStreamInfo(
          * Detect codec from MIME type
          */
         fun codecFromMimeType(mimeType: String): String = when {
-            mimeType.contains("opus", true) -> " OPUS"
-            mimeType.contains("mp4a.40.2", true) -> " AAC-LC"
-            mimeType.contains("mp4a.40.5", true) -> " AAC-HE"
-            mimeType.contains("mp4a", true) -> " AAC"
-            mimeType.contains("vorbis", true) -> " Vorbis"
-            mimeType.contains("flac", true) -> " FLAC"
+            mimeType.contains("opus", true) -> "OPUS"
+            mimeType.contains("mp4a.40.2", true) -> "AAC-LC"
+            mimeType.contains("mp4a.40.5", true) -> "AAC-HE"
+            mimeType.contains("mp4a", true) -> "AAC"
+            mimeType.contains("vorbis", true) -> "Vorbis"
+            mimeType.contains("flac", true) -> "FLAC"
             else -> "Unknown"
         }
 
@@ -89,9 +89,9 @@ data class AudioStreamInfo(
          * Detect container format from MIME type
          */
         fun containerFromMimeType(mimeType: String): String = when {
-            mimeType.contains("webm", true) -> " WebM"
-            mimeType.contains("mp4", true) -> " M4A"
-            mimeType.contains("ogg", true) -> " OGG"
+            mimeType.contains("webm", true) -> "WebM"
+            mimeType.contains("mp4", true) -> "M4A"
+            mimeType.contains("ogg", true) -> "OGG"
             else -> "Unknown"
         }
 

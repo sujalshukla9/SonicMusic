@@ -66,6 +66,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.SearchSuggestionItem
 import com.sonicmusic.app.domain.model.SuggestionType
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.shared.state.PaginationState
 import com.sonicmusic.app.shared.state.SearchAction
 import com.sonicmusic.app.shared.state.SearchEffect
@@ -766,7 +768,11 @@ private fun SearchVideoCard(
     Column(
         modifier = Modifier
             .width(200.dp)
-            .pressable(onClick = onClick)
+            .songPressable(
+                song = song,
+                source = SongActionSource.SEARCH,
+                onClick = onClick
+            )
     ) {
         Surface(
             modifier = Modifier
@@ -1001,16 +1007,27 @@ private fun SearchResultCard(
     index: Int,
     onClick: () -> Unit,
 ) {
-    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val isSongOrVideo = song.contentType == com.sonicmusic.app.domain.model.ContentType.SONG ||
+            song.contentType == com.sonicmusic.app.domain.model.ContentType.VIDEO
+
+    val baseModifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = Dimens.screenPadding, vertical = 4.dp)
+
+    val surfaceModifier = if (isSongOrVideo) {
+        baseModifier.songPressable(
+            song = song,
+            source = SongActionSource.SEARCH,
+            onClick = onClick
+        )
+    } else {
+        baseModifier.pressable(onClick = onClick)
+    }
+
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = Dimens.screenPadding, vertical = 4.dp)
-            .pressScale(interactionSource),
+        modifier = surfaceModifier,
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        interactionSource = interactionSource,
-        onClick = onClick,
     ) {
         Row(
             modifier = Modifier

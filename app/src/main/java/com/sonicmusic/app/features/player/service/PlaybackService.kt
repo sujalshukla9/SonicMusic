@@ -389,25 +389,24 @@ class PlaybackService : MediaSessionService() {
         val nextPlayer = if (currentPlayer == player1) player2 else player1
         if (nextPlayer == null) return
 
-        val nextMediaItem = if (currentPlayer.mediaItemCount > 1) {
-            currentPlayer.getMediaItemAt(1)
-        } else {
-            null
-        }
-
-        if (nextMediaItem == null) {
+        if (currentPlayer.mediaItemCount <= 1) {
             Log.d(TAG, "No next media item found in currentPlayer playlist to crossfade to.")
             return
+        }
+
+        // Extract all remaining media items from currentPlayer starting at index 1 to preserve queue
+        val remainingMediaItems = (1 until currentPlayer.mediaItemCount).map { index ->
+            currentPlayer.getMediaItemAt(index)
         }
 
         crossfadeTransitionJob?.cancel()
         crossfadeTransitionJob = serviceScope.launch {
             isCrossfadeTransitionRunning = true
-            Log.d(TAG, "Starting true overlapping crossfade over ${durationMs}ms...")
+            Log.d(TAG, "Starting true overlapping crossfade over ${durationMs}ms with ${remainingMediaItems.size} remaining items...")
 
-            // 1. Prepare and start nextPlayer at 0 volume
+            // 1. Prepare and start nextPlayer at 0 volume with all remaining queue items
             nextPlayer.volume = 0f
-            nextPlayer.setMediaItem(nextMediaItem)
+            nextPlayer.setMediaItems(remainingMediaItems, 0, 0L)
             nextPlayer.prepare()
             nextPlayer.play()
 

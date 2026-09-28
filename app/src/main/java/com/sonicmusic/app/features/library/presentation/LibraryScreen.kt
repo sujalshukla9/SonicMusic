@@ -67,7 +67,11 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sonicmusic.app.domain.model.toSong
+import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
+import com.sonicmusic.app.shared.components.songCombinedClickable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -706,8 +710,13 @@ private fun RecentlyPlayedItem(
     history: PlaybackHistory,
     onClick: () -> Unit
 ) {
+    val song = remember(history) { history.toSong() }
     ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier.songCombinedClickable(
+            song = song,
+            source = SongActionSource.LIBRARY,
+            onClick = onClick
+        ),
         leadingContent = {
             com.sonicmusic.app.shared.components.SongThumbnail(
                 artworkUrl = history.thumbnailUrl,

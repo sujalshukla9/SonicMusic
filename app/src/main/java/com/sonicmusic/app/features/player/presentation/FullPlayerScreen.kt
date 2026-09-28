@@ -1510,7 +1510,8 @@ private fun PlaybackControlsSection(
                         Spacer(modifier = Modifier.height(2.dp))
                         val albumState = albumLinkState
                         val resolvedArtists = currentSong?.resolvedArtists.orEmpty()
-                        val subtitleAnnotated = remember(resolvedArtists, currentSong?.artist, albumState) {
+                        val songTitle = currentSong?.title.orEmpty()
+                        val subtitleAnnotated = remember(resolvedArtists, currentSong?.artist, albumState, songTitle) {
                             val builder = androidx.compose.ui.text.AnnotatedString.Builder()
                             if (resolvedArtists.isNotEmpty()) {
                                 resolvedArtists.forEachIndexed { index, artistRef ->
@@ -1527,7 +1528,10 @@ private fun PlaybackControlsSection(
                                 builder.append(fallbackName)
                                 builder.pop()
                             }
-                            if (albumState is AlbumLinkState.Available && albumState.name.isNotBlank()) {
+                            if (albumState is AlbumLinkState.Available && 
+                                albumState.name.isNotBlank() && 
+                                !isAlbumRedundantWithSongTitle(albumState.name, songTitle)
+                            ) {
                                 builder.append(" • ")
                                 builder.pushStringAnnotation("album", albumState.browseId)
                                 builder.append(albumState.name)
