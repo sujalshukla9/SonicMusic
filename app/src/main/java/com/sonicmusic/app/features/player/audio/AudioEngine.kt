@@ -89,6 +89,7 @@ class AudioEngine @Inject constructor(
 
         private val KEY_SPATIAL_AUDIO = booleanPreferencesKey("spatial_audio_enabled")
         private val KEY_SPATIAL_STRENGTH = intPreferencesKey("spatial_strength")
+        private val KEY_SPATIAL_MIGRATED = booleanPreferencesKey("spatial_migrated_v1")
         private val KEY_EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         private val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
         private val KEY_REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
@@ -249,10 +250,18 @@ class AudioEngine @Inject constructor(
     private fun initializeVirtualizer(audioSessionId: Int) {
         try {
             if (isEffectTypeSupported(AudioEffect.EFFECT_TYPE_VIRTUALIZER)) {
+                val isEnabled = _audioEngineState.value.spatialAudioEnabled
+                val strengthVal = _audioEngineState.value.spatialStrength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH).toShort()
                 virtualizer = Virtualizer(0, audioSessionId).apply {
-                    enabled = false // Enabled later by loadSavedPreferences / setSpatialAudio
+                    try {
+                        forceVirtualizationMode(Virtualizer.VIRTUALIZATION_MODE_AUTO)
+                    } catch (_: Exception) {}
+                    if (strengthSupported) {
+                        setStrength(strengthVal)
+                    }
+                    enabled = isEnabled
                 }
-                Log.d(TAG, "Virtualizer (Spatial Audio) initialized")
+                Log.d(TAG, "Virtualizer (Spatial Audio) initialized (enabled=$isEnabled, strength=$strengthVal)")
             } else {
                 Log.d(TAG, "Virtualizer not supported on this device")
             }
@@ -311,14 +320,34 @@ class AudioEngine @Inject constructor(
         val cellularTier = prefs[KEY_CELLULAR_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.HIGH
         val downloadTier = prefs[KEY_DOWNLOAD_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.BEST
         
+        val isMigrated = prefs[KEY_SPATIAL_MIGRATED] ?: false
+        val spatialAudioEnabled = if (!isMigrated) {
+            // First time / upgrade: ensure spatial sound is enabled by default
+            scope.launch {
+                try {
+                    context.audioPrefs.edit {
+                        it[KEY_SPATIAL_AUDIO] = true
+                        it[KEY_SPATIAL_STRENGTH] = 800
+                        it[KEY_SPATIAL_MIGRATED] = true
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to persist initial spatial audio prefs", e)
+                }
+            }
+            true
+        } else {
+            prefs[KEY_SPATIAL_AUDIO] ?: true
+        }
+        val spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800
+
         val state = AudioEngineState(
             crossfadeEnabled = prefs[KEY_CROSSFADE_ENABLED] ?: false,
             crossfadeDuration = prefs[KEY_CROSSFADE_DURATION] ?: DEFAULT_CROSSFADE_DURATION,
             soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: true,
             loudnessTarget = prefs[KEY_LOUDNESS_TARGET] ?: DEFAULT_LOUDNESS_TARGET,
 
-            spatialAudioEnabled = prefs[KEY_SPATIAL_AUDIO] ?: false,
-            spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800,
+            spatialAudioEnabled = spatialAudioEnabled,
+            spatialStrength = spatialStrength,
             eqEnabled = prefs[KEY_EQ_ENABLED] ?: false,
             eqPreset = prefs[KEY_EQ_PRESET] ?: "flat",
             reverbEnabled = prefs[KEY_REVERB_ENABLED] ?: false,
@@ -457,7 +486,7 @@ class AudioEngine @Inject constructor(
             scope.launch {
                 try {
                     val prefs = context.audioPrefs.data.first()
-                    val savedSpatial = prefs[KEY_SPATIAL_AUDIO] ?: false
+                    val savedSpatial = prefs[KEY_SPATIAL_AUDIO] ?: true
                     val savedStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800
                     setSpatialAudio(savedSpatial, savedStrength)
                 } catch (e: Exception) {
@@ -701,11 +730,17 @@ class AudioEngine @Inject constructor(
 
         virtualizer?.let { v ->
             try {
-                v.enabled = actualEnabled
                 if (actualEnabled) {
-                    v.setStrength(clampedStrength.toShort())
+                    try {
+                        v.forceVirtualizationMode(Virtualizer.VIRTUALIZATION_MODE_AUTO)
+                    } catch (_: Exception) {}
+                    if (v.strengthSupported) {
+                        v.setStrength(clampedStrength.toShort())
+                    }
+                    v.enabled = true
                     Log.d(TAG, "Platform Spatial Audio ON: ${(clampedStrength / 10)}% immersion")
                 } else {
+                    v.enabled = false
                     Log.d(TAG, "Platform Spatial Audio OFF")
                 }
             } catch (e: Exception) {
@@ -714,14 +749,15 @@ class AudioEngine @Inject constructor(
         }
 
         _audioEngineState.value = _audioEngineState.value.copy(
-            spatialAudioEnabled = actualEnabled,
+            spatialAudioEnabled = enabled,
             spatialStrength = clampedStrength,
         )
 
         scope.launch {
             context.audioPrefs.edit {
-                it[KEY_SPATIAL_AUDIO] = actualEnabled
+                it[KEY_SPATIAL_AUDIO] = enabled
                 it[KEY_SPATIAL_STRENGTH] = clampedStrength
+                it[KEY_SPATIAL_MIGRATED] = true
             }
         }
     }
@@ -885,7 +921,7 @@ class AudioEngine @Inject constructor(
         setCellularQualityTier(StreamQuality.HIGH)
         setDownloadQualityTier(StreamQuality.BEST)
         setEqualizer(false)
-        setSpatialAudio(false)
+        setSpatialAudio(true, 800)
         setReverb(false)
         setCrossfade(false)
         try {
@@ -966,7 +1002,7 @@ data class AudioEngineState(
     val loudnessTarget: Float = AudioEngine.DEFAULT_LOUDNESS_TARGET,
 
     // Spatial Audio
-    val spatialAudioEnabled: Boolean = false,
+    val spatialAudioEnabled: Boolean = true,
     val spatialStrength: Int = 800,
     // Equalizer
     val eqEnabled: Boolean = false,

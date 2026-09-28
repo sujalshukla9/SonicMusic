@@ -80,7 +80,13 @@ class SettingsViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
+    val spatialAudioEnabled: StateFlow<Boolean> = audioEngine.audioEngineState
+        .map { it.spatialAudioEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
+    val spatialStrength: StateFlow<Int> = audioEngine.audioEngineState
+        .map { it.spatialStrength }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 800)
 
     // Repository Settings
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode
@@ -251,6 +257,15 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.setCrossfadeDuration(safeSeconds)
         }
+    }
+
+    fun setSpatialAudio(enabled: Boolean, strength: Int = 800) {
+        audioEngine.setSpatialAudio(enabled, strength)
+    }
+
+    fun setSpatialStrength(strength: Int) {
+        val currentEnabled = audioEngine.audioEngineState.value.spatialAudioEnabled
+        audioEngine.setSpatialAudio(currentEnabled, strength)
     }
 
     fun setCacheSizeLimit(mb: Long) {

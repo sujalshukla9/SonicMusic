@@ -166,6 +166,7 @@ class PlaybackService : MediaSessionService() {
             .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
             .setUsage(C.USAGE_MEDIA)
             .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
+            .setSpatializationBehavior(C.SPATIALIZATION_BEHAVIOR_AUTO)
             .build()
 
         val mediaSourceFactory = buildMediaSourceFactory()

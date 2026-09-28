@@ -145,6 +145,8 @@ fun SettingsScreen(
     val crossfadeDuration by viewModel.crossfadeDuration.collectAsStateWithLifecycle()
     val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
     val autoQueueSimilar by viewModel.autoQueueSimilar.collectAsStateWithLifecycle()
+    val spatialAudioEnabled by viewModel.spatialAudioEnabled.collectAsStateWithLifecycle()
+    val spatialStrength by viewModel.spatialStrength.collectAsStateWithLifecycle()
     
     
     // Cache States
@@ -350,6 +352,24 @@ fun SettingsScreen(
                         checked = skipSilence,
                         onCheckedChange = { viewModel.setSkipSilence(it) }
                     )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Spatial Sound",
+                        subtitle = "Immersive 3D virtual surround sound and widened soundstage",
+                        checked = spatialAudioEnabled,
+                        onCheckedChange = { viewModel.setSpatialAudio(it) }
+                    )
+                    if (spatialAudioEnabled) {
+                        SettingsDivider()
+                        SettingsSliderItem(
+                            title = "Spatial Immersion",
+                            value = (spatialStrength / 10).toFloat(),
+                            onValueChange = { viewModel.setSpatialStrength((it * 10).toInt()) },
+                            valueRange = 10f..100f,
+                            steps = 8,
+                            valueText = "${spatialStrength / 10}%"
+                        )
+                    }
                     SettingsDivider()
                     SettingsActionItem(
                         title = "Device Equalizer",

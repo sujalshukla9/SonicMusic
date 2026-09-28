@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
@@ -718,7 +719,15 @@ class PlayerViewModel @Inject constructor(
     fun getEqPresets() = playerServiceConnection.audioEngine.getEqPresets()
 
     // Spatial Audio (Virtualizer)
-    fun setSpatialAudio(enabled: Boolean, strength: Int) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)
+    val spatialAudioEnabled: StateFlow<Boolean> = playerServiceConnection.audioEngine.audioEngineState
+        .map { it.spatialAudioEnabled }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    val spatialStrength: StateFlow<Int> = playerServiceConnection.audioEngine.audioEngineState
+        .map { it.spatialStrength }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 800)
+
+    fun setSpatialAudio(enabled: Boolean, strength: Int = 800) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)
     
     // Reverb
     fun setReverb(enabled: Boolean, preset: Int) = playerServiceConnection.audioEngine.setReverb(enabled, preset)
