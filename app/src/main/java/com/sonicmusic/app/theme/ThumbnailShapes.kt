@@ -35,6 +35,9 @@ class MorphComposeShape(
         layoutDirection: LayoutDirection,
         density: Density
     ): Outline {
+        if (size.width <= 0f || size.height <= 0f) {
+            return Outline.Rectangle(androidx.compose.ui.geometry.Rect.Zero)
+        }
         val composePath = Path()
         val androidPath = morph.toPath(progress)
         composePath.addPath(androidPath.asComposePath())
@@ -47,6 +50,10 @@ class MorphComposeShape(
         val maxY = bounds[3]
         val width = maxX - minX
         val height = maxY - minY
+        
+        if (width <= 0f || height <= 0f) {
+            return Outline.Rectangle(androidx.compose.ui.geometry.Rect.Zero)
+        }
         
         val matrix = Matrix()
         matrix.scale(size.width / width, size.height / height)
@@ -97,11 +104,21 @@ fun ThumbnailShape.toRoundedPolygon(): RoundedPolygon {
         )
         ThumbnailShape.PILL -> RoundedPolygon(
             numVertices = 4,
-            rounding = CornerRounding(0.48f, 0.6f)
+            perVertexRounding = listOf(
+                CornerRounding(0.5f, 0.6f),
+                CornerRounding(0.15f, 0.6f),
+                CornerRounding(0.5f, 0.6f),
+                CornerRounding(0.15f, 0.6f)
+            )
         )
         ThumbnailShape.ARCH -> RoundedPolygon(
             numVertices = 4,
-            rounding = CornerRounding(0.15f)
+            perVertexRounding = listOf(
+                CornerRounding(0.5f, 0.6f),
+                CornerRounding(0.5f, 0.6f),
+                CornerRounding(0.08f, 0.5f),
+                CornerRounding(0.08f, 0.5f)
+            )
         )
     }
 
@@ -137,6 +154,9 @@ class RoundedPolygonShape(
         layoutDirection: LayoutDirection,
         density: Density
     ): Outline {
+        if (size.width <= 0f || size.height <= 0f) {
+            return Outline.Rectangle(androidx.compose.ui.geometry.Rect.Zero)
+        }
         val composePath = Path()
         val androidPath = polygon.toPath()
         composePath.addPath(androidPath.asComposePath())
@@ -150,6 +170,10 @@ class RoundedPolygonShape(
         val width = maxX - minX
         val height = maxY - minY
         
+        if (width <= 0f || height <= 0f) {
+            return Outline.Rectangle(androidx.compose.ui.geometry.Rect.Zero)
+        }
+        
         val matrix = Matrix()
         matrix.scale(size.width / width, size.height / height)
         matrix.translate(-minX, -minY)
@@ -161,21 +185,24 @@ class RoundedPolygonShape(
 
 /**
  * Definition of a flat-bottom, round-top Arch shape in Compose.
+ * Clean, hardware-accelerated rounded dome shape.
  */
-val ArchShape = GenericShape { size, _ ->
-    val w = size.width
-    val h = size.height
-    moveTo(0f, h)
-    lineTo(0f, w / 2f)
-    arcTo(
-        rect = androidx.compose.ui.geometry.Rect(0f, 0f, w, w),
-        startAngleDegrees = 180f,
-        sweepAngleDegrees = 180f,
-        forceMoveTo = false
-    )
-    lineTo(w, h)
-    close()
-}
+val ArchShape = RoundedCornerShape(
+    topStartPercent = 50,
+    topEndPercent = 50,
+    bottomStartPercent = 8,
+    bottomEndPercent = 8
+)
+
+/**
+ * Definition of a distinct Pill (capsule leaf) shape in Compose.
+ */
+val PillShape = RoundedCornerShape(
+    topStartPercent = 50,
+    topEndPercent = 15,
+    bottomStartPercent = 15,
+    bottomEndPercent = 50
+)
 
 /**
  * Extension helper to directly convert a ThumbnailShape into a Compose Shape.
@@ -186,7 +213,7 @@ fun ThumbnailShape.toComposeShape(isLarge: Boolean = false): Shape {
         ThumbnailShape.SQUARE -> RoundedCornerShape(0.dp)
         ThumbnailShape.ROUNDED_SQUARE -> RoundedCornerShape(if (isLarge) 28.dp else 12.dp)
         ThumbnailShape.CIRCLE -> CircleShape
-        ThumbnailShape.PILL -> RoundedCornerShape(50)
+        ThumbnailShape.PILL -> PillShape
         ThumbnailShape.ARCH -> ArchShape
         else -> RoundedPolygonShape(this.toRoundedPolygon())
     }

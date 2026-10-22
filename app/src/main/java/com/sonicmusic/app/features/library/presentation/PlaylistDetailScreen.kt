@@ -400,9 +400,6 @@ fun PlaylistDetailScreen(
                                         viewModel.playSong(song)
                                         onShowFullPlayer()
                                     },
-                                    onRemoveClick = { 
-                                        viewModel.removeSongFromPlaylist(song.id)
-                                    },
                                     showRemove = true,
                                     dragModifier = Modifier.draggableHandle(
                                         onDragStopped = {
@@ -427,7 +424,6 @@ fun PlaylistDetailScreen(
                                 viewModel.playSong(song)
                                 onShowFullPlayer()
                             },
-                            onRemoveClick = {},
                             showRemove = false,
                             dragModifier = null
                         )
@@ -524,7 +520,6 @@ private fun PlaylistSongItem(
     song: Song,
     playlistId: Long? = null,
     onClick: () -> Unit,
-    onRemoveClick: () -> Unit,
     showRemove: Boolean,
     dragModifier: Modifier?
 ) {

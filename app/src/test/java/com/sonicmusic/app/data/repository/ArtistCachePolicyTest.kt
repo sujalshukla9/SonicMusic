@@ -1,5 +1,6 @@
 package com.sonicmusic.app.data.repository
 
+import com.sonicmusic.app.features.artists.data.ArtistCachePolicy
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test

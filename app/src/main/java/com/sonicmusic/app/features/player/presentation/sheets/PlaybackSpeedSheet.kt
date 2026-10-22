@@ -58,7 +58,7 @@ fun PlaybackSpeedSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         modifier = modifier,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 1.dp
     ) {

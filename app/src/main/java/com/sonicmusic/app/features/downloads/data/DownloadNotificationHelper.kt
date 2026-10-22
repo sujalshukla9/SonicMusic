@@ -48,9 +48,17 @@ class DownloadNotificationHelper @Inject constructor(
         manager.createNotificationChannel(channel)
     }
 
-    fun showProgress(songId: String, title: String, progress: Int) {
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun safeNotify(id: Int, notification: android.app.Notification) {
         if (!context.hasNotificationPermission()) return
+        try {
+            notificationManager.notify(id, notification)
+        } catch (_: SecurityException) {
+            // Ignored if notification permission was revoked at runtime
+        }
+    }
 
+    fun showProgress(songId: String, title: String, progress: Int) {
         val notificationId = songId.hashCode().and(0x7FFFFFFF) // Ensure positive ID, avoid collisions with system IDs
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -63,12 +71,10 @@ class DownloadNotificationHelper @Inject constructor(
             .setGroup(GROUP_KEY_DOWNLOADS)
             .setOnlyAlertOnce(true)
 
-        notificationManager.notify(notificationId, builder.build())
+        safeNotify(notificationId, builder.build())
     }
 
     fun showIndeterminate(songId: String, title: String) {
-        if (!context.hasNotificationPermission()) return
-        
         val notificationId = songId.hashCode().and(0x7FFFFFFF)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -81,12 +87,10 @@ class DownloadNotificationHelper @Inject constructor(
             .setGroup(GROUP_KEY_DOWNLOADS)
             .setOnlyAlertOnce(true)
 
-        notificationManager.notify(notificationId, builder.build())
+        safeNotify(notificationId, builder.build())
     }
 
     fun showComplete(songId: String, title: String) {
-        if (!context.hasNotificationPermission()) return
-
         val notificationId = songId.hashCode().and(0x7FFFFFFF)
         
         // Intent to open downloads (or main activity for now)
@@ -108,12 +112,10 @@ class DownloadNotificationHelper @Inject constructor(
             .setContentIntent(pendingIntent)
             .setGroup(GROUP_KEY_DOWNLOADS)
 
-        notificationManager.notify(notificationId, builder.build())
+        safeNotify(notificationId, builder.build())
     }
 
     fun showError(songId: String, title: String, error: String?) {
-        if (!context.hasNotificationPermission()) return
-
         val notificationId = songId.hashCode().and(0x7FFFFFFF)
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -126,7 +128,7 @@ class DownloadNotificationHelper @Inject constructor(
             .setAutoCancel(true)
             .setGroup(GROUP_KEY_DOWNLOADS)
 
-        notificationManager.notify(notificationId, builder.build())
+        safeNotify(notificationId, builder.build())
     }
     
     fun cancel(songId: String) {

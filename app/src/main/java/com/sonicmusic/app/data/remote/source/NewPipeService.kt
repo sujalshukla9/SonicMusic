@@ -17,23 +17,25 @@ import org.schabi.newpipe.extractor.exceptions.ReCaptchaException
 import org.schabi.newpipe.extractor.services.youtube.YoutubeService
 import org.schabi.newpipe.extractor.stream.AudioStream
 import org.schabi.newpipe.extractor.stream.StreamInfo
-import javax.inject.Inject
-import javax.inject.Singleton
+import okhttp3.OkHttpClient
+import com.sonicmusic.app.domain.model.AudioStreamCandidate
+import com.sonicmusic.app.features.player.audio.AudioQualitySelector
 import kotlin.math.abs
 import kotlin.math.max
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
- * NewPipe Extractor Service — Apple Music-Style Quality Selection
- * 
+ * NewPipe Extractor Service — Production-Quality Audio Extraction
+ *
  * Uses the official NewPipe Extractor library for YouTube audio extraction.
- * Now with codec-aware stream selection:
- * - BEST → OPUS preferred at highest available bitrate
- * - HIGH → AAC preferred (256kbps, better compatibility)
- * - MEDIUM → Any codec at 128kbps
- * - LOW → Lowest available
+ * Extracts genuine technical stream descriptors without fabricating values.
  */
 @Singleton
-class NewPipeService @Inject constructor() {
+class NewPipeService @Inject constructor(
+    private val okHttpClient: OkHttpClient,
+    private val audioQualitySelector: AudioQualitySelector = AudioQualitySelector()
+) {
 
     companion object {
         private const val TAG = "NewPipeService"
@@ -58,7 +60,7 @@ class NewPipeService @Inject constructor() {
         
         try {
             NewPipe.init(
-                NewPipeDownloader.getInstance(),
+                NewPipeDownloader.getInstance(okHttpClient),
                 ENGLISH_LOCALIZATION,
                 ContentCountry.DEFAULT,
             )
@@ -75,7 +77,7 @@ class NewPipeService @Inject constructor() {
     fun updateRegion(countryCode: String) {
         try {
             NewPipe.init(
-                NewPipeDownloader.getInstance(),
+                NewPipeDownloader.getInstance(okHttpClient),
                 ENGLISH_LOCALIZATION,
                 ContentCountry(countryCode)
             )
@@ -93,140 +95,110 @@ class NewPipeService @Inject constructor() {
     }
 
     /**
-     * Extract audio stream URL + metadata from a video ID.
-     * Returns URL and AudioStreamInfo for quality badge display.
+     * Extract all genuine audio stream candidates from a video ID via NewPipe.
+     * Preserves genuine reported bitrate, sample rate, channels, container, and codec.
+     * Extracts genuine URL expiration from YouTube's expire parameter without guessing.
+     */
+    suspend fun extractAudioCandidates(
+        videoId: String
+    ): Result<List<AudioStreamCandidate>> = withContext(Dispatchers.IO) {
+        if (isCaptchaCooldownActive()) {
+            return@withContext Result.failure(Exception("NewPipe temporarily blocked by reCAPTCHA"))
+        }
+
+        try {
+            val url = "https://www.youtube.com/watch?v=$videoId"
+            val streamInfo = StreamInfo.getInfo(NewPipe.getService(0), url)
+
+            val audioStreams = streamInfo.audioStreams.orEmpty()
+            if (audioStreams.isEmpty()) {
+                Log.w(TAG, "No audio streams found by NewPipe for $videoId")
+                return@withContext Result.failure(Exception("No audio streams available"))
+            }
+
+            val candidates = audioStreams.mapNotNull { stream ->
+                val streamUrl = stream.content.orEmpty().ifBlank { return@mapNotNull null }
+                val itagItem = stream.itagItem
+                val rawCodec = stream.codec
+                    ?: itagItem?.codec
+                    ?: stream.format?.mimeType
+                    ?: stream.format?.name.orEmpty()
+                val codec = AudioStreamInfo.codecFromMimeType(rawCodec)
+                val container = stream.format?.name?.let { AudioStreamInfo.containerFromMimeType(it) }
+                    ?: AudioStreamInfo.containerFromMimeType(rawCodec)
+                val itag = stream.format?.id?.takeIf { it > 0 } ?: itagItem?.id?.takeIf { it > 0 }
+                val parsedBitrate = stream.averageBitrate.takeIf { it > 0 }
+                    ?: itagItem?.bitrate?.takeIf { it > 0 }
+                    ?: AudioStreamInfo.nominalBitrateForItag(itag)
+                    ?: 0
+                val bitrateKbps = when {
+                    parsedBitrate > 1000 -> Math.round(parsedBitrate / 1000.0).toInt()
+                    parsedBitrate > 0 -> parsedBitrate
+                    else -> 0
+                }
+                val rawBitrate = (bitrateKbps.toLong() * 1000L).takeIf { it > 0 } ?: 0L
+                val sampleRate = itagItem?.sampleRate?.takeIf { it > 0 }
+                    ?: AudioStreamInfo.nominalSampleRateForItag(itag)
+                    ?: 0
+                val channelCount = itagItem?.audioChannels?.takeIf { it > 0 } ?: 2
+                val contentLength = itagItem?.contentLength?.takeIf { it > 0 }
+                val expiresAtMs = AudioStreamCandidate.extractExpiryFromUrl(streamUrl)
+
+                AudioStreamCandidate(
+                    url = streamUrl,
+                    mimeType = stream.format?.mimeType ?: "audio/${container.lowercase()}",
+                    itag = itag,
+                    codec = codec,
+                    codecProfile = itagItem?.codec,
+                    container = container,
+                    bitrate = rawBitrate,
+                    bitrateKbps = bitrateKbps,
+                    sampleRate = sampleRate,
+                    channelCount = channelCount,
+                    isAudioOnly = true,
+                    contentLength = contentLength,
+                    sourceName = "NewPipe",
+                    expiresAtMs = expiresAtMs
+                )
+            }
+
+            if (candidates.isEmpty()) {
+                return@withContext Result.failure(Exception("No playable audio candidates in NewPipe response"))
+            }
+
+            Log.d(TAG, "NewPipe extracted ${candidates.size} audio candidates for $videoId")
+            Result.success(candidates)
+        } catch (e: ReCaptchaException) {
+            markCaptchaBlocked()
+            Log.w(TAG, "NewPipe blocked by reCAPTCHA for $videoId")
+            Result.failure(e)
+        } catch (e: Exception) {
+            Log.e(TAG, "NewPipe candidate extraction failed for $videoId: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Extract audio stream URL + metadata from a video ID with automatic best-quality selection.
+     * Returns URL and AudioStreamInfo for quality badge and playback.
      */
     suspend fun getStreamUrl(
         videoId: String,
         quality: StreamQuality,
     ): Result<Pair<String, AudioStreamInfo>> = withContext(Dispatchers.IO) {
-        if (isCaptchaCooldownActive()) {
-            return@withContext Result.failure(Exception("NewPipe temporarily blocked by reCAPTCHA"))
+        val candidatesResult = extractAudioCandidates(videoId)
+        if (candidatesResult.isFailure) {
+            return@withContext Result.failure(candidatesResult.exceptionOrNull()!!)
         }
 
-        Log.d(TAG, "Extracting audio for: $videoId (tier: ${quality.displayName})")
-        
-        try {
-            val url = "https://www.youtube.com/watch?v=$videoId"
-            val streamInfo = StreamInfo.getInfo(NewPipe.getService(0), url)
-            
-            val audioStreams = streamInfo.audioStreams
-            Log.d(TAG, "Found ${audioStreams.size} audio streams")
-            
-            if (audioStreams.isEmpty()) {
-                Log.e(TAG, "No audio streams available")
-                return@withContext Result.failure(Exception("No audio streams available"))
-            }
-            
-            // Log available streams for debugging
-            audioStreams.forEach { stream ->
-                Log.d(TAG, "  ${stream.format?.name}: ${stream.averageBitrate}kbps")
-            }
-            
-            // Select best stream based on quality preference with codec awareness
-            val selectedStream = selectBestAudioStream(audioStreams, quality)
-            
-            if (selectedStream == null) {
-                Log.e(TAG, "Could not select audio stream")
-                return@withContext Result.failure(Exception("Could not select audio stream"))
-            }
-            
-            // Get the stream URL
-            val streamUrl = selectedStream.content
-            if (streamUrl.isNullOrEmpty()) {
-                Log.e(TAG, "Stream URL is empty")
-                return@withContext Result.failure(Exception("Stream URL is empty"))
-            }
-            
-            // Build AudioStreamInfo for quality badge display
-            val mimeType = selectedStream.format?.mimeType ?: selectedStream.format?.name ?: "unknown"
-            val codec = AudioStreamInfo.codecFromMimeType(mimeType)
-            val container = AudioStreamInfo.containerFromMimeType(mimeType)
-            val bitrate = selectedStream.averageBitrate
-            val sampleRate = AudioStreamInfo.sampleRateFromCodec(codec)
-            val tier = AudioStreamInfo.qualityTierFromStream(codec, bitrate)
-            
-            val info = AudioStreamInfo(
-                codec = codec,
-                bitrate = bitrate,
-                sampleRate = sampleRate,
-                bitDepth = 16, // YouTube serves 16-bit
-                qualityTier = tier,
-                containerFormat = container,
-                channelCount = 2,
-            )
-            
-            Log.d(TAG, "Selected: ${info.fullDescription}")
-            Log.d(TAG, "Quality: ${info.qualityBadge}")
-            Log.d(TAG, "URL: ${streamUrl.take(80)}...")
-            
-            Result.success(Pair(streamUrl, info))
-            
-        } catch (e: ReCaptchaException) {
-            markCaptchaBlocked()
-            Log.w(TAG, "NewPipe blocked by reCAPTCHA. Cooling down before next attempt.")
-            Result.failure(e)
-        } catch (e: Exception) {
-            Log.e(TAG, "Extraction failed: ${e.message}", e)
-            Result.failure(e)
-        }
-    }
+        val candidates = candidatesResult.getOrThrow()
+        val selection = audioQualitySelector.selectBestCandidate(candidates, quality)
+            ?: return@withContext Result.failure(Exception("Could not select suitable audio stream for tier ${quality.displayName}"))
 
-    /**
-     * Select the best audio stream with strict AAC 256kbps priority.
-     *
-     * Scoring model (mirrors AudioStreamExtractor.bestSourceScore):
-     *  - AAC streams at ≥256kbps  → highest tier (3× bitrate + 500k bonus)
-     *  - AAC streams at any bitrate → preferred over OPUS (3× bitrate)
-     *  - OPUS/WebM and other codecs → last resort (1× bitrate)
-     *
-     * The quality parameter is honoured for DATA_SAVER/LOW: in that case
-     * we pick the stream closest to the target bitrate without exceeding it.
-     */
-    private fun selectBestAudioStream(streams: List<AudioStream>, quality: StreamQuality): AudioStream? {
-        if (streams.isEmpty()) return null
-
-        val validStreams = streams.filter { !it.content.isNullOrEmpty() }
-        if (validStreams.isEmpty()) return null
-
-        // For DATA_SAVER (LOW), pick the stream closest to ≤ target bitrate.
-        if (quality == StreamQuality.LOW) {
-            val targetKbps = quality.bitrate
-            val below = validStreams.filter { it.averageBitrate in 1..targetKbps }
-            val pool = below.ifEmpty { validStreams }
-            return pool.minByOrNull { kotlin.math.abs(it.averageBitrate - targetKbps) }
-        }
-
-        // For all other tiers (MEDIUM / HIGH / BEST) always retrieve the highest
-        // available quality and let the bitrate determine the tier automatically.
-        return validStreams.maxWithOrNull(
-            compareBy { stream -> bestSourceScore(stream) }
-        )
-    }
-
-    /**
-     * Score an audio stream for selection.
-     *
-     * AAC is scored 3× higher than OPUS so that even a 128kbps AAC stream
-     * outranks a 128kbps OPUS stream, and a 256kbps AAC stream always wins.
-     * An extra 500_000 bonus is added for AAC streams at ≥256kbps.
-     */
-    private fun bestSourceScore(stream: AudioStream): Long {
-        val mimeType = stream.format?.mimeType ?: stream.format?.name.orEmpty()
-        val isAac = mimeType.contains("m4a", true) ||
-            mimeType.contains("mp4", true) ||
-            mimeType.contains("aac", true) ||
-            mimeType.contains("mp4a", true)
-        val bitrateKbps = stream.averageBitrate
-        return when {
-            isAac && bitrateKbps >= 256 ->
-                (bitrateKbps.toLong() * 3_000L) + 500_000L
-            isAac ->
-                (bitrateKbps.toLong() * 3_000L)
-            else ->
-                // OPUS / WebM / Vorbis — last resort
-                (bitrateKbps.toLong() * 1_000L)
-        }
+        val selected = selection.candidate
+        val info = selected.toAudioStreamInfo(quality)
+        Log.d(TAG, "NewPipe selected: ${info.fullDescription}. URL: ${selected.url.take(80)}...")
+        Result.success(Pair(selected.url, info))
     }
 
 

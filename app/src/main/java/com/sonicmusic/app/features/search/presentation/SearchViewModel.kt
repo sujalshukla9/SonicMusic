@@ -77,7 +77,7 @@ class SearchViewModel @Inject constructor(
     val isLoadingSuggestions: StateFlow<Boolean> = _isLoadingSuggestions.asStateFlow()
 
     // Effects (one-time events)
-    private val _effects = Channel<SearchEffect>()
+    private val _effects = Channel<SearchEffect>(Channel.BUFFERED)
     val effects = _effects.receiveAsFlow()
 
     // Pagination
@@ -102,13 +102,23 @@ class SearchViewModel @Inject constructor(
                 val trimmed = query.trim()
                 if (trimmed.length >= 2) {
                     fetchSuggestions(trimmed)
+                } else if (trimmed.isNotEmpty()) {
+                    _textSuggestions.value = emptyList()
+                    _contentSuggestions.value = emptyList()
+                    _isLoadingSuggestions.value = false
+                    // 1-character query: immediately show local matching recent searches with 0ms latency
+                    _searchState.value = SearchState.Suggestions(
+                        query = trimmed,
+                        suggestions = emptyList(),
+                        recentSearches = _recentSearches.value
+                            .filter { it.contains(trimmed, ignoreCase = true) }
+                            .take(5)
+                    )
                 } else {
                     _textSuggestions.value = emptyList()
                     _contentSuggestions.value = emptyList()
                     _isLoadingSuggestions.value = false
-                    if (trimmed.isEmpty()) {
-                        _searchState.value = SearchState.Initial
-                    }
+                    _searchState.value = SearchState.Initial
                 }
             }
             .launchIn(viewModelScope)
@@ -253,18 +263,35 @@ class SearchViewModel @Inject constructor(
             _contentSuggestions.value = emptyList()
             _isLoadingSuggestions.value = false
             _searchState.value = SearchState.Initial
+        } else {
+            val state = _searchState.value
+            if (state is SearchState.Results || state is SearchState.Empty || state is SearchState.Error) {
+                val trimmed = query.trim()
+                _searchState.value = SearchState.Suggestions(
+                    query = trimmed,
+                    suggestions = _textSuggestions.value,
+                    recentSearches = _recentSearches.value
+                        .filter { it.contains(trimmed, ignoreCase = true) }
+                        .take(5)
+                )
+            }
         }
     }
 
     private fun submitSearch(query: String) {
         val trimmedQuery = query.trim()
-        if (trimmedQuery.length < 2) return
+        if (trimmedQuery.isBlank()) return
 
         cancelActiveJobs()
         currentQuery = trimmedQuery
         _searchQuery.value = trimmedQuery
         activeSearchToken += 1L
         val searchToken = activeSearchToken
+
+        // Immediately record search in history when submitted
+        viewModelScope.launch {
+            recentSearchRepository.addSearch(trimmedQuery)
+        }
 
         _searchState.value = SearchState.LoadingResults(trimmedQuery)
 
@@ -291,7 +318,6 @@ class SearchViewModel @Inject constructor(
                             suggestions = emptyList()
                         )
                     } else {
-                        recentSearchRepository.addSearch(trimmedQuery)
                         _searchState.value = SearchState.Results(
                             query = trimmedQuery,
                             songs = mappedSongs,
@@ -328,18 +354,17 @@ class SearchViewModel @Inject constructor(
                     if (searchToken != activeSearchToken) return@fold
 
                     val songs = result.songs.distinctBy { it.id }
-                    if (songs.isEmpty()) {
+                    if (songs.isEmpty() && result.videos.isEmpty()) {
                         _searchState.value = SearchState.Empty(
                             query = trimmedQuery,
                             suggestions = getAlternativeSuggestions(trimmedQuery)
                         )
                     } else {
-                        recentSearchRepository.addSearch(trimmedQuery)
                         _searchState.value = SearchState.Results(
                             query = trimmedQuery,
                             songs = songs,
                             videos = result.videos,
-                            totalCount = songs.size,
+                            totalCount = if (songs.isNotEmpty()) songs.size else result.videos.size,
                             paginationState = if (result.hasMore) {
                                 PaginationState.Idle
                             } else {
@@ -476,13 +501,12 @@ class SearchViewModel @Inject constructor(
 
             // Save search to recent searches asynchronously
             val currentQuery = _searchQuery.value.trim()
-            if (currentQuery.isNotBlank() && currentQuery.length >= 2) {
-                recentSearchRepository.addSearch(
-                    query = currentQuery,
-                    resultId = song.id,
-                    resultType = song.contentType.name
-                )
-            }
+            val queryToSave = if (currentQuery.isNotBlank()) currentQuery else song.title
+            recentSearchRepository.addSearch(
+                query = queryToSave,
+                resultId = song.id,
+                resultType = song.contentType.name
+            )
 
             // Play the selected song and generate fresh recommendations based on it,
             // rather than filling the queue with all search results.
@@ -505,6 +529,7 @@ class SearchViewModel @Inject constructor(
     private fun clearSearch() {
         cancelActiveJobs()
         _searchQuery.value = ""
+        currentQuery = ""
         _textSuggestions.value = emptyList()
         _contentSuggestions.value = emptyList()
         _isLoadingSuggestions.value = false
@@ -701,9 +726,9 @@ class SearchViewModel @Inject constructor(
 
     private fun loadRecentSearches() {
         viewModelScope.launch {
-            recentSearchRepository.getRecentSearches(10)
+            recentSearchRepository.getRecentSearches(20)
                 .collect { searches ->
-                    val recentQueries = searches.map { it.query }
+                    val recentQueries = searches.map { it.query }.distinct()
                     _recentSearches.value = recentQueries
 
                     val state = _searchState.value
@@ -711,7 +736,7 @@ class SearchViewModel @Inject constructor(
                         _searchState.value = state.copy(
                             recentSearches = recentQueries
                                 .filter { it.contains(state.query, ignoreCase = true) }
-                                .take(3)
+                                .take(5)
                         )
                     }
                 }

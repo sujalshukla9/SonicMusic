@@ -94,15 +94,11 @@ class PlaylistsViewModel @Inject constructor(
                 return@launch
             }
             _isRefreshing.value = true
-            var allSuccess = true
             remotes.forEach { playlist ->
                 val rId = playlist.remoteId ?: return@forEach
                 playlistRepository.fetchRemotePlaylist(rId)
                     .onSuccess { (p, songs) ->
                         playlistRepository.saveRemotePlaylist(p, songs)
-                    }
-                    .onFailure {
-                        allSuccess = false
                     }
             }
             _isRefreshing.value = false

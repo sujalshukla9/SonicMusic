@@ -67,7 +67,7 @@ fun SleepTimerSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         modifier = modifier,
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = 1.dp
     ) {
@@ -164,7 +164,7 @@ private fun DurationChips(
                     )
                 },
                 colors = FilterChipDefaults.filterChipColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
                     labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer

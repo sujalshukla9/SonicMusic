@@ -77,3 +77,8 @@ client_secrets*.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Build, Metrics & Analysis
+compose_metrics/
+*.hprof
+.kotlin/

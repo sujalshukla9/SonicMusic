@@ -124,6 +124,9 @@ val MaterialTheme.expressiveMotion: ExpressiveMotion
     @ReadOnlyComposable
     get() = LocalExpressiveMotion.current
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+val LocalMotionScheme = staticCompositionLocalOf { MotionTokens.expressiveMotionScheme }
+
 val MaterialTheme.playerColorScheme: PlayerColorScheme
     @Composable
     @ReadOnlyComposable
@@ -234,6 +237,7 @@ private val EmphasizedExpressiveTypography = ExpressiveTypography(
     labelSmallEmphasized = Typography.labelSmall.copy(fontWeight = FontWeight.Bold)
 )
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SonicMusicTheme(
     themeViewModel: ThemeViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
@@ -252,8 +256,10 @@ fun SonicMusicTheme(
     
     val context = LocalContext.current
 
-    androidx.compose.runtime.LaunchedEffect(artworkUrl) {
-        themeViewModel.onAlbumArtChanged(artworkUrl)
+    if (artworkUrl != null) {
+        androidx.compose.runtime.LaunchedEffect(artworkUrl) {
+            themeViewModel.onAlbumArtChanged(artworkUrl)
+        }
     }
 
     val isDark = when (darkMode) {
@@ -410,12 +416,15 @@ fun SonicMusicTheme(
         LocalExpressiveShapes provides DefaultExpressiveShapes,
         LocalExpressiveTypography provides EmphasizedExpressiveTypography,
         LocalExpressiveMotion provides DefaultExpressiveMotion,
+        LocalMotionScheme provides (if (reduceMotion) MotionTokens.standardMotionScheme else MotionTokens.expressiveMotionScheme),
         LocalThumbnailShape provides thumbnailShape
     ) {
+        @OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
         MaterialTheme(
             colorScheme = animatedColorScheme,
             typography = Typography,
             shapes = SonicShapes,
+            motionScheme = if (reduceMotion) MotionTokens.standardMotionScheme else MotionTokens.expressiveMotionScheme,
             content = content
         )
     }

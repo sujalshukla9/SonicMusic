@@ -15,6 +15,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.features.updates.worker.AutoUpdateWorker
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -29,6 +30,9 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
 
+    @Inject
+    lateinit var songDao: SongDao
+
     // Application-scoped coroutine scope — lives as long as the process.
     // Uses SupervisorJob so child failures don't cancel the whole scope.
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -42,6 +46,12 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         super.onCreate()
         
         applicationScope.launch {
+            try {
+                songDao.clearAllCachedStreamUrls()
+                android.util.Log.d("SonicApp", "Purged all legacy cached stream URLs from database")
+            } catch (e: Exception) {
+                android.util.Log.w("SonicApp", "Failed to clear legacy cached stream URLs", e)
+            }
             scheduleAutoUpdate()
         }
 

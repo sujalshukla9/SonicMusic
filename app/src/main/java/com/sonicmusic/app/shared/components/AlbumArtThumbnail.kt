@@ -135,10 +135,24 @@ fun AlbumArtThumbnail(
     val surfaceContainerColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainerLow
     val effectiveBackgroundColor = if (backgroundColor == Color.Transparent) surfaceContainerColor else backgroundColor
 
+    val shadowModifier = if (shadowElevation > 0.dp) {
+        val safeShadowShape = when (targetShape) {
+            ThumbnailShape.CIRCLE -> androidx.compose.foundation.shape.CircleShape
+            ThumbnailShape.SQUARE -> androidx.compose.foundation.shape.RoundedCornerShape(0.dp)
+            ThumbnailShape.ROUNDED_SQUARE -> androidx.compose.foundation.shape.RoundedCornerShape(if (isLarge) 28.dp else 12.dp)
+            ThumbnailShape.ARCH -> com.sonicmusic.app.theme.ArchShape
+            ThumbnailShape.PILL -> com.sonicmusic.app.theme.PillShape
+            else -> androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+        }
+        Modifier.shadow(shadowElevation, safeShadowShape)
+    } else {
+        Modifier
+    }
+
     Box(
         modifier = modifier
             .padding(animatedPadding)
-            .shadow(shadowElevation, morphingShape)
+            .then(shadowModifier)
             .background(effectiveBackgroundColor, morphingShape)
             .clip(morphingShape),
         contentAlignment = Alignment.Center

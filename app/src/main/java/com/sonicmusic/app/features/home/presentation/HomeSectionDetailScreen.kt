@@ -33,6 +33,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -71,6 +73,7 @@ fun HomeSectionDetailScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text(sectionTitle) },
@@ -81,7 +84,10 @@ fun HomeSectionDetailScreen(
                             contentDescription = "Back"
                         )
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
+                )
             )
         }
     ) { paddingValues ->

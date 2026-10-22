@@ -87,6 +87,7 @@ object DatabaseModule {
 
     @Provides
     @Singleton
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun provideDatabaseProvider(
         @ApplicationContext context: Context
     ): androidx.media3.database.DatabaseProvider {
@@ -95,6 +96,7 @@ object DatabaseModule {
 
     @Provides
     @Singleton
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun provideDownloadCache(
         @ApplicationContext context: Context,
         databaseProvider: androidx.media3.database.DatabaseProvider

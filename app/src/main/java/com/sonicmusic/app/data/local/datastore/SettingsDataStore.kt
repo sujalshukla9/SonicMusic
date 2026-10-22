@@ -17,6 +17,7 @@ import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
+import com.sonicmusic.app.domain.model.NavbarStyle
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -60,6 +61,7 @@ class SettingsDataStore @Inject constructor(
         val IS_REGION_FROM_IP = booleanPreferencesKey("is_region_from_ip")
         val THUMBNAIL_SHAPE = stringPreferencesKey("thumbnail_shape")
         val PLAYER_CONTROL_STYLE = stringPreferencesKey("player_control_style")
+        val NAVBAR_STYLE = stringPreferencesKey("navbar_style")
         val HISTORY_RETENTION = stringPreferencesKey("history_retention")
     }
 
@@ -223,6 +225,12 @@ class SettingsDataStore @Inject constructor(
         .map { preferences ->
             val styleString = preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] ?: PlayerControlStyle.CLASSIC.name
             PlayerControlStyle.fromString(styleString)
+        }
+
+    val navbarStyle: Flow<NavbarStyle> = context.dataStore.data
+        .map { preferences ->
+            val styleString = preferences[PreferencesKeys.NAVBAR_STYLE] ?: NavbarStyle.MODERN.name
+            NavbarStyle.fromString(styleString)
         }
 
     suspend fun setStreamQuality(quality: StreamQuality) {
@@ -394,6 +402,12 @@ class SettingsDataStore @Inject constructor(
     suspend fun setPlayerControlStyle(style: PlayerControlStyle) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] = style.name
+        }
+    }
+
+    suspend fun setNavbarStyle(style: NavbarStyle) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.NAVBAR_STYLE] = style.name
         }
     }
 

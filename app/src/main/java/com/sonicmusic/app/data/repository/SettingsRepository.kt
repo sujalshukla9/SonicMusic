@@ -8,6 +8,7 @@ import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
+import com.sonicmusic.app.domain.model.NavbarStyle
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,6 +39,7 @@ class SettingsRepository @Inject constructor(
     val onboardingCompleted: Flow<Boolean> = settingsDataStore.onboardingCompleted
     val thumbnailShape: Flow<ThumbnailShape> = settingsDataStore.thumbnailShape
     val playerControlStyle: Flow<PlayerControlStyle> = settingsDataStore.playerControlStyle
+    val navbarStyle: Flow<NavbarStyle> = settingsDataStore.navbarStyle
 
     suspend fun setStreamQuality(quality: StreamQuality) {
         settingsDataStore.setStreamQuality(quality)
@@ -129,6 +131,10 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setPlayerControlStyle(style: PlayerControlStyle) {
         settingsDataStore.setPlayerControlStyle(style)
+    }
+
+    suspend fun setNavbarStyle(style: NavbarStyle) {
+        settingsDataStore.setNavbarStyle(style)
     }
 
     suspend fun resetToDefaults() {

@@ -9,13 +9,13 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface RecentSearchDao {
-    @Query("SELECT * FROM recent_searches ORDER BY searchedAt DESC LIMIT :limit")
+    @Query("SELECT * FROM recent_searches WHERE LENGTH(TRIM(query)) > 0 ORDER BY searchedAt DESC LIMIT :limit")
     fun getRecentSearches(limit: Int): Flow<List<RecentSearchEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSearch(search: RecentSearchEntity)
 
-    @Query("DELETE FROM recent_searches WHERE query = :query")
+    @Query("DELETE FROM recent_searches WHERE query = :query COLLATE NOCASE OR TRIM(query) = TRIM(:query)")
     suspend fun deleteSearch(query: String)
 
     @Query("DELETE FROM recent_searches")

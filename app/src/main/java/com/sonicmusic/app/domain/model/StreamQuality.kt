@@ -3,50 +3,45 @@ package com.sonicmusic.app.domain.model
 /**
  * Audio Quality Tiers
  *
- * The pipeline always prioritises AAC streams. Codec labels reflect what
- * will actually be selected from YouTube's adaptive formats:
+ * The audio pipeline selects the highest fidelity compatible stream
+ * available from the source (e.g. OPUS ~160 kbps 48 kHz or AAC 256 kbps):
  *
- * - LOW:    Data-saver mode — ≤64 kbps, any codec
- * - MEDIUM: AAC 128 kbps (cellular-optimised)
- * - HIGH:   AAC 256 kbps — best available AAC (default for Wi-Fi)
- * - BEST:   Best available AAC, and if no AAC is available at all, OPUS
- *           is used as a last resort at the highest bitrate offered
- *
- * In practice BEST and HIGH resolve to the same stream (AAC 256kbps) because
- * the stream-selection scoring always picks the highest-bitrate AAC format.
- * BEST is kept for API compatibility and to signal "no ceiling".
+ * - LOW:    Data-saver mode — ~50–64 kbps (Opus/AAC data saver)
+ * - MEDIUM: Balanced — ~128 kbps (optimized for cellular)
+ * - HIGH:   High Quality — ~160–256 kbps
+ * - BEST:   Best Available — Original source stream quality (OPUS 160 / AAC 256)
  */
 enum class StreamQuality(
     val bitrate: Int,
     val displayName: String,
     val description: String,
     val isHighRes: Boolean = false,
-    val preferredCodec: String = "aac",
+    val preferredCodec: String = "best",
 ) {
     LOW(
         bitrate = 64,
         displayName = "Data Saver",
-        description = "Lower quality, saves data",
+        description = "Lower bitrate · Saves mobile data",
         preferredCodec = "any",
     ),
     MEDIUM(
         bitrate = 128,
         displayName = "High Efficiency",
-        description = "AAC 128 kbps · Optimized for cellular",
-        preferredCodec = "aac",
+        description = "128 kbps · Optimized for cellular",
+        preferredCodec = "any",
     ),
     HIGH(
-        bitrate = 256,
+        bitrate = 160,
         displayName = "High Quality",
-        description = "AAC 256 kbps · CD-comparable",
-        preferredCodec = "aac",
+        description = "160–256 kbps · CD-comparable fidelity",
+        preferredCodec = "best",
     ),
     BEST(
         bitrate = 256,
         displayName = "Best Available",
-        description = "AAC 256 kbps · Best quality (AAC preferred, OPUS fallback)",
-        isHighRes = true,
-        preferredCodec = "aac",
+        description = "Highest available original audio stream",
+        isHighRes = false,
+        preferredCodec = "best",
     );
 
     /**
@@ -66,9 +61,9 @@ enum class StreamQuality(
     val shortLabel: String
         get() = when (this) {
             LOW -> "LOW"
-            MEDIUM -> "AAC"
-            HIGH -> "AAC"
-            BEST -> "AAC"
+            MEDIUM -> "MED"
+            HIGH -> "HIGH"
+            BEST -> "BEST"
         }
 
     companion object {

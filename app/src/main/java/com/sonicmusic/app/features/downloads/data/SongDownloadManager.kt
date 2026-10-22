@@ -102,24 +102,25 @@ class SongDownloadManager @Inject constructor(
                 downloadedSongDao.deleteByStatus(DownloadStatus.REMOVED)
                 Log.d(TAG, "Cleaned up stale REMOVED download records from DB")
 
-                val cursor = media3DownloadManager.downloadIndex.getDownloads()
-                while (cursor.moveToNext()) {
-                    val download = cursor.download
-                    val videoId = download.request.id
-                    val entity = downloadedSongDao.getDownloadedSong(videoId)
-                    if (entity != null && download.state != Download.STATE_COMPLETED) {
-                        downloadMetadata[videoId] = DownloadMetadata(
-                            videoId = videoId,
-                            title = entity.title,
-                            artist = entity.artists,
-                            thumbnailUrl = entity.thumbnailUrl
-                        )
-                        // If it was downloading before crash, resume it
-                        if (download.state == Download.STATE_FAILED || download.state == Download.STATE_RESTARTING) {
-                            // Expired URL fallback on startup retry
-                            retryDownload(videoId)
-                        } else {
-                            updateProgressFromDownload(download)
+                media3DownloadManager.downloadIndex.getDownloads().use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val download = cursor.download
+                        val videoId = download.request.id
+                        val entity = downloadedSongDao.getDownloadedSong(videoId)
+                        if (entity != null && download.state != Download.STATE_COMPLETED) {
+                            downloadMetadata[videoId] = DownloadMetadata(
+                                videoId = videoId,
+                                title = entity.title,
+                                artist = entity.artists,
+                                thumbnailUrl = entity.thumbnailUrl
+                            )
+                            // If it was downloading before crash, resume it
+                            if (download.state == Download.STATE_FAILED || download.state == Download.STATE_RESTARTING) {
+                                // Expired URL fallback on startup retry
+                                retryDownload(videoId)
+                            } else {
+                                updateProgressFromDownload(download)
+                            }
                         }
                     }
                 }
@@ -145,7 +146,6 @@ class SongDownloadManager @Inject constructor(
                 return@launch
             }
 
-            val destThumbDir = File(context.getExternalFilesDir(null), "Thumbnails").apply { mkdirs() }
             val localFilePath = File(destMusicDir, "$videoId.opus").absolutePath // default placeholder
 
             val initialEntity = DownloadedSong(
@@ -183,7 +183,7 @@ class SongDownloadManager @Inject constructor(
                 return@launch
             }
 
-            val (streamUrl, streamInfo) = streamResult.getOrThrow()
+            val (streamUrl, _) = streamResult.getOrThrow()
             val bypassedUrl = applySpeedBypass(streamUrl)
             
             // 3. Download and compress thumbnail
@@ -232,7 +232,7 @@ class SongDownloadManager @Inject constructor(
             Log.d(TAG, "Resuming download: $videoId")
             // Re-resolve URL to ensure it hasn't expired before resuming
             updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
-            val _metadata = downloadMetadata[videoId] ?: return@launch
+            if (!downloadMetadata.containsKey(videoId)) return@launch
             
             val streamResult = audioStreamExtractor.extractAudioStream(videoId, StreamQuality.BEST)
             if (streamResult.isFailure) {
@@ -349,6 +349,21 @@ class SongDownloadManager @Inject constructor(
             downloadedSongDao.updateStatus(videoId, DownloadStatus.REMOVED)
             Result.failure(Exception("Downloaded file not found on disk"))
         }
+    }
+
+    /**
+     * Get downloaded file size on disk in bytes, or null if not downloaded.
+     */
+    suspend fun getDownloadedFileSize(videoId: String): Long? = withContext(Dispatchers.IO) {
+        val entity = downloadedSongDao.getDownloadedSong(videoId)
+        if (entity?.status == DownloadStatus.COMPLETED) {
+            val file = File(entity.localFilePath)
+            if (file.exists() && file.length() > 0) {
+                file.length()
+            } else if (entity.fileSizeBytes > 0) {
+                entity.fileSizeBytes
+            } else null
+        } else null
     }
 
     /**

@@ -26,8 +26,10 @@ import com.sonicmusic.app.features.library.data.DownloadRepository
 import kotlinx.coroutines.flow.first
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import com.sonicmusic.app.features.queue.manager.PlayerController
+import com.sonicmusic.app.features.player.service.PlayerServiceConnection
 import com.sonicmusic.app.domain.repository.SongRepository
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Media Browser Service for Android Auto, Google Assistant, and Wear OS
@@ -47,7 +49,7 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     }
 
     @Inject
-    lateinit var playerController: PlayerController
+    lateinit var playerServiceConnection: PlayerServiceConnection
 
     @Inject
     lateinit var songRepository: SongRepository
@@ -55,7 +57,7 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     @Inject
     lateinit var downloadRepository: DownloadRepository
     
-    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bound = false
     private var bindRequested = false
     private var player: androidx.media3.exoplayer.ExoPlayer? = null
@@ -96,6 +98,7 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
             bound = false
             bindRequested = false
         }
+        coroutineScope.cancel()
         super.onDestroy()
     }
 
@@ -400,10 +403,7 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
                     if (firstSong != null) {
                         Log.d(TAG, "Playing search result for voice query: ${firstSong.title} (${firstSong.id})")
                         withContext(Dispatchers.Main) {
-                            playerController.playSong(
-                                videoId = firstSong.id,
-                                seedSong = firstSong
-                            )
+                            playerServiceConnection.playSongWithRadio(firstSong)
                         }
                     } else {
                         Log.w(TAG, "No songs found matching voice search query: $query")
@@ -423,10 +423,7 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
                 result.onSuccess { song ->
                     Log.d(TAG, "Playing song from media ID: ${song.title} (${song.id})")
                     withContext(Dispatchers.Main) {
-                        playerController.playSong(
-                            videoId = song.id,
-                            seedSong = song
-                        )
+                        playerServiceConnection.playSongWithRadio(song)
                     }
                 }.onFailure { error ->
                     Log.e(TAG, "Error playing song from media ID: $mediaId", error)

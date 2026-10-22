@@ -25,6 +25,7 @@ data class HomeContent(
     val charts: ChartSection? = null,
     val recentlyPlayed: List<Song> = emptyList(),
     val mixedForYou: List<Song> = emptyList(),
+    val communityPlaylists: List<CommunityPlaylist> = emptyList(),
     val continuationShelves: List<ContinuationShelf> = emptyList(),
     val continuationToken: String? = null
 ) {
@@ -38,6 +39,7 @@ data class HomeContent(
         charts?.songs?.isNotEmpty() == true ||
         recentlyPlayed.isNotEmpty() ||
         mixedForYou.isNotEmpty() ||
+        communityPlaylists.isNotEmpty() ||
         continuationShelves.isNotEmpty()
 }
 

@@ -8,19 +8,25 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
@@ -75,6 +81,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.sonicmusic.app.domain.model.NavbarStyle
 import androidx.navigation.navArgument
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.data.repository.SettingsRepository
@@ -127,7 +134,7 @@ class MainActivity : ComponentActivity() {
     lateinit var settingsRepository: SettingsRepository
 
     @javax.inject.Inject
-    lateinit var networkStatusMonitor: com.sonicmusic.app.core.network.NetworkStatusMonitor
+    lateinit var networkMonitor: com.sonicmusic.app.core.network.NetworkMonitor
     
     // Notification permission launcher for Android 13+
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -157,16 +164,10 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         
         setContent {
-            val playerViewModel: com.sonicmusic.app.features.player.presentation.PlayerViewModel =
-                androidx.hilt.navigation.compose.hiltViewModel()
-            val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
-
-            val isOnline by networkStatusMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
+            val isOnline by networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
             val windowSizeClass = calculateWindowSizeClass(this)
 
-            SonicMusicTheme(
-                artworkUrl = currentSong?.thumbnailUrl
-            ) {
+            SonicMusicTheme {
                 androidx.compose.runtime.CompositionLocalProvider(
                     com.sonicmusic.app.shared.components.LocalIsOnline provides isOnline,
                     com.sonicmusic.app.app.LocalWindowSizeClass provides windowSizeClass
@@ -265,66 +266,85 @@ val bottomNavItems = listOf(
 // Material 3 Expressive navigation transitions.
 // Sub-screens use a shared-axis X pattern (slide + fade) with M3 emphasized
 // easing; top-level tabs use fade-through so switching tabs feels instant.
-// Allocated once at file scope to avoid per-recomposition lambda churn.
+// Respects system reduced-motion accessibility settings.
 // ─────────────────────────────────────────────────────────────────────────────
-private val EmphasizedDecelerateEasing =
-    androidx.compose.animation.core.CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
-private val EmphasizedAccelerateEasing =
-    androidx.compose.animation.core.CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
-
-private val sharedAxisEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
-    slideIntoContainer(
-        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
-        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
-        initialOffset = { fullWidth -> fullWidth / 5 }
-    ) + androidx.compose.animation.fadeIn(
-        animationSpec = tween(durationMillis = 210, delayMillis = 90)
-    )
+private fun sharedAxisEnter(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeIn(animationSpec = tween(durationMillis = 150))
+    } else {
+        slideIntoContainer(
+            towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
+            animationSpec = tween(durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationLarge, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate),
+            initialOffset = { fullWidth -> (fullWidth * 0.18f).toInt() }
+        ) + androidx.compose.animation.fadeIn(
+            animationSpec = tween(durationMillis = 240, delayMillis = 60, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate)
+        )
+    }
 }
 
-private val sharedAxisExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
-    slideOutOfContainer(
-        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
-        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
-        targetOffset = { fullWidth -> fullWidth / 5 }
-    ) + androidx.compose.animation.fadeOut(
-        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
-    )
+private fun sharedAxisExit(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeOut(animationSpec = tween(durationMillis = 150))
+    } else {
+        slideOutOfContainer(
+            towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Start,
+            animationSpec = tween(durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationLarge, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate),
+            targetOffset = { fullWidth -> (fullWidth * 0.18f).toInt() }
+        ) + androidx.compose.animation.fadeOut(
+            animationSpec = tween(durationMillis = 120, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate)
+        )
+    }
 }
 
-private val sharedAxisPopEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
-    slideIntoContainer(
-        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
-        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
-        initialOffset = { fullWidth -> fullWidth / 5 }
-    ) + androidx.compose.animation.fadeIn(
-        animationSpec = tween(durationMillis = 210, delayMillis = 90)
-    )
+private fun sharedAxisPopEnter(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeIn(animationSpec = tween(durationMillis = 150))
+    } else {
+        slideIntoContainer(
+            towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
+            animationSpec = tween(durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationLarge, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate),
+            initialOffset = { fullWidth -> (fullWidth * 0.18f).toInt() }
+        ) + androidx.compose.animation.fadeIn(
+            animationSpec = tween(durationMillis = 240, delayMillis = 60, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate)
+        )
+    }
 }
 
-private val sharedAxisPopExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
-    slideOutOfContainer(
-        towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
-        animationSpec = tween(durationMillis = 400, easing = EmphasizedDecelerateEasing),
-        targetOffset = { fullWidth -> fullWidth / 5 }
-    ) + androidx.compose.animation.fadeOut(
-        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
-    )
+private fun sharedAxisPopExit(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeOut(animationSpec = tween(durationMillis = 150))
+    } else {
+        slideOutOfContainer(
+            towards = androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.End,
+            animationSpec = tween(durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationLarge, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate),
+            targetOffset = { fullWidth -> (fullWidth * 0.18f).toInt() }
+        ) + androidx.compose.animation.fadeOut(
+            animationSpec = tween(durationMillis = 120, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate)
+        )
+    }
 }
 
-private val fadeThroughEnter: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
-    androidx.compose.animation.fadeIn(
-        animationSpec = tween(durationMillis = 210, delayMillis = 90)
-    ) + androidx.compose.animation.scaleIn(
-        initialScale = 0.92f,
-        animationSpec = tween(durationMillis = 210, delayMillis = 90, easing = EmphasizedDecelerateEasing)
-    )
+private fun fadeThroughEnter(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeIn(animationSpec = tween(durationMillis = 150))
+    } else {
+        androidx.compose.animation.fadeIn(
+            animationSpec = tween(durationMillis = 220, delayMillis = 60)
+        ) + androidx.compose.animation.scaleIn(
+            initialScale = 0.96f,
+            animationSpec = tween(durationMillis = 220, delayMillis = 60, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate)
+        )
+    }
 }
 
-private val fadeThroughExit: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
-    androidx.compose.animation.fadeOut(
-        animationSpec = tween(durationMillis = 90, easing = EmphasizedAccelerateEasing)
-    )
+private fun fadeThroughExit(reduceMotion: Boolean): androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
+    if (reduceMotion) {
+        androidx.compose.animation.fadeOut(animationSpec = tween(durationMillis = 150))
+    } else {
+        androidx.compose.animation.fadeOut(
+            animationSpec = tween(durationMillis = 90, easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate)
+        )
+    }
 }
 
 @Composable
@@ -369,17 +389,26 @@ fun SonicMusicApp(
                 val playbackError by playerViewModel.playbackError.collectAsStateWithLifecycle(initialValue = null)
                 val playerError by playerViewModel.error.collectAsStateWithLifecycle(initialValue = null)
                 val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
-                val dynamicState = LocalDynamicThemeState.current
                 val colorScheme = MaterialTheme.colorScheme
                 
-                val backgroundTop = remember(colorScheme.surface, dynamicState.seedColor) {
-                    Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.15f))
+                val isPureBlackSurface = colorScheme.surface == Color.Black || colorScheme.background == Color.Black
+                val backgroundTop = if (isPureBlackSurface) {
+                    Color.Black
+                } else {
+                    remember(colorScheme.surface, colorScheme.primary) {
+                        Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), colorScheme.primary.toArgb(), 0.12f))
+                    }
                 }
-                val backgroundMid = remember(colorScheme.surface, dynamicState.seedColor) {
-                    Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), dynamicState.seedColor.toArgb(), 0.05f))
+                val backgroundMid = if (isPureBlackSurface) {
+                    Color.Black
+                } else {
+                    remember(colorScheme.surface, colorScheme.primary) {
+                        Color(androidx.core.graphics.ColorUtils.blendARGB(colorScheme.surface.toArgb(), colorScheme.primary.toArgb(), 0.04f))
+                    }
                 }
-                val navBarContainer = colorScheme.surfaceContainerHigh
+                val navBarContainer = colorScheme.surfaceContainer
                 val navBarIndicator = colorScheme.secondaryContainer
+                val navbarStyle by settingsViewModel.navbarStyle.collectAsStateWithLifecycle()
 
                 androidx.compose.runtime.LaunchedEffect(playbackError, playerError) {
                     val errorMsg = playbackError ?: playerError
@@ -393,6 +422,18 @@ fun SonicMusicApp(
                 val showBottomNav = bottomNavItems.any { it.route == currentDestination?.route }
                 val isMedium = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Medium
                 val isExpanded = windowSizeClass.widthSizeClass == WindowWidthSizeClass.Expanded
+
+                val navigateToScreen = remember(navController) {
+                    { screen: Screen ->
+                        navController.navigate(screen.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    }
+                }
 
                 if (isExpanded) {
                     // Tablet / Foldable open landscape
@@ -409,13 +450,7 @@ fun SonicMusicApp(
                                         icon = { Icon(if (selected) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
                                         label = { Text(screen.title) },
                                         selected = selected,
-                                        onClick = {
-                                            navController.navigate(screen.route) {
-                                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                                launchSingleTop = true
-                                                restoreState = true
-                                            }
-                                        },
+                                        onClick = { navigateToScreen(screen) },
                                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                                         colors = androidx.compose.material3.NavigationDrawerItemDefaults.colors(
                                             selectedContainerColor = navBarIndicator,
@@ -492,63 +527,125 @@ fun SonicMusicApp(
                         containerColor = Color.Transparent,
                         contentWindowInsets = WindowInsets(0),
                         bottomBar = {
-                            if (!showFullPlayer && (showBottomNav || currentSong != null)) {
-                                Column {
-                                    // MiniPlayer sits above the navigation bar
-                                    MiniPlayer(
-                                        backgroundColorOverride = navBarContainer,
-                                        onExpand = openFullPlayer
-                                    )
-                                    
-                                    AnimatedVisibility(visible = showBottomNav) {
-                                        // ViTune-style Bottom Navigation Bar
-                                        NavigationBar(
-                                            containerColor = navBarContainer,
-                                            contentColor = MaterialTheme.colorScheme.onSurface,
-                                            tonalElevation = 3.dp,
-                                            windowInsets = WindowInsets.navigationBars
-                                        ) {
-                                            bottomNavItems.forEach { screen ->
-                                                val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                                                NavigationBarItem(
-                                                    icon = {
-                                                        Icon(
-                                                            imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
-                                                            contentDescription = screen.title
+                            androidx.compose.animation.AnimatedVisibility(
+                                visible = !showFullPlayer && (showBottomNav || currentSong != null),
+                                enter = androidx.compose.animation.fadeIn(tween(durationMillis = 200)) +
+                                        androidx.compose.animation.slideInVertically(
+                                            initialOffsetY = { it / 2 },
+                                            animationSpec = tween(
+                                                durationMillis = 200,
+                                                easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
+                                            )
+                                        ),
+                                exit = androidx.compose.animation.fadeOut(tween(durationMillis = 150)) +
+                                        androidx.compose.animation.slideOutVertically(
+                                            targetOffsetY = { it / 2 },
+                                            animationSpec = tween(
+                                                durationMillis = 150,
+                                                easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate
+                                            )
+                                        )
+                            ) {
+                                if (navbarStyle == NavbarStyle.MODERN) {
+                                    // Modern Floating Navbar with separate Circular Mini Player on the right
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .navigationBarsPadding()
+                                            .padding(bottom = 16.dp),
+                                        contentAlignment = if (showBottomNav) Alignment.BottomCenter else Alignment.BottomEnd
+                                    ) {
+                                        if (showBottomNav) {
+                                            HorizontalFloatingNavBar(
+                                                items = bottomNavItems,
+                                                currentDestination = currentDestination,
+                                                onItemClick = navigateToScreen,
+                                                floatingActionButton = if (currentSong != null) {
+                                                    {
+                                                        CircularMiniPlayer(
+                                                            onExpand = openFullPlayer,
+                                                            size = 58.dp,
+                                                            containerColor = navBarContainer
                                                         )
-                                                    },
-                                                    label = { Text(screen.title) },
-                                                    selected = selected,
-                                                    alwaysShowLabel = true,
-                                                    colors = NavigationBarItemDefaults.colors(
-                                                        selectedIconColor = MaterialTheme.colorScheme.primary,
-                                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                                                        indicatorColor = navBarIndicator,
-                                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    ),
-                                                    onClick = {
-                                                        navController.navigate(screen.route) {
-                                                            popUpTo(navController.graph.findStartDestination().id) {
-                                                                saveState = true
-                                                            }
-                                                            launchSingleTop = true
-                                                            restoreState = true
-                                                        }
                                                     }
-                                                )
-                                            }
+                                                } else null,
+                                                containerColor = navBarContainer,
+                                                indicatorColor = navBarIndicator
+                                            )
+                                        } else if (currentSong != null) {
+                                            // Sub-screen: Circular Mini Player floats in bottom-right corner
+                                            CircularMiniPlayer(
+                                                onExpand = openFullPlayer,
+                                                size = 58.dp,
+                                                containerColor = navBarContainer
+                                            )
                                         }
                                     }
-                                    
-                                    // If bottom nav is hidden, we only draw system nav bar spacer if a song is playing
-                                    if (!showBottomNav && currentSong != null) {
-                                        Spacer(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .windowInsetsBottomHeight(WindowInsets.navigationBars)
-                                                .background(navBarContainer)
+                                } else {
+                                    // Classical Navbar: Original layout with horizontal MiniPlayer sitting above NavigationBar
+                                    Column {
+                                        MiniPlayer(
+                                            backgroundColorOverride = navBarContainer,
+                                            onExpand = openFullPlayer
                                         )
+
+                                        androidx.compose.animation.AnimatedVisibility(
+                                            visible = showBottomNav,
+                                            enter = androidx.compose.animation.slideInVertically(
+                                                initialOffsetY = { it },
+                                                animationSpec = tween(
+                                                    durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationStandard,
+                                                    easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
+                                                )
+                                            ) + androidx.compose.animation.fadeIn(tween(com.sonicmusic.app.theme.MotionTokens.DurationFast)),
+                                            exit = androidx.compose.animation.slideOutVertically(
+                                                targetOffsetY = { it },
+                                                animationSpec = tween(
+                                                    durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationFast,
+                                                    easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate
+                                                )
+                                            ) + androidx.compose.animation.fadeOut(tween(com.sonicmusic.app.theme.MotionTokens.DurationFast))
+                                        ) {
+                                            NavigationBar(
+                                                containerColor = navBarContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSurface,
+                                                tonalElevation = 3.dp,
+                                                windowInsets = WindowInsets.navigationBars
+                                            ) {
+                                                bottomNavItems.forEach { screen ->
+                                                    val selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                                                    NavigationBarItem(
+                                                        icon = {
+                                                            Icon(
+                                                                imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
+                                                                contentDescription = screen.title
+                                                            )
+                                                        },
+                                                        label = { Text(screen.title) },
+                                                        selected = selected,
+                                                        alwaysShowLabel = true,
+                                                        colors = NavigationBarItemDefaults.colors(
+                                                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                                            indicatorColor = navBarIndicator,
+                                                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        ),
+                                                        onClick = { navigateToScreen(screen) }
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        // If bottom nav is hidden, draw system nav bar spacer if a song is playing
+                                        if (!showBottomNav && currentSong != null) {
+                                            Spacer(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .windowInsetsBottomHeight(WindowInsets.navigationBars)
+                                                    .background(navBarContainer)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -647,6 +744,14 @@ fun MainScaffoldContent(
         val playerViewModel: com.sonicmusic.app.features.player.presentation.PlayerViewModel = hiltViewModel()
         val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
         
+        val reduceMotion = com.sonicmusic.app.theme.shouldReduceMotion()
+        val sEnter = remember(reduceMotion) { sharedAxisEnter(reduceMotion) }
+        val sExit = remember(reduceMotion) { sharedAxisExit(reduceMotion) }
+        val sPopEnter = remember(reduceMotion) { sharedAxisPopEnter(reduceMotion) }
+        val sPopExit = remember(reduceMotion) { sharedAxisPopExit(reduceMotion) }
+        val fEnter = remember(reduceMotion) { fadeThroughEnter(reduceMotion) }
+        val fExit = remember(reduceMotion) { fadeThroughExit(reduceMotion) }
+
         Column(modifier = Modifier.fillMaxSize()) {
             // Offline banner at top of all screens
             NoInternetBanner(isVisible = !isOnline)
@@ -655,18 +760,18 @@ fun MainScaffoldContent(
         NavHost(
             navController = navController,
             startDestination = Screen.Home.route,
-            enterTransition = sharedAxisEnter,
-            exitTransition = sharedAxisExit,
-            popEnterTransition = sharedAxisPopEnter,
-            popExitTransition = sharedAxisPopExit
+            enterTransition = sEnter,
+            exitTransition = sExit,
+            popEnterTransition = sPopEnter,
+            popExitTransition = sPopExit
         ) {
             // Main screens
             composable(
                 route = Screen.Home.route,
-                enterTransition = fadeThroughEnter,
-                exitTransition = fadeThroughExit,
-                popEnterTransition = fadeThroughEnter,
-                popExitTransition = fadeThroughExit
+                enterTransition = fEnter,
+                exitTransition = fExit,
+                popEnterTransition = fEnter,
+                popExitTransition = fExit
             ) {
                 HomeScreen(
                     bottomPadding = bottomPadding,
@@ -706,15 +811,18 @@ fun MainScaffoldContent(
                     onNavigateToArtist = { name, browseId ->
                         navController.navigate(SubScreens.artistDetail(name, browseId))
                     },
+                    onNavigateToPlaylist = { browseId, title, creator, thumb ->
+                        navigateToAlbum(navController, context, browseId, title, creator, thumb)
+                    },
                     onShowFullPlayer = showFullPlayer
                 )
             }
             composable(
                 route = Screen.Search.route,
-                enterTransition = fadeThroughEnter,
-                exitTransition = fadeThroughExit,
-                popEnterTransition = fadeThroughEnter,
-                popExitTransition = fadeThroughExit
+                enterTransition = fEnter,
+                exitTransition = fExit,
+                popEnterTransition = fEnter,
+                popExitTransition = fExit
             ) {
                 SearchScreen(
                     bottomPadding = bottomPadding,
@@ -746,10 +854,10 @@ fun MainScaffoldContent(
             }
             composable(
                 route = Screen.Library.route,
-                enterTransition = fadeThroughEnter,
-                exitTransition = fadeThroughExit,
-                popEnterTransition = fadeThroughEnter,
-                popExitTransition = fadeThroughExit
+                enterTransition = fEnter,
+                exitTransition = fExit,
+                popEnterTransition = fEnter,
+                popExitTransition = fExit
             ) {
                 LibraryScreen(
                     bottomPadding = bottomPadding,
@@ -782,10 +890,10 @@ fun MainScaffoldContent(
             }
             composable(
                 route = SubScreens.SETTINGS,
-                enterTransition = fadeThroughEnter,
-                exitTransition = fadeThroughExit,
-                popEnterTransition = fadeThroughEnter,
-                popExitTransition = fadeThroughExit
+                enterTransition = fEnter,
+                exitTransition = fExit,
+                popEnterTransition = fEnter,
+                popExitTransition = fExit
             ) {
                 SettingsScreen(
                     bottomPadding = bottomPadding,

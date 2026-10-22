@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.features.downloads.data.SongDownloadManager
 import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
 import com.sonicmusic.app.data.repository.SettingsRepository
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -147,6 +149,8 @@ class PlayerViewModel @Inject constructor(
     val playbackError: StateFlow<String?> = playerServiceConnection.playbackError
     val playbackSpeed: StateFlow<Float> = playerServiceConnection.playbackSpeed
     val isLoadingMore: StateFlow<Boolean> = playerServiceConnection.isLoadingMore
+    val currentStreamInfo: StateFlow<AudioStreamInfo?> = playerServiceConnection.currentStreamInfo
+    val audioQualityUiState: StateFlow<com.sonicmusic.app.features.player.audio.AudioQualityUiState?> = playerServiceConnection.audioQualityUiState
 
     // ═══════════════════════════════════════════════════════════════
     // LOCAL STATE
@@ -166,6 +170,9 @@ class PlayerViewModel @Inject constructor(
 
     private val _isCurrentSongDownloaded = MutableStateFlow(false)
     val isCurrentSongDownloaded: StateFlow<Boolean> = _isCurrentSongDownloaded.asStateFlow()
+
+    private val _downloadedFileSizeBytes = MutableStateFlow<Long?>(null)
+    val downloadedFileSizeBytes: StateFlow<Long?> = _downloadedFileSizeBytes.asStateFlow()
 
     /** Download progress for the currently playing song (null = not downloading) */
     val currentSongDownloadProgress: StateFlow<com.sonicmusic.app.features.downloads.data.DownloadProgress?> =
@@ -235,7 +242,9 @@ class PlayerViewModel @Inject constructor(
             canSkipPrevious = canPrev,
             isBuffering = buffering
         )
-    }.stateIn(
+    }
+        .distinctUntilChanged()
+        .stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = PlayerUiState(
@@ -306,6 +315,7 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.autoQueueSimilar.collect { enabled ->
                 _infiniteModeEnabled.value = enabled
+                playerServiceConnection.setInfiniteMode(enabled)
                 queueRepository.setInfiniteMode(enabled)
                 Log.d(TAG, "Auto queue similar from settings: $enabled")
             }
@@ -334,10 +344,14 @@ class PlayerViewModel @Inject constructor(
                             }
                         }
 
-                        // Check download state for current song
+                        // Check download state and size for current song
                         downloadCheckJob?.cancel()
                         downloadCheckJob = launch {
-                            _isCurrentSongDownloaded.value = songDownloadManager.isDownloaded(song.id)
+                            val isDownloaded = songDownloadManager.isDownloaded(song.id)
+                            _isCurrentSongDownloaded.value = isDownloaded
+                            _downloadedFileSizeBytes.value = if (isDownloaded) {
+                                songDownloadManager.getDownloadedFileSize(song.id)
+                            } else null
                         }
 
                         // Resolve album info
@@ -406,7 +420,6 @@ class PlayerViewModel @Inject constructor(
                 ?: songRepository.getSongById(songId).getOrNull()
 
             if (song != null) {
-                _error.value = "Refreshing stream..."
                 var lastException: Exception? = null
 
                 // Retry with progressive delay
@@ -414,7 +427,7 @@ class PlayerViewModel @Inject constructor(
                     try {
                         Log.d(TAG, "URL refresh attempt ${attempt + 1}/$MAX_URL_RETRY_ATTEMPTS")
 
-                        val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+                        val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST, forceRefresh = true)
 
                         result.onSuccess { streamUrl ->
                             Log.d(TAG, "Got fresh stream URL, resuming/updating playback")
@@ -686,26 +699,10 @@ class PlayerViewModel @Inject constructor(
 
     // Expose Audio Engine State
     val audioEngineState = playerServiceConnection.audioEngine.audioEngineState
-    val currentStreamInfo = playerServiceConnection.audioEngine.currentStreamInfo
     val outputDeviceType = playerServiceConnection.audioEngine.outputDeviceType
 
-    // ── Audio Capability Badges (Dolby Atmos, DTS, Hi-Res) ──────────
-    // Dolby Atmos badge requires BOTH:
-    //   1. Device positively reports Dolby Atmos support
-    //   2. Current song's actual stream contains confirmed Dolby Atmos metadata
-    //      (streamInfo.hasDolbyAtmos == true and Dolby processing is enabled)
-    // This strictly prevents false Dolby Atmos badges on songs that don't have Atmos data.
-    val audioCapability = combine(
-        audioCapabilityDetector.capability,
-        audioEngineState,
-        currentStreamInfo
-    ) { cap, state, streamInfo ->
-        val showDolby = cap.supportsDolbyAtmos &&
-            streamInfo?.hasDolbyAtmos == true && state.dolbyDspEnabled
-        cap.copy(
-            dolbyLabel = if (showDolby) (cap.dolbyLabel ?: "Dolby Atmos") else null
-        )
-    }.stateIn(
+    // ── Audio Capability Badges (DTS, Hi-Res, Spatial) ──────────
+    val audioCapability = audioCapabilityDetector.capability.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability()
@@ -725,9 +722,9 @@ class PlayerViewModel @Inject constructor(
 
     val spatialStrength: StateFlow<Int> = playerServiceConnection.audioEngine.audioEngineState
         .map { it.spatialStrength }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 800)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH)
 
-    fun setSpatialAudio(enabled: Boolean, strength: Int = 800) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)
+    fun setSpatialAudio(enabled: Boolean, strength: Int = com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH) = playerServiceConnection.audioEngine.setSpatialAudio(enabled, strength)
     
     // Reverb
     fun setReverb(enabled: Boolean, preset: Int) = playerServiceConnection.audioEngine.setReverb(enabled, preset)

@@ -26,9 +26,3 @@ fun navigateToAlbum(
     )
 }
 
-fun navigateToAlbum(navController: NavController, browseId: String?, albumName: String? = null) {
-    if (browseId.isNullOrBlank()) return
-    val encodedBrowseId = java.net.URLEncoder.encode(browseId, "UTF-8")
-    navController.navigate("album/$encodedBrowseId")
-}
-

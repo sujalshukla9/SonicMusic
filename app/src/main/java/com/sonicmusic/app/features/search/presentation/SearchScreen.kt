@@ -1,5 +1,6 @@
 package com.sonicmusic.app.features.search.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
@@ -101,6 +102,18 @@ fun SearchScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
+    // Handle system back gesture when searching or viewing suggestions/browse
+    val isSearchActive = searchState !is SearchState.Initial || searchQuery.isNotEmpty()
+    BackHandler(enabled = isSearchActive) {
+        if (searchState is SearchState.BrowseArtists || searchState is SearchState.BrowseAlbums) {
+            viewModel.onAction(SearchAction.BackFromBrowse)
+        } else {
+            viewModel.onAction(SearchAction.ClearSearch)
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
+    }
+
     // Auto-dismiss keyboard when user scrolls through results
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) {
@@ -134,7 +147,7 @@ fun SearchScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = MaterialTheme.colorScheme.background,
+        containerColor = Color.Transparent,
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -213,10 +226,9 @@ fun SearchScreen(
 
                         is SearchState.LoadingSuggestions -> {
                             SuggestionsContent(
-                                query = state.query,
                                 textSuggestions = textSuggestions,
                                 contentSuggestions = contentSuggestions,
-                                recentSearches = recentSearches.filter { it.contains(state.query, ignoreCase = true) }.take(3),
+                                recentSearches = recentSearches.filter { it.contains(state.query, ignoreCase = true) }.take(5),
                                 isLoading = true,
                                 onTextSuggestionClick = {
                                     focusManager.clearFocus(force = true)
@@ -233,16 +245,26 @@ fun SearchScreen(
                                     keyboardController?.hide()
                                     viewModel.onAction(SearchAction.RecentSearchClicked(it))
                                 },
+                                onDeleteRecentSearch = {
+                                    viewModel.onAction(SearchAction.DeleteRecentSearch(it))
+                                },
+                                onInsertQuery = {
+                                    viewModel.onAction(SearchAction.QueryChanged(it))
+                                },
                                 bottomPadding = bottomPadding
                             )
                         }
 
                         is SearchState.Suggestions -> {
+                            val matchingRecent = if (state.recentSearches.isNotEmpty()) {
+                                state.recentSearches
+                            } else {
+                                recentSearches.filter { it.contains(state.query, ignoreCase = true) }.take(5)
+                            }
                             SuggestionsContent(
-                                query = state.query,
                                 textSuggestions = textSuggestions,
                                 contentSuggestions = contentSuggestions,
-                                recentSearches = state.recentSearches,
+                                recentSearches = matchingRecent,
                                 isLoading = isLoadingSuggestions,
                                 onTextSuggestionClick = {
                                     focusManager.clearFocus(force = true)
@@ -258,6 +280,12 @@ fun SearchScreen(
                                     focusManager.clearFocus(force = true)
                                     keyboardController?.hide()
                                     viewModel.onAction(SearchAction.RecentSearchClicked(it))
+                                },
+                                onDeleteRecentSearch = {
+                                    viewModel.onAction(SearchAction.DeleteRecentSearch(it))
+                                },
+                                onInsertQuery = {
+                                    viewModel.onAction(SearchAction.QueryChanged(it))
                                 },
                                 bottomPadding = bottomPadding
                             )
@@ -443,23 +471,15 @@ private fun InitialContent(
     LazyColumn(
         contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
     ) {
-        // Trending searches
-        item {
-            TrendingSearchesSection(
-                trendingSearches = trendingSearches,
-                onSuggestionClick = onQuickSuggestionClick
-            )
-        }
-
-        // Recent searches
+        // Recent searches (displayed at the top for immediate access)
         if (recentSearches.isNotEmpty()) {
-            item {
+            item(key = "header_recent") {
                 RecentSearchesHeader(onClearAll = onClearAll)
             }
 
             items(
                 items = recentSearches,
-                key = { it }
+                key = { "recent_$it" }
             ) { query ->
                 RecentSearchItem(
                     query = query,
@@ -467,10 +487,22 @@ private fun InitialContent(
                     onDelete = { onDeleteSearch(query) },
                 )
             }
+
+            item(key = "spacer_recent") {
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+
+        // Trending searches
+        item(key = "trending_section") {
+            TrendingSearchesSection(
+                trendingSearches = trendingSearches,
+                onSuggestionClick = onQuickSuggestionClick
+            )
         }
 
         // Browse categories
-        item { 
+        item(key = "browse_section") { 
             BrowseCategoriesSection(
                 onNavigateToTopSongs = onNavigateToTopSongs,
                 onNavigateToTopArtists = onNavigateToTopArtists,
@@ -482,7 +514,6 @@ private fun InitialContent(
 
 @Composable
 private fun SuggestionsContent(
-    query: String,
     textSuggestions: List<String>,
     contentSuggestions: List<SearchSuggestionItem>,
     recentSearches: List<String>,
@@ -490,6 +521,8 @@ private fun SuggestionsContent(
     onTextSuggestionClick: (String) -> Unit,
     onContentSuggestionClick: (SearchSuggestionItem) -> Unit,
     onRecentSearchClick: (String) -> Unit,
+    onDeleteRecentSearch: (String) -> Unit,
+    onInsertQuery: (String) -> Unit,
     bottomPadding: androidx.compose.ui.unit.Dp
 ) {
     SearchSuggestionsDropdown(
@@ -500,6 +533,8 @@ private fun SuggestionsContent(
         onTextSuggestionClick = onTextSuggestionClick,
         onContentSuggestionClick = onContentSuggestionClick,
         onRecentSearchClick = onRecentSearchClick,
+        onDeleteRecentSearch = onDeleteRecentSearch,
+        onInsertQuery = onInsertQuery,
         bottomPadding = bottomPadding,
         modifier = Modifier.fillMaxWidth()
     )
@@ -709,10 +744,9 @@ private fun SearchResultsContent(
             items = songs,
             key = { index, song -> "${song.id}_$index" },
             contentType = { _, song -> song.contentType }
-        ) { index, song ->
+        ) { _, song ->
             SearchResultCard(
                 song = song,
-                index = index + 1,
                 onClick = {
                     if (song.contentType == com.sonicmusic.app.domain.model.ContentType.ARTIST) {
                         onArtistClick(song.title, song.id.takeIf { it.startsWith("UC") })
@@ -1004,7 +1038,6 @@ private fun EndOfResultsItem() {
 @Composable
 private fun SearchResultCard(
     song: com.sonicmusic.app.domain.model.Song,
-    index: Int,
     onClick: () -> Unit,
 ) {
     val isSongOrVideo = song.contentType == com.sonicmusic.app.domain.model.ContentType.SONG ||
@@ -1441,6 +1474,8 @@ private fun RecentSearchItem(
                 text = query,
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
 
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
@@ -1631,16 +1666,20 @@ private fun BrowseArtistsContent(
             else -> {
                 val listState = rememberLazyListState()
 
-                // infinite scroll trigger
-                LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-                    val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-                    val totalItems = listState.layoutInfo.totalItemsCount
-                    
-                    if (lastVisibleItem != null && totalItems > 0 && lastVisibleItem >= totalItems - 2) {
-                        if (!state.isPaginating && !state.continuationToken.isNullOrBlank()) {
+                // infinite scroll trigger using snapshotFlow to avoid recomposition loops
+                LaunchedEffect(state.artists.size, state.isPaginating, state.continuationToken) {
+                    if (state.artists.isEmpty() || state.isPaginating || state.continuationToken.isNullOrBlank()) return@LaunchedEffect
+
+                    snapshotFlow {
+                        val totalItems = listState.layoutInfo.totalItemsCount
+                        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        totalItems > 0 && lastVisible >= totalItems - 2
+                    }
+                        .distinctUntilChanged()
+                        .filter { it }
+                        .collectLatest {
                             onLoadMore()
                         }
-                    }
                 }
 
                 LazyColumn(
@@ -1847,16 +1886,20 @@ private fun BrowseAlbumsContent(
             else -> {
                 val listState = rememberLazyListState()
 
-                // infinite scroll trigger
-                LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-                    val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-                    val totalItems = listState.layoutInfo.totalItemsCount
-                    
-                    if (lastVisibleItem != null && totalItems > 0 && lastVisibleItem >= totalItems - 2) {
-                        if (!state.isPaginating && !state.continuationToken.isNullOrBlank()) {
+                // infinite scroll trigger using snapshotFlow to avoid recomposition loops
+                LaunchedEffect(state.albums.size, state.isPaginating, state.continuationToken) {
+                    if (state.albums.isEmpty() || state.isPaginating || state.continuationToken.isNullOrBlank()) return@LaunchedEffect
+
+                    snapshotFlow {
+                        val totalItems = listState.layoutInfo.totalItemsCount
+                        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        totalItems > 0 && lastVisible >= totalItems - 2
+                    }
+                        .distinctUntilChanged()
+                        .filter { it }
+                        .collectLatest {
                             onLoadMore()
                         }
-                    }
                 }
 
                 LazyColumn(

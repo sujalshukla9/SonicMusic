@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.graphics.Color
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.ChartSong
 import com.sonicmusic.app.domain.model.ContentType
@@ -65,11 +66,11 @@ fun TopSongsScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                    containerColor = Color.Transparent
                 )
             )
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = Color.Transparent
     ) { paddingValues ->
         Box(
             modifier = Modifier

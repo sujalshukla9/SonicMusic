@@ -9,8 +9,8 @@ interface SongRepository {
     suspend fun searchSongs(query: String, limit: Int = 50): Result<List<Song>>
     suspend fun getSearchSuggestions(query: String): Result<List<String>>
     suspend fun getSongById(id: String): Result<Song>
-    suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String>
-    suspend fun getStreamWithInfo(songId: String, quality: StreamQuality): Result<Pair<String, AudioStreamInfo>>
+    suspend fun getStreamUrl(songId: String, quality: StreamQuality, forceRefresh: Boolean = false): Result<String>
+    suspend fun getStreamWithInfo(songId: String, quality: StreamQuality, forceRefresh: Boolean = false): Result<Pair<String, AudioStreamInfo>>
     suspend fun getArtistSongs(artistName: String, limit: Int = 30): Result<List<Song>>
     suspend fun getNewReleases(limit: Int = 25): Result<List<Song>>
     suspend fun getTrending(limit: Int = 30): Result<List<Song>>

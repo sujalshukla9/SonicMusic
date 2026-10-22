@@ -18,8 +18,8 @@ private class ColorSchemeTransitionState(
 
 @Composable
 fun ColorScheme.animated(
-    durationMillis: Int = 300,
-    easing: Easing = FastOutSlowInEasing
+    durationMillis: Int = MotionTokens.DurationTheme,
+    easing: Easing = MotionTokens.EmphasizedEasing
 ): ColorScheme {
     val target = this
     

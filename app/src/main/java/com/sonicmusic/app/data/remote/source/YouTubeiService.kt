@@ -7,6 +7,7 @@ import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.core.util.ThumbnailUrlUtils
 import com.sonicmusic.app.domain.model.ArtistRef
 import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.domain.model.CommunityPlaylist
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -42,7 +43,8 @@ import javax.inject.Singleton
 @Singleton
 class YouTubeiService @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val settingsDataStore: SettingsDataStore
+    private val settingsDataStore: SettingsDataStore,
+    private val okHttpClient: OkHttpClient
 ) {
 
     private data class ParsedSongSearchPage(
@@ -95,7 +97,7 @@ class YouTubeiService @Inject constructor(
         val items: List<Song> = emptyList()
     )
 
-    private val client = OkHttpClient.Builder()
+    private val client = okHttpClient.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -178,7 +180,7 @@ class YouTubeiService @Inject constructor(
     /**
      * Get language code for the detected region
      */
-    private fun getLanguageForRegion(region: String): String {
+    private fun getLanguageForRegion(@Suppress("UNUSED_PARAMETER") region: String): String {
         // Always use English for metadata/text labels so artist names,
         // descriptions, and section titles appear in English regardless
         // of the user's region. The `gl` param still controls which
@@ -1080,10 +1082,8 @@ class YouTubeiService @Inject constructor(
                 ?.optJSONObject("text")
                 ?.optJSONArray("runs")
                 
-            var subtitle = ""
             var artist = ""
             var typeText = ""
-            var id = ""
             var artistBrowseId: String? = null
             val artistNames = mutableListOf<String>()
             val artistIds = mutableListOf<String>()
@@ -1108,7 +1108,7 @@ class YouTubeiService @Inject constructor(
                         }
                     }
                 }
-                subtitle = fullSubtitle.toString()
+                val subtitle = fullSubtitle.toString()
                 
                 // Extract type text (first run, before first separator)
                 typeText = subtitleRuns.optJSONObject(0)?.optString("text", "") ?: ""
@@ -1143,7 +1143,7 @@ class YouTubeiService @Inject constructor(
                     ?.optJSONObject("content")?.optJSONObject("musicPlayButtonRenderer")
                     ?.optJSONObject("playNavigationEndpoint")
                     
-           id = navigationEndpoint?.optJSONObject("watchEndpoint")?.optString("videoId")
+            val id = navigationEndpoint?.optJSONObject("watchEndpoint")?.optString("videoId")
                 ?: navigationEndpoint?.optJSONObject("browseEndpoint")?.optString("browseId")
                 ?: ""
                 
@@ -2756,7 +2756,8 @@ class YouTubeiService @Inject constructor(
     suspend fun getAlbumDetailsFromInnertube(
         albumBrowseId: String
     ): Result<com.sonicmusic.app.domain.model.AlbumDetails> = withContext(Dispatchers.IO) {
-        val browseId = albumBrowseId.trim()
+        val rawId = albumBrowseId.trim()
+        val browseId = if (rawId.startsWith("PL") && !rawId.startsWith("VL")) "VL$rawId" else rawId
         Log.d(TAG, "getAlbumDetailsFromInnertube: ID = $browseId")
         val rawResult = browseRaw(browseId)
         if (rawResult.isFailure) {
@@ -2808,6 +2809,22 @@ class YouTubeiService @Inject constructor(
                             ?.optJSONArray("contents")
                             ?.let(sectionLists::add)
                     }
+                }
+
+            json.optJSONObject("contents")
+                ?.optJSONObject("singleColumnBrowseResultsRenderer")
+                ?.optJSONObject("contents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+                ?.let(sectionLists::add)
+
+            twoColumn?.optJSONObject("secondaryContents")
+                ?.optJSONObject("musicPlaylistShelfRenderer")
+                ?.let { directShelf ->
+                    val directArr = JSONArray().apply {
+                        put(JSONObject().apply { put("musicPlaylistShelfRenderer", directShelf) })
+                    }
+                    sectionLists.add(directArr)
                 }
 
             val headerFromSectionList = sectionLists.asSequence()
@@ -2936,6 +2953,7 @@ class YouTubeiService @Inject constructor(
                     val section = sectionList.optJSONObject(i) ?: continue
                     
                     val musicShelf = section.optJSONObject("musicShelfRenderer")
+                        ?: section.optJSONObject("musicPlaylistShelfRenderer")
                     if (musicShelf != null) {
                         val contents = musicShelf.optJSONArray("contents")
                         if (contents != null) {
@@ -2950,6 +2968,18 @@ class YouTubeiService @Inject constructor(
                                         ?.optJSONObject("content")
                                         ?.optJSONObject("musicPlayButtonRenderer")
                                         ?.optJSONObject("playNavigationEndpoint")
+                                        ?.optJSONObject("watchEndpoint")
+                                        ?.optString("videoId", ""),
+                                    item.optJSONObject("navigationEndpoint")
+                                        ?.optJSONObject("watchEndpoint")
+                                        ?.optString("videoId", ""),
+                                    item.optJSONArray("flexColumns")
+                                        ?.optJSONObject(0)
+                                        ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                                        ?.optJSONObject("text")
+                                        ?.optJSONArray("runs")
+                                        ?.optJSONObject(0)
+                                        ?.optJSONObject("navigationEndpoint")
                                         ?.optJSONObject("watchEndpoint")
                                         ?.optString("videoId", "")
                                 ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
@@ -3140,6 +3170,28 @@ class YouTubeiService @Inject constructor(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            
+            if (songsList.isEmpty()) {
+                val fallbackSongs = parseBrowseResponse(browseRaw)
+                if (fallbackSongs.isNotEmpty()) {
+                    Log.d(TAG, "Populated ${fallbackSongs.size} tracks from parseBrowseResponse fallback for $browseId")
+                    fallbackSongs.forEachIndexed { idx, s ->
+                        songsList.add(
+                            com.sonicmusic.app.domain.model.AlbumTrack(
+                                videoId = s.id,
+                                trackNumber = idx + 1,
+                                title = s.title,
+                                durationText = if (s.duration > 0) "%d:%02d".format(s.duration / 60, s.duration % 60) else "0:00",
+                                artists = if (s.artists.isNotEmpty()) s.artists.map { it.name } else listOf(s.artist.ifBlank { headerTitle }),
+                                albumBrowseId = browseId,
+                                albumName = headerTitle,
+                                artistBrowseIds = s.artists.mapNotNull { it.browseId }.ifEmpty { listOfNotNull(s.artistId) },
+                                artistRefs = s.artists
+                            )
+                        )
                     }
                 }
             }
@@ -3971,6 +4023,308 @@ class YouTubeiService @Inject constructor(
     }
 
     /**
+     * Get trending community-curated playlists from YouTube Music.
+     * Uses Innertube SEARCH with CommunityPlaylist filter and regional queries.
+     */
+    suspend fun getTrendingCommunityPlaylists(limit: Int = 20): Result<List<CommunityPlaylist>> = withContext(Dispatchers.IO) {
+        try {
+            val region = getRequestRegion()
+            val language = getLanguageForRegion(region)
+            val queries = getCommunityPlaylistQueriesForRegion(region)
+            val allPlaylists = mutableListOf<CommunityPlaylist>()
+            val seenIds = mutableSetOf<String>()
+
+            for (query in queries) {
+                if (allPlaylists.size >= limit) break
+                try {
+                    val playlists = searchPlaylists(query = query, region = region, language = language)
+                    for (pl in playlists) {
+                        val canonicalId = pl.id.removePrefix("VL")
+                        if (seenIds.add(canonicalId) && pl.title.isNotBlank()) {
+                            allPlaylists.add(pl)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Community playlist query '$query' failed: ${e.message}")
+                }
+            }
+
+            Log.d(TAG, "Got ${allPlaylists.size} community playlists for region $region")
+            Result.success(allPlaylists.take(limit))
+        } catch (e: Exception) {
+            Log.e(TAG, "Trending community playlists fetch failed", e)
+            Result.success(emptyList())
+        }
+    }
+
+    /**
+     * Search YouTube Music for community playlists matching a query string.
+     */
+    private suspend fun searchPlaylists(
+        query: String,
+        region: String,
+        language: String
+    ): List<CommunityPlaylist> {
+        val requestBody = Innertube.webRemixBody(language, region) {
+            put("query", query)
+            put("params", Innertube.SearchFilter.CommunityPlaylist.value)
+        }
+
+        val request = Innertube.musicPost(
+            endpoint = Innertube.SEARCH,
+            body = requestBody,
+            acceptLanguage = getAcceptLanguageHeader(language, region)
+        )
+
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return emptyList()
+
+        val responseBody = response.body?.string() ?: return emptyList()
+        return parsePlaylistSearchResponse(responseBody)
+    }
+
+    /**
+     * Region-tailored search queries to discover popular community playlists.
+     */
+    private fun getCommunityPlaylistQueriesForRegion(regionCode: String): List<String> {
+        val regionSpecific = when (regionCode.uppercase()) {
+            "IN" -> listOf("Top Bollywood playlist", "Trending Hindi playlist", "Punjabi Hits playlist", "Indian pop playlist")
+            "US" -> listOf("Today's Top Hits playlist", "Trending pop playlist", "Hip Hop playlist", "Viral Hits playlist")
+            "GB" -> listOf("UK Top Hits playlist", "Trending British playlist", "UK Pop playlist")
+            "KR" -> listOf("K-Pop playlist", "Trending Korean playlist")
+            "JP" -> listOf("J-Pop playlist", "Anime playlist")
+            "BR" -> listOf("Hits Brasil playlist", "Sertanejo playlist", "Funk Hits playlist")
+            "MX" -> listOf("Éxitos México playlist", "Reggaeton playlist", "Latin Hits playlist")
+            else -> listOf("Top Hits playlist", "Trending playlist", "Popular playlist")
+        }
+        return regionSpecific + listOf("Trending playlist", "Top Hits playlist", "Popular playlist")
+    }
+
+    /**
+     * Parse community playlist items from a YTM search response filtered by CommunityPlaylist type.
+     */
+    private fun parsePlaylistSearchResponse(jsonString: String): List<CommunityPlaylist> {
+        val playlists = mutableListOf<CommunityPlaylist>()
+        try {
+            val json = JSONObject(jsonString)
+            val shelves = mutableListOf<JSONObject>()
+
+            // 1. Continuation format
+            val contShelf = json.optJSONObject("continuationContents")
+                ?.optJSONObject("musicShelfContinuation")
+            if (contShelf != null) {
+                shelves.add(contShelf)
+            }
+
+            // 2. Initial search format (tabbedSearchResultsRenderer)
+            val tabs = json.optJSONObject("contents")
+                ?.optJSONObject("tabbedSearchResultsRenderer")
+                ?.optJSONArray("tabs")
+
+            if (tabs != null) {
+                for (t in 0 until tabs.length()) {
+                    val tabContent = tabs.optJSONObject(t)
+                        ?.optJSONObject("tabRenderer")
+                        ?.optJSONObject("content")
+                        ?.optJSONObject("sectionListRenderer")
+                        ?.optJSONArray("contents")
+                        ?: continue
+
+                    for (s in 0 until tabContent.length()) {
+                        val section = tabContent.optJSONObject(s) ?: continue
+                        val shelf = section.optJSONObject("musicShelfRenderer")
+                        if (shelf != null) shelves.add(shelf)
+                    }
+                }
+            }
+
+            // 3. Direct sectionListRenderer format fallback
+            val directSections = json.optJSONObject("contents")
+                ?.optJSONObject("sectionListRenderer")
+                ?.optJSONArray("contents")
+            if (directSections != null) {
+                for (s in 0 until directSections.length()) {
+                    val shelf = directSections.optJSONObject(s)?.optJSONObject("musicShelfRenderer")
+                    if (shelf != null) shelves.add(shelf)
+                }
+            }
+
+            for (shelf in shelves) {
+                val shelfContents = shelf.optJSONArray("contents") ?: continue
+                for (i in 0 until shelfContents.length()) {
+                    val item = shelfContents.optJSONObject(i) ?: continue
+                    val listItem = item.optJSONObject("musicResponsiveListItemRenderer")
+                        ?: continue
+
+                    val flexColumns = listItem.optJSONArray("flexColumns")
+
+                    // Extract browseId:
+                    var browseId = listItem.optJSONObject("navigationEndpoint")
+                        ?.optJSONObject("browseEndpoint")
+                        ?.optString("browseId", "")
+                        ?: ""
+
+                    if (browseId.isBlank() && flexColumns != null && flexColumns.length() > 0) {
+                        val titleRuns = flexColumns.optJSONObject(0)
+                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                            ?.optJSONObject("text")
+                            ?.optJSONArray("runs")
+                        if (titleRuns != null && titleRuns.length() > 0) {
+                            browseId = titleRuns.optJSONObject(0)
+                                ?.optJSONObject("navigationEndpoint")
+                                ?.optJSONObject("browseEndpoint")
+                                ?.optString("browseId", "")
+                                ?: ""
+                        }
+                    }
+
+                    if (browseId.isBlank()) {
+                        val playNav = listItem.optJSONObject("overlay")
+                            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
+                            ?.optJSONObject("content")
+                            ?.optJSONObject("musicPlayButtonRenderer")
+                            ?.optJSONObject("playNavigationEndpoint")
+                        val plId = playNav?.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId", "")
+                            ?: playNav?.optJSONObject("watchEndpoint")?.optString("playlistId", "")
+                            ?: ""
+                        if (plId.isNotBlank()) {
+                            browseId = if (plId.startsWith("VL")) plId else "VL$plId"
+                        }
+                    }
+
+                    // Extract title
+                    val title = if (flexColumns != null && flexColumns.length() > 0) {
+                        extractText(
+                            flexColumns.optJSONObject(0)
+                                ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                                ?.optJSONObject("text")
+                        )
+                    } else ""
+
+                    if (title.isBlank()) continue
+
+                    // Extract subtitle runs
+                    val subtitleRuns = if (flexColumns != null && flexColumns.length() > 1) {
+                        flexColumns.optJSONObject(1)
+                            ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
+                            ?.optJSONObject("text")
+                            ?.optJSONArray("runs")
+                    } else null
+
+                    var creatorName = ""
+                    var trackCountText: String? = null
+                    var trackCount: Int? = null
+                    var viewCountText: String? = null
+
+                    if (subtitleRuns != null) {
+                        val runTexts = mutableListOf<String>()
+                        for (r in 0 until subtitleRuns.length()) {
+                            val runObj = subtitleRuns.optJSONObject(r) ?: continue
+                            val runText = runObj.optString("text", "").trim()
+                            if (runText.isNotEmpty() && runText != "•") {
+                                runTexts.add(runText)
+                            }
+                            val runBrowseId = runObj.optJSONObject("navigationEndpoint")
+                                ?.optJSONObject("browseEndpoint")
+                                ?.optString("browseId", "")
+                            if (!runBrowseId.isNullOrBlank() && (runBrowseId.startsWith("UC") || runBrowseId.startsWith("FEmusic_library"))) {
+                                if (creatorName.isBlank()) {
+                                    creatorName = runText
+                                }
+                            }
+                        }
+
+                        for (text in runTexts) {
+                            val trackMatch = Regex("""(\d[\d,.]*)\s*(?:songs?|tracks?)""", RegexOption.IGNORE_CASE).find(text)
+                            val viewMatch = Regex("""(\d[\d,.]*\s*[KMBkmb]?\s*(?:views?|plays?))""", RegexOption.IGNORE_CASE).find(text)
+
+                            if (trackMatch != null) {
+                                trackCountText = text
+                                val countNum = trackMatch.groupValues[1].replace(",", "").replace(".", "").toIntOrNull()
+                                if (countNum != null) {
+                                    trackCount = countNum
+                                }
+                            } else if (viewMatch != null && viewCountText == null) {
+                                viewCountText = text
+                            } else if (creatorName.isBlank() && !text.equals("Playlist", ignoreCase = true) && !text.equals("Community Playlist", ignoreCase = true)) {
+                                creatorName = text
+                            }
+                        }
+                    }
+
+                    if (creatorName.isBlank()) {
+                        creatorName = "Community"
+                    }
+
+                    // Extract thumbnail
+                    val thumbnails = listItem.optJSONObject("thumbnail")
+                        ?.optJSONObject("musicThumbnailRenderer")
+                        ?.optJSONObject("thumbnail")
+                        ?.optJSONArray("thumbnails")
+
+                    val thumbnailUrl = extractHighestQualityThumbnail(
+                        thumbnails = thumbnails,
+                        fallback = ""
+                    )
+
+                    val effectiveBrowseId = when {
+                        browseId.isNotBlank() -> if (browseId.startsWith("PL") && !browseId.startsWith("VL")) "VL$browseId" else browseId
+                        else -> ""
+                    }
+
+                    val playlistId = effectiveBrowseId.ifBlank { title }
+
+                    playlists.add(
+                        CommunityPlaylist(
+                            id = playlistId,
+                            title = title,
+                            creator = creatorName,
+                            thumbnailUrl = thumbnailUrl,
+                            trackCount = trackCount,
+                            trackCountText = trackCountText,
+                            browseId = effectiveBrowseId.ifBlank { playlistId },
+                            viewCountText = viewCountText
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing playlist search response", e)
+        }
+        return playlists.distinctBy { it.id }
+    }
+
+    /**
+     * Efficiently fetch up to [limit] preview tracks from a playlist browse response.
+     * Only parses the initial browse page without loading continuation tokens.
+     */
+    suspend fun getPlaylistPreviewTracks(browseId: String, limit: Int = 3): Result<List<Song>> = withContext(Dispatchers.IO) {
+        val rawPlaylistId = browseId.trim()
+        val normalizedBrowseId = if (rawPlaylistId.startsWith("PL") && !rawPlaylistId.startsWith("VL")) "VL$rawPlaylistId" else rawPlaylistId
+        if (normalizedBrowseId.isEmpty()) {
+            return@withContext Result.success(emptyList())
+        }
+
+        try {
+            val rawResult = browseRaw(normalizedBrowseId)
+            if (rawResult.isFailure) {
+                return@withContext Result.success(emptyList())
+            }
+            val browseRaw = rawResult.getOrThrow()
+            val parsedSongs = parseBrowseResponse(browseRaw)
+            val songs = sanitizeSongResults(
+                songs = parsedSongs,
+                limit = limit,
+                offset = 0
+            )
+            Result.success(songs)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get playlist preview tracks for $browseId: ${e.message}")
+            Result.success(emptyList())
+        }
+    }
+
+    /**
      * Load more albums using a continuation token from a previous search.
      */
     suspend fun loadMoreAlbums(continuationToken: String): Result<BrowsePageResult> = withContext(Dispatchers.IO) {
@@ -4674,8 +5028,12 @@ class YouTubeiService @Inject constructor(
     }
 
     suspend fun getEnglishHits(limit: Int = 25): Result<List<Song>> = withContext(Dispatchers.IO) {
-        // Use specific search for English songs with current year
-        searchSongs("top English songs ${currentYear()} trending", limit)
+        val result = searchSongs("top English songs billboard hits", limit)
+        if (result.isSuccess && result.getOrDefault(emptyList()).isNotEmpty()) {
+            result
+        } else {
+            searchSongs("top english songs hits", limit)
+        }
     }
 
     /**

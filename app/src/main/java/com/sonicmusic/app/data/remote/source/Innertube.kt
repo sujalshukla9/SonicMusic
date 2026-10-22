@@ -168,26 +168,6 @@ object Innertube {
         )
     }
 
-    @Deprecated(
-        message = "Do not use generic YouTube Android client identity; use buildYtmContext() instead to avoid leaking non-music content.",
-        replaceWith = ReplaceWith("buildYtmContext(language, region, block)")
-    )
-    fun androidBody(language: String, region: String, block: JSONObject.() -> Unit): JSONObject {
-        return JSONObject().apply {
-            put("context", JSONObject().apply {
-                put("client", JSONObject().apply {
-                    put("clientName", "ANDROID")
-                    put("clientVersion", ANDROID_CLIENT_VERSION)
-                    put("androidSdkVersion", 34)
-                    put("hl", language)
-                    put("gl", region)
-                    put("platform", "MOBILE")
-                })
-            })
-            block()
-        }
-    }
-
     fun musicPost(
         endpoint: String,
         body: JSONObject,

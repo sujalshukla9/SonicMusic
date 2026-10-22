@@ -17,6 +17,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import com.sonicmusic.app.theme.pressScale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -207,6 +209,12 @@ fun ClassicPlayerControls(
         Spacer(modifier = Modifier.height(spacingHeight))
 
         // Control Buttons Row
+        val likeInteractionSource = remember { MutableInteractionSource() }
+        val prevInteractionSource = remember { MutableInteractionSource() }
+        val playInteractionSource = remember { MutableInteractionSource() }
+        val nextInteractionSource = remember { MutableInteractionSource() }
+        val repeatInteractionSource = remember { MutableInteractionSource() }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -217,7 +225,10 @@ fun ClassicPlayerControls(
             // Like — AnimatedContent so the heart pops in with a spring scale
             IconButton(
                 onClick = onToggleLike,
-                modifier = Modifier.size(secondaryBtnSize)
+                interactionSource = likeInteractionSource,
+                modifier = Modifier
+                    .size(secondaryBtnSize)
+                    .pressScale(likeInteractionSource, targetScale = 0.92f)
             ) {
                 AnimatedContent(
                     targetState = isLiked,
@@ -250,7 +261,10 @@ fun ClassicPlayerControls(
             FilledIconButton(
                 onClick = { actions.onSkipPrevious() },
                 enabled = state.canSkipPrevious,
-                modifier = Modifier.size(skipBtnSize),
+                interactionSource = prevInteractionSource,
+                modifier = Modifier
+                    .size(skipBtnSize)
+                    .pressScale(prevInteractionSource, targetScale = 0.94f),
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = accentColor.copy(alpha = 0.2f),
@@ -270,7 +284,10 @@ fun ClassicPlayerControls(
             Box(modifier = Modifier.size(playBtnSize), contentAlignment = Alignment.Center) {
                 FilledIconButton(
                     onClick = { actions.onPlayPause() },
-                    modifier = Modifier.size(playBtnSize),
+                    interactionSource = playInteractionSource,
+                    modifier = Modifier
+                        .size(playBtnSize)
+                        .pressScale(playInteractionSource, targetScale = 0.94f),
                     shape = CircleShape,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = accentColor,
@@ -310,7 +327,10 @@ fun ClassicPlayerControls(
             FilledIconButton(
                 onClick = { actions.onSkipNext() },
                 enabled = state.canSkipNext,
-                modifier = Modifier.size(skipBtnSize),
+                interactionSource = nextInteractionSource,
+                modifier = Modifier
+                    .size(skipBtnSize)
+                    .pressScale(nextInteractionSource, targetScale = 0.94f),
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = accentColor.copy(alpha = 0.2f),
@@ -329,26 +349,48 @@ fun ClassicPlayerControls(
             // Repeat — contentDescription describes current state for TalkBack
             IconButton(
                 onClick = onToggleRepeat,
-                modifier = Modifier.size(secondaryBtnSize)
+                interactionSource = repeatInteractionSource,
+                modifier = Modifier
+                    .size(secondaryBtnSize)
+                    .pressScale(repeatInteractionSource, targetScale = 0.92f)
             ) {
-                Icon(
-                    imageVector = when (repeatMode) {
-                        Player.REPEAT_MODE_ONE -> Icons.Filled.RepeatOne
-                        Player.REPEAT_MODE_ALL -> Icons.Filled.Repeat
-                        else -> Icons.Outlined.Repeat
+                AnimatedContent(
+                    targetState = repeatMode,
+                    transitionSpec = {
+                        (fadeIn(animationSpec = tween(150, delayMillis = 30)) +
+                                scaleIn(
+                                    initialScale = 0.75f,
+                                    animationSpec = spring(
+                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
+                                    )
+                                ))
+                            .togetherWith(
+                                fadeOut(animationSpec = tween(70)) +
+                                        scaleOut(targetScale = 0.75f, animationSpec = tween(70))
+                            )
                     },
-                    contentDescription = when (repeatMode) {
-                        Player.REPEAT_MODE_ONE -> "Repeat one — tap to turn off"
-                        Player.REPEAT_MODE_ALL -> "Repeat all — tap to repeat one"
-                        else -> "Repeat off — tap to repeat all"
-                    },
-                    modifier = Modifier.size(secondaryIconSize),
-                    tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
-                        accentColor
-                    } else {
-                        colorScheme.onSurfaceVariant
-                    }
-                )
+                    label = "repeat_icon_morph"
+                ) { mode ->
+                    Icon(
+                        imageVector = when (mode) {
+                            Player.REPEAT_MODE_ONE -> Icons.Filled.RepeatOne
+                            Player.REPEAT_MODE_ALL -> Icons.Filled.Repeat
+                            else -> Icons.Outlined.Repeat
+                        },
+                        contentDescription = when (mode) {
+                            Player.REPEAT_MODE_ONE -> "Repeat one — tap to turn off"
+                            Player.REPEAT_MODE_ALL -> "Repeat all — tap to repeat one"
+                            else -> "Repeat off — tap to repeat all"
+                        },
+                        modifier = Modifier.size(secondaryIconSize),
+                        tint = if (mode != Player.REPEAT_MODE_OFF) {
+                            accentColor
+                        } else {
+                            colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
             }
         }
     }

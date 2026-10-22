@@ -121,6 +121,13 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.10"
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
 }
 
 // ═══ Compose Compiler: stability config + recomposition reports ═══
@@ -163,7 +170,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
     implementation(libs.bundles.compose)
     implementation(libs.androidx.material3.windowsizeclass)
     

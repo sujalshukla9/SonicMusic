@@ -19,6 +19,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -41,6 +42,10 @@ import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.player.audio.AudioEngine
+import com.sonicmusic.app.features.player.audio.PlaybackDiagnostics
+import com.sonicmusic.app.features.player.audio.PlaybackStatus
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.DecoderReuseEvaluation
 
 import com.sonicmusic.app.features.player.notification.MediaNotificationProvider
 
@@ -52,6 +57,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -80,6 +87,9 @@ class PlaybackService : MediaSessionService() {
     
     @Inject
     lateinit var audioEngine: AudioEngine
+
+    @Inject
+    lateinit var playbackDiagnostics: PlaybackDiagnostics
 
 
 
@@ -134,11 +144,9 @@ class PlaybackService : MediaSessionService() {
     private var skipSilenceJob: Job? = null
     private var gaplessPlaybackJob: Job? = null
     private var crossfadeSettingsJob: Job? = null
+    private var spatialAudioSettingsJob: Job? = null
     private var crossfadeMonitorJob: Job? = null
-    private var crossfadeTransitionJob: Job? = null
-    private var crossfadeEnabled: Boolean = false
-    private var crossfadeDurationMs: Long = 0L
-    private var isCrossfadeTransitionRunning: Boolean = false
+    private var crossfadeEngine: CrossfadeEngine? = null
     
     // Telemetry tracking state
     private var lastHistoryMediaItem: MediaItem? = null
@@ -243,10 +251,12 @@ class PlaybackService : MediaSessionService() {
 
         p1.setAudioSessionId(sharedAudioSessionId)
         p1.addListener(createPlayerListener(p1))
+        p1.addAnalyticsListener(createAnalyticsListener(p1))
         player1 = p1
 
         p2.setAudioSessionId(sharedAudioSessionId)
         p2.addListener(createPlayerListener(p2))
+        p2.addAnalyticsListener(createAnalyticsListener(p2))
         player2 = p2
 
         player = player1
@@ -264,7 +274,18 @@ class PlaybackService : MediaSessionService() {
                 .build()
         }
 
-        Log.d(TAG, "Dual players initialized with shared audioSessionId: $sharedAudioSessionId")
+        crossfadeEngine = CrossfadeEngine(
+            scope = serviceScope,
+            player1 = p1,
+            player2 = p2,
+            mediaSessionProvider = { mediaSession },
+            onPlayerSwapped = { newActivePlayer ->
+                player = newActivePlayer
+                Log.d(TAG, "Active player swapped by CrossfadeEngine to: ${if (newActivePlayer == player1) "player1" else "player2"}")
+            }
+        )
+
+        Log.d(TAG, "Dual players and CrossfadeEngine initialized with shared audioSessionId: $sharedAudioSessionId")
     }
 
     private fun buildMediaSourceFactory(): DefaultMediaSourceFactory {
@@ -277,8 +298,6 @@ class PlaybackService : MediaSessionService() {
                 mapOf(
                     "Accept" to "*/*",
                     "Accept-Language" to "en-US,en;q=0.9",
-                    "Origin" to "https://www.youtube.com",
-                    "Referer" to "https://www.youtube.com/",
                 ),
             )
 
@@ -299,6 +318,7 @@ class PlaybackService : MediaSessionService() {
         skipSilenceJob?.cancel()
         gaplessPlaybackJob?.cancel()
         crossfadeSettingsJob?.cancel()
+        spatialAudioSettingsJob?.cancel()
 
         skipSilenceJob = serviceScope.launch {
             settingsDataStore.skipSilence.collect { enabled ->
@@ -322,55 +342,82 @@ class PlaybackService : MediaSessionService() {
         crossfadeSettingsJob = serviceScope.launch {
             settingsDataStore.crossfadeDuration.collect { seconds ->
                 val safeSeconds = seconds.coerceIn(0, 12)
-                crossfadeEnabled = safeSeconds > 0
-                crossfadeDurationMs = if (crossfadeEnabled) {
-                    (safeSeconds * 1000L).coerceIn(1000L, 12000L)
-                } else {
-                    0L
+                val durationMs = if (safeSeconds > 0) safeSeconds * 1000L else 0L
+                crossfadeEngine?.setDurationMs(durationMs)
+
+                if (durationMs <= 0L) {
+                    stopCrossfadeMonitor()
+                    if (crossfadeEngine?.isCrossfading != true) {
+                        player?.volume = 1f
+                    }
+                } else if (player?.isPlaying == true) {
+                    startCrossfadeMonitor()
                 }
 
-                if (!crossfadeEnabled && !isCrossfadeTransitionRunning) {
-                    player?.volume = 1f
-                }
-                Log.d(
-                    TAG,
-                    if (crossfadeEnabled) {
-                        "Crossfade enabled: ${crossfadeDurationMs}ms"
-                    } else {
-                        "Crossfade disabled"
-                    }
-                )
+                Log.d(TAG, "Crossfade setting updated: ${durationMs}ms (enabled=${durationMs > 0L})")
             }
         }
 
-        // (Native Engine logic removed)
+        spatialAudioSettingsJob = serviceScope.launch {
+            audioEngine.audioEngineState
+                .map { it.spatialAudioEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    val behavior = if (enabled) {
+                        C.SPATIALIZATION_BEHAVIOR_AUTO
+                    } else {
+                        C.SPATIALIZATION_BEHAVIOR_NEVER
+                    }
+                    val attrs = AudioAttributes.Builder()
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                        .setUsage(C.USAGE_MEDIA)
+                        .setAllowedCapturePolicy(C.ALLOW_CAPTURE_BY_ALL)
+                        .setSpatializationBehavior(behavior)
+                        .build()
+                    player1?.setAudioAttributes(attrs, true)
+                    player2?.setAudioAttributes(attrs, true)
+                    Log.d(TAG, "ExoPlayer spatialization behavior updated: $behavior (enabled=$enabled)")
+                }
+        }
     }
 
     private fun startCrossfadeMonitor() {
-        if (crossfadeMonitorJob?.isActive == true) return
+        val engine = crossfadeEngine ?: return
+        if (!engine.isEnabled) {
+            stopCrossfadeMonitor()
+            return
+        }
+        val currentPlayer = player ?: return
+        if (!currentPlayer.isPlaying) {
+            return
+        }
 
+        crossfadeMonitorJob?.cancel()
         crossfadeMonitorJob = serviceScope.launch(Dispatchers.Main) {
             while (isActive) {
-                val currentPlayer = player
-                if (
-                    currentPlayer != null &&
-                    crossfadeEnabled &&
-                    !isCrossfadeTransitionRunning &&
-                    currentPlayer.isPlaying &&
-                    currentPlayer.hasNextMediaItem()
-                ) {
-                    val duration = currentPlayer.duration
-                    val position = currentPlayer.currentPosition
-
-                    if (duration > 0 && duration != C.TIME_UNSET) {
-                        val remaining = duration - position
-                        if (remaining in 1..crossfadeDurationMs) {
-                            runCrossfadeTransition(currentPlayer, crossfadeDurationMs)
-                        }
-                    }
+                val active = player
+                val cEngine = crossfadeEngine
+                if (active == null || cEngine == null || !cEngine.isEnabled || !active.isPlaying) {
+                    break
                 }
 
-                delay(180)
+                val duration = active.duration
+                val position = active.currentPosition
+
+                if (duration > 0L && duration != C.TIME_UNSET) {
+                    cEngine.onPositionUpdate(position, duration)
+
+                    val remaining = duration - position
+                    val nextDelay = when {
+                        remaining > 30_000L -> 5_000L
+                        remaining > 15_000L -> 2_000L
+                        remaining > 6_000L -> 500L
+                        else -> 150L
+                    }
+                    delay(nextDelay)
+                } else {
+                    delay(1000L)
+                }
             }
         }
     }
@@ -378,67 +425,6 @@ class PlaybackService : MediaSessionService() {
     private fun stopCrossfadeMonitor() {
         crossfadeMonitorJob?.cancel()
         crossfadeMonitorJob = null
-        crossfadeTransitionJob?.cancel()
-        crossfadeTransitionJob = null
-        isCrossfadeTransitionRunning = false
-        player?.volume = 1f
-    }
-
-    private fun runCrossfadeTransition(currentPlayer: ExoPlayer, durationMs: Long) {
-        if (isCrossfadeTransitionRunning) return
-
-        val nextPlayer = if (currentPlayer == player1) player2 else player1
-        if (nextPlayer == null) return
-
-        if (currentPlayer.mediaItemCount <= 1) {
-            Log.d(TAG, "No next media item found in currentPlayer playlist to crossfade to.")
-            return
-        }
-
-        // Extract all remaining media items from currentPlayer starting at index 1 to preserve queue
-        val remainingMediaItems = (1 until currentPlayer.mediaItemCount).map { index ->
-            currentPlayer.getMediaItemAt(index)
-        }
-
-        crossfadeTransitionJob?.cancel()
-        crossfadeTransitionJob = serviceScope.launch {
-            isCrossfadeTransitionRunning = true
-            Log.d(TAG, "Starting true overlapping crossfade over ${durationMs}ms with ${remainingMediaItems.size} remaining items...")
-
-            // 1. Prepare and start nextPlayer at 0 volume with all remaining queue items
-            nextPlayer.volume = 0f
-            nextPlayer.setMediaItems(remainingMediaItems, 0, 0L)
-            nextPlayer.prepare()
-            nextPlayer.play()
-
-            // 2. Switch mediaSession's player to nextPlayer
-            mediaSession?.setPlayer(nextPlayer)
-            player = nextPlayer // Keep player reference pointing to active player
-
-            // 3. Simultaneously fade out currentPlayer and fade in nextPlayer
-            val steps = 20
-            val stepDelay = (durationMs / steps).coerceAtLeast(16L)
-
-            try {
-                for (step in 1..steps) {
-                    val progress = step.toFloat() / steps.toFloat()
-                    currentPlayer.volume = 1f - progress
-                    nextPlayer.volume = progress
-                    delay(stepDelay)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error during crossfade step delay", e)
-            } finally {
-                // Ensure target volumes are set correctly
-                currentPlayer.volume = 0f
-                currentPlayer.stop()
-                currentPlayer.clearMediaItems()
-                
-                nextPlayer.volume = 1f
-                isCrossfadeTransitionRunning = false
-                Log.d(TAG, "Crossfade transition completed.")
-            }
-        }
     }
     
 
@@ -470,11 +456,17 @@ class PlaybackService : MediaSessionService() {
             val now = System.currentTimeMillis()
             if (isPlaying) {
                 currentPlaySessionStartTimeMs = now
+                playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.PLAYING)
                 startCrossfadeMonitor()
             } else {
                 if (currentPlaySessionStartTimeMs > 0) {
                     accumulatedPlayDurationMs += (now - currentPlaySessionStartTimeMs)
                     currentPlaySessionStartTimeMs = 0
+                }
+                if (targetPlayer.playbackState == Player.STATE_BUFFERING) {
+                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.BUFFERING)
+                } else {
+                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
                 }
                 stopCrossfadeMonitor()
             }
@@ -484,7 +476,7 @@ class PlaybackService : MediaSessionService() {
             if (targetPlayer != player) return
             Log.d(TAG, "Track changed: ${mediaItem?.mediaMetadata?.title}")
 
-            if (!isCrossfadeTransitionRunning) {
+            if (crossfadeEngine?.isCrossfading != true) {
                 targetPlayer.volume = 1f
             }
             
@@ -552,6 +544,19 @@ class PlaybackService : MediaSessionService() {
                     mediaSession?.setCustomLayout(updateCustomLayout(isLiked, currentRepeatMode))
                 }
             }
+
+            if (targetPlayer.isPlaying) {
+                startCrossfadeMonitor()
+            }
+        }
+
+        override fun onTracksChanged(tracks: Tracks) {
+            if (targetPlayer != player) return
+            val format = targetPlayer.audioFormat ?: return
+            val mediaId = targetPlayer.currentMediaItem?.mediaId
+            Log.d(TAG, "ExoPlayer tracks changed: song=$mediaId, mime=${format.sampleMimeType}, sr=${format.sampleRate}, ch=${format.channelCount}, br=${format.bitrate}")
+            playbackDiagnostics.onPlayingFormatChanged(format)
+            audioEngine.updateFromExoPlayerFormat(format, mediaId)
         }
         
         override fun onPlaybackStateChanged(playbackState: Int) {
@@ -561,16 +566,42 @@ class PlaybackService : MediaSessionService() {
                     // Reset retry counter on successful playback
                     retryAttempts = 0
                     lastErrorCode = 0
+                    if (targetPlayer.isPlaying) {
+                        playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.PLAYING)
+                        startCrossfadeMonitor()
+                    } else {
+                        playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
+                    }
                 }
                 Player.STATE_ENDED -> {
                     Log.d(TAG, "Playback ended")
                     retryAttempts = 0
+                    stopCrossfadeMonitor()
+                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
                 }
                 Player.STATE_IDLE -> {
                     /* Player is idle */
                     retryAttempts = 0
+                    stopCrossfadeMonitor()
+                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
                 }
-                Player.STATE_BUFFERING -> { /* Buffering in progress */ }
+                Player.STATE_BUFFERING -> {
+                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.BUFFERING)
+                }
+            }
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            if (targetPlayer != player) return
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                crossfadeEngine?.onUserSeek()
+            }
+            if (targetPlayer.isPlaying) {
+                startCrossfadeMonitor()
             }
         }
         
@@ -599,7 +630,37 @@ class PlaybackService : MediaSessionService() {
         override fun onPlayerError(error: PlaybackException) {
             if (targetPlayer != player) return
             Log.e(TAG, "Player error: ${error.message}", error)
+            playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.ERROR, error.message)
             handlePlaybackError(error)
+        }
+    }
+
+    private fun createAnalyticsListener(targetPlayer: ExoPlayer): AnalyticsListener {
+        return object : AnalyticsListener {
+            override fun onAudioDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long
+            ) {
+                if (targetPlayer == player) {
+                    Log.d(TAG, "Audio decoder initialized: $decoderName")
+                    playbackDiagnostics.onDecoderInitialized(decoderName)
+                }
+            }
+
+            override fun onAudioInputFormatChanged(
+                eventTime: AnalyticsListener.EventTime,
+                format: androidx.media3.common.Format,
+                decoderReuseEvaluation: DecoderReuseEvaluation?
+            ) {
+                if (targetPlayer == player) {
+                    val mediaId = targetPlayer.currentMediaItem?.mediaId
+                    Log.d(TAG, "Audio input format changed: song=$mediaId, format=$format")
+                    playbackDiagnostics.onPlayingFormatChanged(format)
+                    audioEngine.updateFromExoPlayerFormat(format, mediaId)
+                }
+            }
         }
     }
     
@@ -618,7 +679,7 @@ class PlaybackService : MediaSessionService() {
 
         lastErrorCode = error.errorCode
 
-        if (isNetworkError) {
+        if (isNetworkError && !isNetworkAvailable()) {
             val mediaItem = p.currentMediaItem
             if (mediaItem != null) {
                 val videoId = mediaItem.mediaId
@@ -642,13 +703,10 @@ class PlaybackService : MediaSessionService() {
                         p.pause()
                     }
                 }
-                return
+            } else {
+                Log.d(TAG, "Network unavailable, skipping auto-retry")
+                retryAttempts = 0
             }
-        }
-
-        if (isNetworkError && !isNetworkAvailable()) {
-            Log.d(TAG, "Network unavailable, skipping auto-retry")
-            retryAttempts = 0
             return
         }
 
@@ -745,19 +803,29 @@ class PlaybackService : MediaSessionService() {
         super.onStartCommand(intent, flags, startId)
         
         when (intent?.action) {
-            ACTION_PLAY -> player?.play()
-            ACTION_PAUSE -> player?.pause()
+            ACTION_PLAY -> {
+                crossfadeEngine?.onUserResume() ?: player?.play()
+            }
+            ACTION_PAUSE -> {
+                crossfadeEngine?.onUserPause() ?: player?.pause()
+            }
             ACTION_NEXT -> {
-                player?.let { p ->
-                    if (p.hasNextMediaItem()) p.seekToNext()
+                val handled = crossfadeEngine?.onUserSkip() ?: false
+                if (!handled) {
+                    player?.let { p ->
+                        if (p.hasNextMediaItem()) p.seekToNext()
+                    }
                 }
             }
             ACTION_PREVIOUS -> {
-                player?.let { p ->
-                    if (p.currentPosition > 3000) {
-                        p.seekTo(0)
-                    } else if (p.hasPreviousMediaItem()) {
-                        p.seekToPrevious()
+                val handled = crossfadeEngine?.onUserPrevious() ?: false
+                if (!handled) {
+                    player?.let { p ->
+                        if (p.currentPosition > 3000) {
+                            p.seekTo(0)
+                        } else if (p.hasPreviousMediaItem()) {
+                            p.seekToPrevious()
+                        }
                     }
                 }
             }
@@ -794,21 +862,7 @@ class PlaybackService : MediaSessionService() {
     
     override fun onTaskRemoved(rootIntent: Intent?) {
         android.util.Log.d(TAG, "onTaskRemoved — swiped away, stopping playback and service")
-        
         super.onTaskRemoved(rootIntent)
-        
-        // Stop and release players
-        player1?.stop()
-        player2?.stop()
-        player1?.release()
-        player2?.release()
-        player1 = null
-        player2 = null
-        player = null
-        
-        // Release MediaSession
-        mediaSession?.release()
-        mediaSession = null
         
         // Stop foreground
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -818,11 +872,9 @@ class PlaybackService : MediaSessionService() {
             stopForeground(true)
         }
         
-        // Stop service
+        // Stop service gracefully. System will invoke onDestroy() which releases
+        // players, media session, audio engine, notification provider, and coroutine scopes safely.
         stopSelf()
-        
-        // Terminate the app process immediately
-        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     override fun onDestroy() {
@@ -831,8 +883,12 @@ class PlaybackService : MediaSessionService() {
         gaplessPlaybackJob?.cancel()
         crossfadeSettingsJob?.cancel()
         stopCrossfadeMonitor()
+        crossfadeEngine?.release()
+        crossfadeEngine = null
         serviceScope.cancel()
         mediaNotificationProvider?.release()
+        player1?.stop()
+        player2?.stop()
         player1?.release()
         player2?.release()
         player1 = null

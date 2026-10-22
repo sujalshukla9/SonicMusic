@@ -153,8 +153,9 @@ fun AlbumDetailScreen(
                                         .padding(48.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
+                                    val isPlaylist = details.albumType?.contains("playlist", ignoreCase = true) == true || details.browseId.contains("PL")
                                     Text(
-                                        text = "No tracks found for this album.",
+                                        text = if (isPlaylist) "No tracks found for this playlist." else "No tracks found for this album.",
                                         style = MaterialTheme.typography.bodyLarge,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

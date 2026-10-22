@@ -161,19 +161,32 @@ fun GlobalSongActionSheetHost(
     if (showSongDetailsSheet && subSong != null) {
         val currentPlayingSong by viewModel.currentPlayingSong.collectAsStateWithLifecycle(initialValue = null)
         val audioCap by viewModel.audioCapabilityDetector.capability.collectAsStateWithLifecycle()
+        val currentStreamInfo by viewModel.currentStreamInfo.collectAsStateWithLifecycle(initialValue = null)
+        val audioQualityUiState by viewModel.audioQualityUiState.collectAsStateWithLifecycle(initialValue = null)
+        val songStreamInfo by viewModel.getStreamInfoForSong(subSong.id).collectAsStateWithLifecycle(initialValue = null)
+        val downloadedFileSize by viewModel.getDownloadedFileSize(subSong.id).collectAsStateWithLifecycle(initialValue = null)
+
+        val isCurrentPlaying = currentPlayingSong?.id == subSong.id
+        val effectiveStreamInfo = if (isCurrentPlaying) {
+            currentStreamInfo ?: songStreamInfo
+        } else {
+            songStreamInfo
+        }
+        val effectiveAudioQualityUiState = if (isCurrentPlaying) audioQualityUiState else null
 
         SongDetailsSheet(
             isVisible = showSongDetailsSheet,
             song = subSong,
-            streamInfo = null,
-            downloadedFileSizeBytes = null,
+            streamInfo = effectiveStreamInfo,
+            downloadedFileSizeBytes = downloadedFileSize,
             durationMs = (subSong.duration * 1000L).coerceAtLeast(0L),
             onDismiss = {
                 showSongDetailsSheet = false
                 controller.dismiss()
             },
             audioCapability = audioCap,
-            isPlaying = currentPlayingSong?.id == subSong.id
+            isPlaying = isCurrentPlaying,
+            audioQualityUiState = effectiveAudioQualityUiState
         )
     }
 }

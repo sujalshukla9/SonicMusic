@@ -15,6 +15,8 @@ import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.material3.ripple
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MotionScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -27,11 +29,18 @@ import androidx.compose.ui.platform.LocalContext
  * Ensures consistent durations, physics-based springs, and natural bezier curves across the app.
  */
 object MotionTokens {
+    // Official Material 3 Expressive and Standard Motion Schemes
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+    val expressiveMotionScheme: MotionScheme = MotionScheme.expressive()
+
+    @OptIn(ExperimentalMaterial3ExpressiveApi::class)
+    val standardMotionScheme: MotionScheme = MotionScheme.standard()
+
     // Standardized duration tokens
     const val DurationFast = 150       // Controls, toggles, icon morphs (100–180ms)
     const val DurationStandard = 280   // Cards, sheets, dialogs, player controls (200–350ms)
     const val DurationLarge = 400      // Full player, bottom sheets, navigation transitions (350–500ms)
-    const val DurationTheme = 600      // Dynamic theme color extraction interpolation (500–800ms)
+    const val DurationTheme = 800      // Dynamic theme color extraction interpolation (~800ms)
 
     // Material 3 Emphasized & Natural Easing curves
     val EmphasizedEasing = CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)
@@ -67,30 +76,33 @@ object MotionTokens {
  * album art morphing) while keeping **functional** transitions (screen navigation,
  * state changes) intact — per M3 accessibility guidance.
  */
+fun isReducedMotion(context: android.content.Context): Boolean {
+    val animatorScale = try {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f
+        )
+    } catch (_: Exception) {
+        1f
+    }
+    val transitionScale = try {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.TRANSITION_ANIMATION_SCALE,
+            1f
+        )
+    } catch (_: Exception) {
+        1f
+    }
+    return animatorScale == 0f || transitionScale == 0f
+}
+
 @Composable
 fun shouldReduceMotion(): Boolean {
     val context = LocalContext.current
     return remember(context) {
-        val animatorScale = try {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            )
-        } catch (_: Exception) {
-            1f
-        }
-        val transitionScale = try {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.TRANSITION_ANIMATION_SCALE,
-                1f
-            )
-        } catch (_: Exception) {
-            1f
-        }
-        // User has disabled animations if either scale is 0
-        animatorScale == 0f || transitionScale == 0f
+        isReducedMotion(context)
     }
 }
 

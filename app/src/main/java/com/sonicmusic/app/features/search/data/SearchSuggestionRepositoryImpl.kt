@@ -27,10 +27,11 @@ import javax.inject.Singleton
 @Singleton
 class SearchSuggestionRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val settingsDataStore: SettingsDataStore
+    private val settingsDataStore: SettingsDataStore,
+    private val okHttpClient: OkHttpClient
 ) : SearchSuggestionRepository {
 
-    private val client = OkHttpClient.Builder()
+    private val client = okHttpClient.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
@@ -258,12 +259,12 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
     private suspend fun getRequestRegion(): String {
         val stored = settingsDataStore.countryCode.first()?.trim()?.uppercase()
         if (!stored.isNullOrEmpty() && stored.length == 2 && stored.all { it.isLetter() }) {
-            return if (stored == "UK") " GB" else stored
+            return if (stored == "UK") "GB" else stored
         }
         return "US"
     }
 
-    private fun getLanguageForRegion(region: String): String = "en"
+    private fun getLanguageForRegion(@Suppress("UNUSED_PARAMETER") region: String): String = "en"
 
     private fun getAcceptLanguageHeader(language: String, region: String): String {
         return "$language-$region,$language;q=0.9,en;q=0.8"

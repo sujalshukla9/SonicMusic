@@ -37,6 +37,7 @@ import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
+import com.sonicmusic.app.domain.model.NavbarStyle
 import com.sonicmusic.app.theme.LocalThumbnailShape
 import com.sonicmusic.app.theme.toComposeShape
 import com.sonicmusic.app.theme.Dimens
@@ -137,6 +138,7 @@ fun SettingsScreen(
     val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsStateWithLifecycle()
     val thumbnailShape by viewModel.thumbnailShape.collectAsStateWithLifecycle()
     val playerControlStyle by viewModel.playerControlStyle.collectAsStateWithLifecycle()
+    val navbarStyle by viewModel.navbarStyle.collectAsStateWithLifecycle()
     val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle()
     
     // Playback States
@@ -146,7 +148,7 @@ fun SettingsScreen(
     val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
     val autoQueueSimilar by viewModel.autoQueueSimilar.collectAsStateWithLifecycle()
     val spatialAudioEnabled by viewModel.spatialAudioEnabled.collectAsStateWithLifecycle()
-    val spatialStrength by viewModel.spatialStrength.collectAsStateWithLifecycle()
+    val audioCapability by viewModel.audioCapability.collectAsStateWithLifecycle()
     
     
     // Cache States
@@ -166,6 +168,7 @@ fun SettingsScreen(
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0),
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
@@ -184,7 +187,11 @@ fun SettingsScreen(
                     }
                 },
                 scrollBehavior = scrollBehavior,
-                windowInsets = WindowInsets.statusBars
+                windowInsets = WindowInsets.statusBars,
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f)
+                )
             )
         }
     ) { paddingValues ->
@@ -312,6 +319,38 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f)
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Navigation Bar Style",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        NavbarStyleCard(
+                            title = "Modern",
+                            subtitle = "Floating pill with circular player",
+                            style = NavbarStyle.MODERN,
+                            isSelected = navbarStyle == NavbarStyle.MODERN,
+                            onClick = { viewModel.setNavbarStyle(NavbarStyle.MODERN) },
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        NavbarStyleCard(
+                            title = "Classical",
+                            subtitle = "Docked bar with mini player strip",
+                            style = NavbarStyle.CLASSICAL,
+                            isSelected = navbarStyle == NavbarStyle.CLASSICAL,
+                            onClick = { viewModel.setNavbarStyle(NavbarStyle.CLASSICAL) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
 
@@ -337,14 +376,25 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setGaplessPlayback(it) }
                     )
                     SettingsDivider()
-                    SettingsSliderItem(
-                        title = "Crossfade Duration",
-                        value = crossfadeDuration.toFloat(),
-                        onValueChange = { viewModel.setCrossfadeDuration(it.toInt()) },
-                        valueRange = 0f..12f,
-                        steps = 12,
-                        valueText = if (crossfadeDuration > 0) "${crossfadeDuration}s" else " Disabled"
+                    SettingsSwitchItem(
+                        title = "Audio Crossfade",
+                        subtitle = if (crossfadeDuration > 0) "Seamless overlapping playback (${crossfadeDuration}s)" else "Overlap playback between consecutive songs",
+                        icon = Icons.Rounded.GraphicEq,
+                        checked = crossfadeDuration > 0,
+                        onCheckedChange = { enabled ->
+                            viewModel.setCrossfadeDuration(if (enabled) 5 else 0)
+                        }
                     )
+                    if (crossfadeDuration > 0) {
+                        SettingsSliderItem(
+                            title = "Crossfade Duration",
+                            value = crossfadeDuration.toFloat(),
+                            onValueChange = { viewModel.setCrossfadeDuration(it.toInt().coerceIn(1, 12)) },
+                            valueRange = 1f..12f,
+                            steps = 10,
+                            valueText = "${crossfadeDuration}s"
+                        )
+                    }
                     SettingsDivider()
                     SettingsSwitchItem(
                         title = "Skip Silence",
@@ -353,23 +403,21 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setSkipSilence(it) }
                     )
                     SettingsDivider()
+                    val spatialSubtitle = when {
+                        !spatialAudioEnabled -> null
+                        audioCapability.osSpatialProcessingActive ->
+                            "System Spatializer active on ${audioCapability.currentOutputRouteName}"
+                        audioCapability.hasSpatializer && audioCapability.headTrackingAvailable ->
+                            "Spatial Audio active with head tracking support"
+                        else -> null
+                    }
                     SettingsSwitchItem(
-                        title = "Spatial Sound",
-                        subtitle = "Immersive 3D virtual surround sound and widened soundstage",
+                        title = "Spatial Audio",
+                        subtitle = spatialSubtitle,
+                        icon = Icons.Rounded.SurroundSound,
                         checked = spatialAudioEnabled,
                         onCheckedChange = { viewModel.setSpatialAudio(it) }
                     )
-                    if (spatialAudioEnabled) {
-                        SettingsDivider()
-                        SettingsSliderItem(
-                            title = "Spatial Immersion",
-                            value = (spatialStrength / 10).toFloat(),
-                            onValueChange = { viewModel.setSpatialStrength((it * 10).toInt()) },
-                            valueRange = 10f..100f,
-                            steps = 8,
-                            valueText = "${spatialStrength / 10}%"
-                        )
-                    }
                     SettingsDivider()
                     SettingsActionItem(
                         title = "Device Equalizer",
@@ -539,7 +587,7 @@ fun SettingsScreen(
     if (activeSheet != SettingsSheet.None) {
         ModalBottomSheet(
             onDismissRequest = { activeSheet = SettingsSheet.None },
-            containerColor = colorScheme.surface,
+            containerColor = colorScheme.surfaceContainerHigh,
             tonalElevation = 0.dp
         ) {
             var previewShape by remember(thumbnailShape) { mutableStateOf(thumbnailShape) }
@@ -619,16 +667,23 @@ fun SettingsScreen(
                                 AlbumArtThumbnail(
                                     imageUrl = currentSong?.thumbnailUrl,
                                     shape = previewShape,
-                                    modifier = Modifier
-                                        .size(160.dp)
-                                        .shadow(12.dp, previewShape.toComposeShape()),
+                                    modifier = Modifier.size(160.dp),
+                                    shadowElevation = 8.dp,
                                     highQuality = true
                                 )
                             } else {
+                                val previewShadowShape = when (previewShape) {
+                                    ThumbnailShape.CIRCLE -> androidx.compose.foundation.shape.CircleShape
+                                    ThumbnailShape.SQUARE -> androidx.compose.foundation.shape.RoundedCornerShape(0.dp)
+                                    ThumbnailShape.ROUNDED_SQUARE -> androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+                                    ThumbnailShape.ARCH -> com.sonicmusic.app.theme.ArchShape
+                                    ThumbnailShape.PILL -> com.sonicmusic.app.theme.PillShape
+                                    else -> androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+                                }
                                 Box(
                                     modifier = Modifier
                                         .size(160.dp)
-                                        .shadow(12.dp, previewShape.toComposeShape())
+                                        .shadow(8.dp, previewShadowShape)
                                         .clip(previewShape.toComposeShape())
                                         .background(
                                             Brush.linearGradient(
@@ -763,9 +818,19 @@ private fun SettingsSwitchItem(
     subtitle: String? = null,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    icon: ImageVector? = null,
     modifier: Modifier = Modifier
 ) {
     ListItem(
+        leadingContent = icon?.let {
+            {
+                Icon(
+                    imageVector = it,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
         supportingContent = subtitle?.let { { Text(it) } },
         trailingContent = {
@@ -1085,6 +1150,205 @@ private fun PlayerControlStyleCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun NavbarStyleCard(
+    title: String,
+    subtitle: String,
+    style: NavbarStyle,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val borderStroke = if (isSelected) {
+        androidx.compose.foundation.BorderStroke(2.dp, colorScheme.primary)
+    } else {
+        androidx.compose.foundation.BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.5f))
+    }
+
+    val containerColor = if (isSelected) {
+        colorScheme.primaryContainer.copy(alpha = 0.15f)
+    } else {
+        colorScheme.surfaceContainerHigh
+    }
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier
+            .height(140.dp)
+            .shadow(elevation = if (isSelected) 4.dp else 0.dp, shape = RoundedCornerShape(20.dp)),
+        shape = RoundedCornerShape(20.dp),
+        color = containerColor,
+        border = borderStroke
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isSelected) {
+                    Icon(
+                        imageVector = Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isSelected) colorScheme.primary else colorScheme.onSurface
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (style == NavbarStyle.MODERN) {
+                    // Visual preview of Floating Toolbar with separate Circular Player
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        // Floating navbar pill
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(28.dp)
+                                .clip(CircleShape)
+                                .background(if (isSelected) colorScheme.secondaryContainer else colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .height(16.dp)
+                                        .weight(1.2f)
+                                        .clip(CircleShape)
+                                        .background(if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                repeat(3) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                }
+                            }
+                        }
+
+                        // Circular mini player companion
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(if (isSelected) colorScheme.primaryContainer else colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                            )
+                        }
+                    }
+                } else {
+                    // Visual preview of Classical edge-to-edge docked navbar with mini player strip
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // MiniPlayer horizontal strip above
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(0.95f)
+                                .height(14.dp)
+                                .clip(RoundedCornerShape(topStart = 6.dp, topEnd = 6.dp))
+                                .background(if (isSelected) colorScheme.primaryContainer.copy(alpha = 0.6f) else colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(4.dp)
+                                        .clip(CircleShape)
+                                        .background(colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                                )
+                            }
+                        }
+
+                        // Docked rectangular bottom bar
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(18.dp)
+                                .background(if (isSelected) colorScheme.secondaryContainer.copy(alpha = 0.7f) else colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp)
+                            ) {
+                                repeat(4) { idx ->
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(if (idx == 0 && isSelected) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
         }
     }
 }

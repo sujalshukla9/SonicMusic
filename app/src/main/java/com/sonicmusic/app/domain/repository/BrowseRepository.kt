@@ -1,6 +1,7 @@
 package com.sonicmusic.app.domain.repository
 
 import com.sonicmusic.app.domain.model.ChartSection
+import com.sonicmusic.app.domain.model.CommunityPlaylist
 import com.sonicmusic.app.domain.model.ContinuationShelf
 import com.sonicmusic.app.domain.model.MoodGenre
 import com.sonicmusic.app.domain.model.Song
@@ -59,6 +60,14 @@ interface BrowseRepository {
     suspend fun getMixedForYou(limit: Int = 15, forceRefresh: Boolean = false): Result<List<Song>>
 
     /**
+     * Fetch trending community-curated playlists from YouTube Music.
+     *
+     * @param limit Maximum number of playlists to return
+     * @param forceRefresh If true, bypasses cache and fetches fresh playlists
+     */
+    suspend fun getTrendingCommunityPlaylists(limit: Int = 20, forceRefresh: Boolean = false): Result<List<CommunityPlaylist>>
+
+    /**
      * Fetch initial home shelves and continuation token.
      */
     suspend fun getHomeShelvesWithContinuation(forceRefresh: Boolean = false): Result<Pair<List<ContinuationShelf>, String?>>
@@ -75,4 +84,9 @@ interface BrowseRepository {
      * @param limit Maximum number of songs to return
      */
     suspend fun getMoodGenreSongs(params: String, limit: Int = 20): Result<List<Song>>
+
+    /**
+     * Fetch all songs for a specific playlist by its browse or playlist ID.
+     */
+    suspend fun getPlaylistSongs(browseId: String): Result<List<Song>>
 }

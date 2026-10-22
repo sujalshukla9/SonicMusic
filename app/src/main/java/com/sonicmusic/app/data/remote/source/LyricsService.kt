@@ -20,13 +20,15 @@ import javax.inject.Singleton
  * Includes Devanagari to Hinglish transliteration for Hindi lyrics.
  */
 @Singleton
-class LyricsService @Inject constructor() {
+class LyricsService @Inject constructor(
+    private val okHttpClient: OkHttpClient
+) {
 
     companion object {
         private const val TAG = "LyricsService"
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = okHttpClient.newBuilder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)

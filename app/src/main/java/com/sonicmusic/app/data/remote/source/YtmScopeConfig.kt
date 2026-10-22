@@ -58,7 +58,9 @@ object YtmScopeConfig {
         )
 
         // Case-insensitive regex blacklist for non-music / compilations / fan-edited / UGC edits
-        val TITLE_BLACKLIST_REGEX = InnertubeConfig.COMPILATION_OR_SPAM_REGEX
+        val TITLE_BLACKLIST_REGEX = Regex(
+            "(?i)(mashup|slowed|reverb|8d\\s+audio|lofi\\s+remix|tiktok|viral\\s+songs|compilation|fanmade|tribute|cover|live\\s+performance|\\bjukebox\\b|\\baudio\\s+jukebox\\b|\\bvideo\\s+jukebox\\b|\\bfull\\s+album\\b|\\bcomplete\\s+album\\b|\\bnon-?stop\\s+(audio|jukebox|mix|party)\\b)"
+        )
 
         const val REQUIRE_ARTIST_LINK_IF_TYPE_MISSING = true
     }

@@ -132,9 +132,6 @@ class SearchRepositoryImpl @Inject constructor(
                             filters = filters
                         ).take(safeLimit)
 
-                        if (pageSongs.isNotEmpty()) {
-                            songDao.insertAll(pageSongs.map { it.toEntity() })
-                        }
 
                         val nextContinuation = page.continuationToken?.takeIf { it.isNotBlank() }
                         val hasMore = if (nextContinuation != null) {
@@ -189,9 +186,6 @@ class SearchRepositoryImpl @Inject constructor(
                             filters = filters
                         ).take(safeLimit)
 
-                        if (pageSongs.isNotEmpty()) {
-                            songDao.insertAll(pageSongs.map { it.toEntity() })
-                        }
 
                         val nextOffsetCandidate = safeOffset + safeLimit
                         val hasMore = songsPage.size >= safeLimit

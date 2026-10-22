@@ -6,7 +6,6 @@ import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
-import android.media.MediaCodecList
 import android.media.Spatializer
 import android.media.audiofx.AudioEffect
 import android.os.Build
@@ -21,22 +20,22 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Detects device-level audio enhancement capabilities (Dolby Atmos, DTS, Hi-Res Audio).
+ * Detects device-level audio enhancement capabilities (DTS, Hi-Res Audio, Spatializer).
  *
  * ## Detection Confidence Levels
  *
  * **HIGH confidence:**
- * - [AudioDeviceInfo.getEncodings] reporting Dolby/DTS decoder support (method a)
- * - [AudioEffect.queryEffects] finding Dolby/DTS DSP effects (method b)
+ * - [AudioDeviceInfo.getEncodings] reporting DTS decoder support (method a)
+ * - [AudioEffect.queryEffects] finding DTS DSP effects (method b)
  *
  * **MEDIUM confidence:**
- * - System package manager finding OEM Dolby/DTS apps (method c)
+ * - System package manager finding OEM DTS apps (method c)
  *
  * ## Important Caveats
  *
- * Android's audio pipeline applies OEM DSP effects (Dolby Atmos, Samsung Sound Alive, etc.)
+ * Android's audio pipeline applies OEM DSP effects (Samsung Sound Alive, etc.)
  * **after** the app's audio output reaches the HAL. There is NO public API to query whether
- * "Dolby Atmos is currently toggled ON in system settings." The best we can do is detect
+ * "OEM sound effects are currently toggled ON in system settings." The best we can do is detect
  * that the *hardware/firmware* supports it. The user may still have it disabled in system
  * settings, or it may be active only for certain output routes (e.g. headphones vs speaker).
  *
@@ -58,44 +57,6 @@ class AudioCapabilityDetector @Inject constructor(
 ) {
     companion object {
         private const val TAG = "AudioCapDetect"
-
-        // ─── Known Dolby effect UUIDs ───────────────────────────────
-        // Dolby Audio Processing (DAP) effect type UUID used by Dolby's SDK integration.
-        // Source: AOSP AudioEffect documentation + Dolby SDK partner docs.
-        private const val DOLBY_EFFECT_TYPE_UUID = "9d4921da-8225-4f29-aefa-39537a04bcaa"
-        // Dolby DAX (Dolby Atmos for headphones) service effect UUID.
-        private const val DOLBY_DAX_EFFECT_UUID = "6ab06da4-c516-4611-8166-452799218539"
-
-        private val DOLBY_ATMOS_FEATURES = listOf(
-            "dolby.hardware.dap",
-            "dolby.software.dap",
-        )
-
-
-
-        // ─── Dolby-related audio encodings ──────────────────────────
-        // These constants are in AudioFormat. We check getEncodings() on output devices.
-        //
-        // ENCODING_AC3          = Dolby Digital (DD / AC-3)
-        // ENCODING_E_AC3        = Dolby Digital Plus (DD+ / E-AC-3)
-        // ENCODING_E_AC3_JOC    = Dolby Atmos over DD+ (Joint Object Coding)  — API 28+
-        // ENCODING_DOLBY_TRUEHD = Dolby TrueHD (lossless, Blu-ray)            — API 28+
-        // ENCODING_AC4          = Dolby AC-4 (next-gen broadcast codec)        — API 29+
-        //
-        // Note: Most mobile devices will report ENCODING_AC3 / ENCODING_E_AC3 at minimum
-        // if they have Dolby decoding. ENCODING_E_AC3_JOC is the strongest Atmos signal.
-
-        private val DOLBY_ENCODINGS = buildSet {
-            add(AudioFormat.ENCODING_AC3)        // 5 — API 21+
-            add(AudioFormat.ENCODING_E_AC3)      // 6 — API 21+
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                add(AudioFormat.ENCODING_E_AC3_JOC)    // 16 — API 28
-                add(AudioFormat.ENCODING_DOLBY_TRUEHD) // 14 — API 28
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                add(AudioFormat.ENCODING_AC4)          // 17 — API 29
-            }
-        }
 
         // DTS-related encodings
         private val DTS_ENCODINGS = buildSet<Int> {
@@ -119,17 +80,6 @@ class AudioCapabilityDetector @Inject constructor(
      * Aggregated result of all audio capability detection methods.
      */
     data class AudioCapability(
-        // ── Dolby ──────────────────────────────────────────────────
-        /** Method (a): Hardware decoder support via AudioDeviceInfo.getEncodings() */
-        val hasDolbyDecoder: Boolean = false,
-        /** Android system feature flag for Dolby Audio Processing. */
-        val hasDolbySystemFeature: Boolean = false,
-        /** Method (b): Dolby DSP effect found via AudioEffect.queryEffects() */
-        val hasDolbyEffect: Boolean = false,
-        /** Method (c): OEM Dolby app installed (e.g. com.dolby.daxservice) */
-        val hasDolbyApp: Boolean = false,
-        /** Method (d): Dolby audio codecs supported by system decoders */
-        val hasDolbyCodec: Boolean = false,
         /** Method (e): Android Spatializer API (API 32+) */
         val hasSpatializer: Boolean = false,
         /** True when Spatializer.isAvailable() AND isEnabled() — i.e. actively spatializing */
@@ -153,10 +103,28 @@ class AudioCapabilityDetector @Inject constructor(
          * False on API < 32 or when Spatializer is unavailable.
          */
         val canBeSpatializedStereoOpus: Boolean = false,
-        /** Resolved display label: "Dolby Atmos" / "Dolby Audio" / null */
-        val dolbyLabel: String? = null,
-        /** Dolby AudioEffect Descriptor, if found */
-        val dolbyEffectDescriptor: AudioEffect.Descriptor? = null,
+
+        // ── Multichannel Spatialization ────────────────────────────
+        /** True when device can spatialize 5.1 surround content */
+        val canBeSpatializedSurround51: Boolean = false,
+        /** True when device can spatialize 7.1 surround content */
+        val canBeSpatializedSurround71: Boolean = false,
+
+        // ── Head Tracking ─────────────────────────────────────────
+        /** True when the Spatializer supports head-tracking on this device (API 32+) */
+        val headTrackingAvailable: Boolean = false,
+        /** Current head-tracking mode name (e.g. "Relative World", "Relative Screen") */
+        val headTrackingModeName: String = "",
+
+        // ── Output Route ──────────────────────────────────────────
+        /** Name of the currently active audio output route (e.g. "Pixel Buds Pro") */
+        val currentOutputRouteName: String = "Speaker",
+
+        /**
+         * True when the OS Spatializer pipeline is actively processing audio.
+         * When true, the in-app Virtualizer should defer to avoid double spatial processing.
+         */
+        val osSpatialProcessingActive: Boolean = false,
 
         // ── DTS ────────────────────────────────────────────────────
         /** Hardware DTS decoder or DTS effect detected */
@@ -175,21 +143,26 @@ class AudioCapabilityDetector @Inject constructor(
         /** "External DAC" / null */
         val outputLabel: String? = null,
     ) {
-        /** True only when the existing capability checks positively identify Atmos support. */
-        val supportsDolbyAtmos: Boolean
-            get() = dolbyLabel == "Dolby Atmos"
-
         /**
          * True if ANY capability badge should be shown.
          * Spatial Audio is included only when the device reports availability (API 32+).
          */
         val hasAnyCapability: Boolean
-            get() = dolbyLabel != null || dtsLabel != null || hiResLabel != null ||
+            get() = dtsLabel != null || hiResLabel != null ||
                     outputLabel != null || spatialLabel != null
 
         /** Ordered list of badge labels to display (Spatial Audio last, after hardware badges) */
         val badgeLabels: List<String>
-            get() = listOfNotNull(dolbyLabel, dtsLabel, hiResLabel, outputLabel, spatialLabel)
+            get() = listOfNotNull(dtsLabel, hiResLabel, outputLabel, spatialLabel)
+
+        /** Best spatialization format supported (for display) */
+        val bestSpatialFormat: String
+            get() = when {
+                canBeSpatializedSurround71 -> "7.1 Surround"
+                canBeSpatializedSurround51 -> "5.1 Surround"
+                canBeSpatializedStereoOpus -> "Stereo"
+                else -> "None"
+            }
     }
 
     private val _capability = MutableStateFlow(AudioCapability())
@@ -236,11 +209,6 @@ class AudioCapabilityDetector @Inject constructor(
 
     private fun detectAll(): AudioCapability {
         // Only use real hardware + software signals. No guessing.
-        val dolbyDecoder = detectDolbyDecoderSupport()
-        val dolbyFeature = detectDolbySystemFeature()
-        val dolbyEffect = detectDolbyEffect()
-        val dolbyApp = detectDolbyApp()
-        val dolbyCodec = detectDolbyCodecSupport()
         val spatializerResult = detectSpatializerSupport()
 
         val dtsDecoder = detectDtsDecoderSupport()
@@ -250,29 +218,6 @@ class AudioCapabilityDetector @Inject constructor(
 
         val hiRes = detectHiResCapability()
         val externalDac = detectExternalDac()
-
-        // ── Resolve Dolby label ────────────────────────────────────
-        // Show badge ONLY if hardware or software actually confirms Dolby.
-        // No Dolby detected = no badge. Simple.
-        val hasAtmosEvidence = dolbyDecoder.hasAtmos || 
-                dolbyFeature.isAtmos || 
-                dolbyEffect.isAtmos || 
-                dolbyApp.isAtmos ||
-                (spatializerResult.isAvailable && spatializerResult.immersiveLevel != 0)
-
-        val hasAnyDolby = dolbyDecoder.hasAny || 
-                dolbyFeature.found || 
-                dolbyEffect.found || 
-                dolbyApp.found ||
-                dolbyCodec ||
-                spatializerResult.isAvailable
-
-        val dolbyLabel = when {
-            hasAtmosEvidence -> "Dolby Atmos"
-            hasAnyDolby -> "Dolby Audio"
-            else -> null
-        }
-
         val dtsLabel = when {
             dtsEffect -> "DTS:X"
             dtsDecoder || dtsApp -> "DTS"
@@ -288,20 +233,22 @@ class AudioCapabilityDetector @Inject constructor(
         val spatialLabel = if (spatializerResult.isAvailable) "Spatial Audio" else null
         val spatializerActive = spatializerResult.isAvailable && spatializerResult.isEnabled
 
+        // ── Output route name ─────────────────────────────────────
+        val outputRouteName = detectCurrentOutputRouteName()
+
         return AudioCapability(
-            hasDolbyDecoder = dolbyDecoder.hasAny,
-            hasDolbySystemFeature = dolbyFeature.found,
-            hasDolbyEffect = dolbyEffect.found,
-            hasDolbyApp = dolbyApp.found,
-            hasDolbyCodec = dolbyCodec,
             hasSpatializer = spatializerResult.isAvailable,
             spatializerEnabled = spatializerResult.isEnabled,
             spatialLabel = spatialLabel,
             spatializerActive = spatializerActive,
             spatializerLevelName = spatializerResult.immersiveLevelName,
             canBeSpatializedStereoOpus = spatializerResult.canBeSpatializedStereo,
-            dolbyLabel = dolbyLabel,
-            dolbyEffectDescriptor = dolbyEffect.descriptor,
+            canBeSpatializedSurround51 = spatializerResult.canBeSpatializedSurround51,
+            canBeSpatializedSurround71 = spatializerResult.canBeSpatializedSurround71,
+            headTrackingAvailable = spatializerResult.headTrackingAvailable,
+            headTrackingModeName = spatializerResult.headTrackingModeName,
+            currentOutputRouteName = outputRouteName,
+            osSpatialProcessingActive = spatializerActive,
             hasDts = hasDts,
             dtsLabel = dtsLabel,
             isHiResCapable = hiRes,
@@ -309,53 +256,6 @@ class AudioCapabilityDetector @Inject constructor(
             hasExternalDac = externalDac,
             outputLabel = outputLabel,
         )
-    }
-
-    // ─────────────────────────────────────────────────────────────────
-    // Method (a): Hardware decoder support via AudioDeviceInfo encodings
-    // CONFIDENCE: HIGH
-    //
-    // Checks all output AudioDeviceInfo for Dolby-related encoding support.
-    // On most Snapdragon/Exynos SoCs with Dolby licensing, the audio HAL
-    // reports E_AC3_JOC (Atmos) or at minimum AC3/E_AC3 support.
-    // ─────────────────────────────────────────────────────────────────
-    private data class DecoderResult(val hasAny: Boolean, val hasAtmos: Boolean)
-
-    private fun detectDolbyDecoderSupport(): DecoderResult {
-        return try {
-            val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            var hasAnyDolby = false
-            var hasAtmos = false
-
-            for (device in outputDevices) {
-                val encodings = device.encodings
-                if (encodings.isEmpty()) continue
-
-                for (encoding in encodings) {
-                    if (encoding in DOLBY_ENCODINGS) {
-                        hasAnyDolby = true
-                        // E_AC3_JOC is the definitive Atmos signal
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-                            encoding == AudioFormat.ENCODING_E_AC3_JOC
-                        ) {
-                            hasAtmos = true
-                        }
-                        // AC-4 also often implies Atmos capability
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                            encoding == AudioFormat.ENCODING_AC4
-                        ) {
-                            hasAtmos = true
-                        }
-                    }
-                }
-            }
-
-            Log.d(TAG, "  (a) Dolby decoder: any=$hasAnyDolby, atmos=$hasAtmos")
-            DecoderResult(hasAnyDolby, hasAtmos)
-        } catch (e: Exception) {
-            Log.w(TAG, "  (a) Dolby decoder check failed", e)
-            DecoderResult(false, false)
-        }
     }
 
     private fun detectDtsDecoderSupport(): Boolean {
@@ -374,82 +274,6 @@ class AudioCapabilityDetector @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "  (a) DTS decoder check failed", e)
             false
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────
-    // Method (b): System audio effects via AudioEffect.queryEffects()
-    // CONFIDENCE: HIGH
-    //
-    // Iterates all registered AudioEffect descriptors. OEM Dolby integration
-    // registers a system-level effect whose name/uuid matches known Dolby IDs.
-    // Falls back to case-insensitive name matching ("dolby", "dax") as best-effort.
-    // ─────────────────────────────────────────────────────────────────
-    private data class FeatureResult(val found: Boolean, val isAtmos: Boolean)
-
-    private fun detectDolbySystemFeature(): FeatureResult {
-        return try {
-            val pm = context.packageManager
-            val hasDolbyAtmos = DOLBY_ATMOS_FEATURES.any { pm.hasSystemFeature(it) }
-            Log.d(TAG, "  (feature) Dolby DAP: atmos=$hasDolbyAtmos")
-            FeatureResult(found = hasDolbyAtmos, isAtmos = hasDolbyAtmos)
-        } catch (e: Exception) {
-            Log.w(TAG, "  (feature) Dolby feature check failed", e)
-            FeatureResult(found = false, isAtmos = false)
-        }
-    }
-
-    private data class EffectResult(
-        val found: Boolean,
-        val isAtmos: Boolean,
-        val descriptor: AudioEffect.Descriptor? = null
-    )
-
-    private fun detectDolbyEffect(): EffectResult {
-        return try {
-            val effects = AudioEffect.queryEffects() ?: emptyArray()
-            var found = false
-            var isAtmos = false
-            var matchedDescriptor: AudioEffect.Descriptor? = null
-
-            for (descriptor in effects) {
-                val uuid = descriptor.uuid?.toString()?.lowercase() ?: ""
-                val typeUuid = descriptor.type?.toString()?.lowercase() ?: ""
-                val name = descriptor.name?.lowercase() ?: ""
-
-                var isMatch = false
-                // Check known UUIDs first (most reliable)
-                if (uuid == DOLBY_EFFECT_TYPE_UUID || uuid == DOLBY_DAX_EFFECT_UUID ||
-                    typeUuid == DOLBY_EFFECT_TYPE_UUID || typeUuid == DOLBY_DAX_EFFECT_UUID
-                ) {
-                    found = true
-                    isMatch = true
-                    // DAX effect UUID implies Atmos-capable processing
-                    if (uuid == DOLBY_DAX_EFFECT_UUID || typeUuid == DOLBY_DAX_EFFECT_UUID) {
-                        isAtmos = true
-                    }
-                }
-
-                // Fallback: case-insensitive name matching (best-effort)
-                if (name.contains("dolby") || name.contains("dax")) {
-                    found = true
-                    isMatch = true
-                    if (name.contains("atmos")) {
-                        isAtmos = true
-                    }
-                }
-
-                if (isMatch && matchedDescriptor == null) {
-                    matchedDescriptor = descriptor
-                }
-            }
-
-            Log.d(TAG, "  (b) Dolby effect: found=$found, atmos=$isAtmos")
-            EffectResult(found, isAtmos, matchedDescriptor)
-        } catch (e: Exception) {
-            // SecurityException can occur on some OEM ROMs that restrict queryEffects()
-            Log.w(TAG, "  (b) Dolby effect query failed", e)
-            EffectResult(false, false, null)
         }
     }
 
@@ -475,43 +299,13 @@ class AudioCapabilityDetector @Inject constructor(
     // Method (c): OEM app package detection via PackageManager
     // CONFIDENCE: MEDIUM
     //
-    // Checks if known Dolby system app packages are installed. These are
-    // pre-installed by OEMs on Dolby-licensed devices and cannot be installed
+    // Checks if known DTS system app packages are installed. These are
+    // pre-installed by OEMs on DTS-licensed devices and cannot be installed
     // from Play Store on non-licensed hardware.
     //
     // Caveat: Package might be disabled by user. We still count it as the
-    // hardware is Dolby-capable regardless of whether the user disabled the app.
+    // hardware is DTS-capable regardless of whether the user disabled the app.
     // ─────────────────────────────────────────────────────────────────
-    private data class AppResult(val found: Boolean, val isAtmos: Boolean)
-
-    private fun detectDolbyApp(): AppResult {
-        return try {
-            val pm = context.packageManager
-            val packages = pm.getInstalledPackages(0)
-            var found = false
-            var isAtmos = false
-
-            for (packageInfo in packages) {
-                val pkgName = packageInfo.packageName.lowercase()
-                if (pkgName.contains("dolby")) {
-                    found = true
-                    if (pkgName.contains("atmos") || pkgName.contains("dax") || pkgName.contains("dap")) {
-                        isAtmos = true
-                    }
-                    Log.d(TAG, "  (c) Dolby package found: $pkgName (atmos=$isAtmos)")
-                }
-            }
-
-            if (!found) {
-                Log.d(TAG, "  (c) No Dolby packages found")
-            }
-
-            AppResult(found, isAtmos)
-        } catch (e: Exception) {
-            Log.w(TAG, "  (c) Dolby package query failed", e)
-            AppResult(false, false)
-        }
-    }
 
     private fun detectDtsApp(): Boolean {
         return try {
@@ -618,6 +412,14 @@ class AudioCapabilityDetector @Inject constructor(
         val immersiveLevelName: String = "",
         /** Whether a representative stereo/Opus stream can be spatialized on this device */
         val canBeSpatializedStereo: Boolean = false,
+        /** Whether 5.1 surround content can be spatialized */
+        val canBeSpatializedSurround51: Boolean = false,
+        /** Whether 7.1 surround content can be spatialized */
+        val canBeSpatializedSurround71: Boolean = false,
+        /** Whether the device supports head tracking for spatial audio */
+        val headTrackingAvailable: Boolean = false,
+        /** Human-readable head tracking mode name */
+        val headTrackingModeName: String = "",
     )
 
     @Suppress("NewApi") // All usages are gated by SDK >= 32 check above
@@ -639,38 +441,118 @@ class AudioCapabilityDetector @Inject constructor(
                 else                                                -> "Level $level"
             }
 
-            // canBeSpatialized() check with a representative stereo PCM format
-            // (Opus/AAC streams are decoded to PCM before the spatializer sees them)
-            val canSpat = if (isAvail) {
+            // Build shared AudioAttributes for spatialization tests
+            val testAttrs = android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+
+            // ── Stereo spatialization test ──────────────────────────
+            val canSpatStereo = if (isAvail) {
                 try {
-                    val testAttrs = android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                    val testFormat = AudioFormat.Builder()
+                    val stereoFormat = AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(48_000)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                         .build()
-                    spatializer.canBeSpatialized(testAttrs, testFormat)
+                    spatializer.canBeSpatialized(testAttrs, stereoFormat)
                 } catch (e: Exception) {
-                    Log.w(TAG, "  (spatializer) canBeSpatialized() failed", e)
+                    Log.w(TAG, "  (spatializer) canBeSpatialized(stereo) failed", e)
                     false
                 }
             } else false
 
+            // ── 5.1 Surround spatialization test ───────────────────
+            val canSpat51 = if (isAvail) {
+                try {
+                    val surround51Format = AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(48_000)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_5POINT1)
+                        .build()
+                    spatializer.canBeSpatialized(testAttrs, surround51Format)
+                } catch (e: Exception) {
+                    Log.w(TAG, "  (spatializer) canBeSpatialized(5.1) failed", e)
+                    false
+                }
+            } else false
+
+            // ── 7.1 Surround spatialization test ───────────────────
+            val canSpat71 = if (isAvail) {
+                try {
+                    val surround71Format = AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(48_000)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_7POINT1_SURROUND)
+                        .build()
+                    spatializer.canBeSpatialized(testAttrs, surround71Format)
+                } catch (e: Exception) {
+                    Log.w(TAG, "  (spatializer) canBeSpatialized(7.1) failed", e)
+                    false
+                }
+            } else false
+
+            // ── Head Tracking detection ────────────────────────────
+            val headTrackingResult = detectHeadTracking(spatializer)
+
             Log.d(TAG, "  (spatializer) available=$isAvail, enabled=$isEnabled, " +
-                    "level=$levelName, canSpatializeStereo=$canSpat")
+                    "level=$levelName, canSpatStereo=$canSpatStereo, " +
+                    "canSpat51=$canSpat51, canSpat71=$canSpat71, " +
+                    "headTracking=${headTrackingResult.first}")
             SpatializerResult(
                 isAvailable = isAvail,
                 isEnabled = isEnabled,
                 immersiveLevel = level,
                 immersiveLevelName = levelName,
-                canBeSpatializedStereo = canSpat,
+                canBeSpatializedStereo = canSpatStereo,
+                canBeSpatializedSurround51 = canSpat51,
+                canBeSpatializedSurround71 = canSpat71,
+                headTrackingAvailable = headTrackingResult.first,
+                headTrackingModeName = headTrackingResult.second,
             )
         } catch (e: Exception) {
             Log.w(TAG, "  (spatializer) check failed", e)
             SpatializerResult()
+        }
+    }
+
+    /**
+     * Detect head tracking capability from the Spatializer.
+     * Returns Pair(isAvailable, modeName).
+     * Head tracking modes were added in API 33.
+     */
+    @Suppress("NewApi")
+    private fun detectHeadTracking(spatializer: Spatializer): Pair<Boolean, String> {
+        if (Build.VERSION.SDK_INT < 33) return Pair(false, "")
+        return try {
+            // Spatializer.isHeadTrackerAvailable() — API 33+
+            val headTrackerAvailable = try {
+                spatializer.isHeadTrackerAvailable
+            } catch (e: Exception) {
+                Log.w(TAG, "  (headTracking) isHeadTrackerAvailable() failed", e)
+                false
+            }
+
+            val modeName = if (headTrackerAvailable) {
+                val mode = try {
+                    val method = spatializer.javaClass.getMethod("getHeadTrackingMode")
+                    method.invoke(spatializer) as? Int
+                } catch (_: Exception) {
+                    null
+                }
+                when (mode) {
+                    0 -> "Disabled"
+                    1 -> "Relative World"
+                    2 -> "Relative Screen"
+                    else -> "Supported"
+                }
+            } else ""
+
+            Log.d(TAG, "  (headTracking) available=$headTrackerAvailable, mode=$modeName")
+            Pair(headTrackerAvailable, modeName)
+        } catch (e: Exception) {
+            Log.w(TAG, "  (headTracking) detection failed", e)
+            Pair(false, "")
         }
     }
 
@@ -694,24 +576,75 @@ class AudioCapabilityDetector @Inject constructor(
                     listener
                 )
                 spatializerListener = listener
+
+                // Register head tracking listener (API 33+)
+                registerHeadTrackingListener(spatializer)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to register spatializer listener", e)
             }
         }
     }
 
-    private fun detectDolbyCodecSupport(): Boolean {
-        return try {
-            val codecList = MediaCodecList(MediaCodecList.ALL_CODECS)
-            val atmosMimes = setOf("audio/eac3", "audio/eac3-joc", "audio/ac4")
-            val hasCodec = codecList.codecInfos.any { info ->
-                !info.isEncoder && info.supportedTypes.any { it.lowercase() in atmosMimes }
+    private var headTrackingListener: Any? = null
+
+    @Suppress("NewApi")
+    private fun registerHeadTrackingListener(spatializer: Spatializer) {
+        if (Build.VERSION.SDK_INT < 33) return
+        try {
+            val htListener = object : Spatializer.OnHeadTrackerAvailableListener {
+                override fun onHeadTrackerAvailableChanged(
+                    spatializer: Spatializer,
+                    available: Boolean
+                ) {
+                    Log.d(TAG, "Head tracker availability changed: $available")
+                    refresh()
+                }
             }
-            Log.d(TAG, "  (codec) Dolby codec support: $hasCodec")
-            hasCodec
+            spatializer.addOnHeadTrackerAvailableListener(
+                { command -> Handler(Looper.getMainLooper()).post(command) },
+                htListener
+            )
+            headTrackingListener = htListener
         } catch (e: Exception) {
-            Log.w(TAG, "  (codec) Dolby codec check failed", e)
-            false
+            Log.w(TAG, "Failed to register head tracking listener", e)
+        }
+    }
+
+    /**
+     * Detect the name of the currently active audio output device.
+     * Used to show contextual info (e.g. "Pixel Buds Pro", "Galaxy Buds2 Pro").
+     */
+    private fun detectCurrentOutputRouteName(): String {
+        return try {
+            val outputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            // Prioritize: Bluetooth > USB > Wired > Built-in
+            val prioritized = outputDevices.firstOrNull { d ->
+                d.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                d.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+            } ?: outputDevices.firstOrNull { d ->
+                d.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                d.type == AudioDeviceInfo.TYPE_USB_HEADSET
+            } ?: outputDevices.firstOrNull { d ->
+                d.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                d.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+            } ?: outputDevices.firstOrNull { d ->
+                d.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            }
+
+            val name = prioritized?.productName?.toString()?.takeIf { it.isNotBlank() }
+                ?: when (prioritized?.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth"
+                    AudioDeviceInfo.TYPE_USB_DEVICE,
+                    AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Audio"
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Speaker"
+                    else -> "Speaker"
+                }
+            name
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to detect output route name", e)
+            "Speaker"
         }
     }
 

@@ -1,6 +1,9 @@
 package com.sonicmusic.app.features.player.presentation.sheets
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ripple
+import com.sonicmusic.app.theme.pressScale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -87,6 +90,7 @@ fun FullPlayerMoreSheet(
     // Song Info / Spatial Audio panel
     audioCapability: AudioCapabilityDetector.AudioCapability = AudioCapabilityDetector.AudioCapability(),
     streamInfo: AudioStreamInfo? = null,
+    audioQualityUiState: com.sonicmusic.app.features.player.audio.AudioQualityUiState? = null,
     downloadedFileSizeBytes: Long? = null,
     durationMs: Long = 0L,
     isPlaying: Boolean = false,
@@ -107,7 +111,8 @@ fun FullPlayerMoreSheet(
         durationMs = durationMs,
         onDismiss = { showSongDetails = false },
         audioCapability = audioCapability,
-        isPlaying = isPlaying
+        isPlaying = isPlaying,
+        audioQualityUiState = audioQualityUiState
     )
 
     // Delete confirmation dialog
@@ -361,11 +366,19 @@ private fun FullPlayerMoreActionRow(
     val alpha = if (enabled) 1f else 0.38f
     val finalTint = tint.copy(alpha = alpha)
     val finalTextColor = colorScheme.onSurface.copy(alpha = alpha)
+    val interactionSource = remember { MutableInteractionSource() }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = enabled, onClick = onClick)
+            .clip(RoundedCornerShape(12.dp))
+            .pressScale(interactionSource, targetScale = 0.97f, enabled = enabled)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(),
+                enabled = enabled,
+                onClick = onClick
+            )
             .padding(horizontal = 8.dp, vertical = 14.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

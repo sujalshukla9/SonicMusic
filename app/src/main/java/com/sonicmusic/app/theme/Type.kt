@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
+
 package com.sonicmusic.app.theme
 
 import androidx.compose.material3.Typography
@@ -8,6 +10,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.R
 
+import androidx.compose.ui.text.font.FontVariation
+
 val PoppinsFontFamily = FontFamily(
     Font(R.font.poppins_regular, FontWeight.Normal),
     Font(R.font.poppins_medium, FontWeight.Medium),
@@ -17,7 +21,73 @@ val PoppinsFontFamily = FontFamily(
     Font(R.font.poppins_bold, FontWeight.Black)
 )
 
-val SonicFontFamily = PoppinsFontFamily
+val RobotoFlexFontFamily = FontFamily(
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Thin,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Thin.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.ExtraLight,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.ExtraLight.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Light,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Light.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Normal,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Normal.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Medium,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Medium.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.SemiBold,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.SemiBold.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Bold,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Bold.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.ExtraBold,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.ExtraBold.weight)
+        )
+    ),
+    Font(
+        resId = R.font.roboto_flex,
+        weight = FontWeight.Black,
+        variationSettings = FontVariation.Settings(
+            FontVariation.weight(FontWeight.Black.weight)
+        )
+    )
+)
+
+val SonicFontFamily = RobotoFlexFontFamily
 
 val Typography = Typography(
     displayLarge = TextStyle(

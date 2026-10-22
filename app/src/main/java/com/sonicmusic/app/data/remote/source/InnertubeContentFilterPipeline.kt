@@ -455,7 +455,7 @@ class InnertubePipelineOrchestrator @Inject constructor(
         val thumbnail = thumbnails?.optJSONObject(0)?.optString("url") ?: ""
 
         val videoType = watchEndpoint
-            ?.optJSONObject("watchEndpointMusicSupportedConfigs")
+            .optJSONObject("watchEndpointMusicSupportedConfigs")
             ?.optJSONObject("watchEndpointMusicConfig")
             ?.optString("musicVideoType")
 

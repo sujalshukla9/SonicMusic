@@ -90,7 +90,7 @@ sealed class AppError(
     // ════════════════════════════════════════
 
     /** Response body could not be parsed. */
-    class ParseError(detail: String, cause: Throwable? = null) : AppError(
+    class ParseError(val detail: String, cause: Throwable? = null) : AppError(
         userMessage = " Unable to load content",
         isRetryable = true,
         retryDelayMs = 1000L,

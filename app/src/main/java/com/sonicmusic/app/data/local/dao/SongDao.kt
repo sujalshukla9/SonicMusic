@@ -36,4 +36,7 @@ interface SongDao {
 
     @Query("DELETE FROM songs WHERE id = :songId")
     suspend fun deleteSong(songId: String)
+
+    @Query("UPDATE songs SET cachedStreamUrl = null, cacheExpiry = null")
+    suspend fun clearAllCachedStreamUrls()
 }

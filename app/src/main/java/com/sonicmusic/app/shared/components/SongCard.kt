@@ -1,8 +1,8 @@
 package com.sonicmusic.app.shared.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -36,13 +36,13 @@ fun SongCard(
     Column(
         modifier = pressModifier.width(140.dp)
     ) {
-        ElevatedCard(
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f),
             shape = currentShape,
-            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
-            colors = CardDefaults.elevatedCardColors(
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerLow
             )
         ) {

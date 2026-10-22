@@ -21,7 +21,7 @@ import org.mockito.MockedStatic
 import org.mockito.Mockito.mockStatic
 import org.mockito.ArgumentMatchers
 
-@RunWith(MockitoJUnitRunner::class)
+@RunWith(MockitoJUnitRunner.Silent::class)
 class RegionRepositoryTest {
 
     private lateinit var logMock: MockedStatic<android.util.Log>

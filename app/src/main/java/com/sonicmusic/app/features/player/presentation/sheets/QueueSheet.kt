@@ -155,7 +155,7 @@ fun QueueSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         modifier = modifier,
-        containerColor = colorScheme.surface,
+        containerColor = colorScheme.surfaceContainerHigh,
         contentColor = colorScheme.onSurface,
         tonalElevation = 2.dp,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)

@@ -27,32 +27,44 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability
-import com.sonicmusic.app.R
 
+
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.rounded.GraphicEq
 
 /**
- * Displays a horizontal row of small "pill" badges indicating device audio capabilities
- * (e.g. "Dolby Atmos", "DTS:X", "Hi-Res").
+ * Displays a horizontal row of small "pill" badges indicating audio quality and device capabilities
+ * (e.g. "OPUS 160", "AAC 256", "DTS:X", "Hi-Res").
  *
  * This composable is designed to sit directly below the album art in the Full Player screen.
- * It only renders if at least one capability badge is present — no empty row is shown.
+ * It only renders if at least one capability or quality badge is present — no empty row is shown.
  *
  * Badges animate in with a fade + slide when the capability state changes (e.g. when the
- * user plugs in Dolby-capable headphones mid-playback).
+ * user plugs in headphones mid-playback or stream info resolves).
  *
  * @param capability The current audio capability detection result
+ * @param spatialAudioEnabled Whether spatial audio is currently active
+ * @param qualityBadge The formatted stream quality badge (e.g. "OPUS 160", "AAC 256")
+ * @param onQualityBadgeClick Callback when user taps the quality badge to inspect technical stream details
  * @param modifier Modifier for the outer row
  */
 @Composable
 fun AudioBadgeRow(
-    capability: AudioCapability,
+    capability: AudioCapability = AudioCapability(),
+    spatialAudioEnabled: Boolean = false,
+    qualityBadge: String? = null,
+    onQualityBadgeClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val showSpatial = (capability.spatialLabel != null) && spatialAudioEnabled
+    val hasHardwareBadge = capability.dtsLabel != null || capability.hiResLabel != null ||
+            capability.outputLabel != null || showSpatial
+    val hasVisibleBadge = hasHardwareBadge || !qualityBadge.isNullOrBlank()
+
     // Reserve constant height so playback controls never shift when badges toggle.
     // The Box always occupies 28.dp; the badges animate in/out inside it.
     Box(
@@ -62,7 +74,7 @@ fun AudioBadgeRow(
         contentAlignment = Alignment.Center
     ) {
         AnimatedVisibility(
-            visible = capability.hasAnyCapability,
+            visible = hasVisibleBadge,
             enter = fadeIn(animationSpec = tween(400)),
             exit = fadeOut(animationSpec = tween(300))
         ) {
@@ -70,23 +82,80 @@ fun AudioBadgeRow(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Render Dolby / DTS / Hi-Res / External DAC badges
-                capability.badgeLabels
-                    .filter { it != "Spatial Audio" } // rendered separately below
-                    .forEachIndexed { index, label ->
-                        if (index > 0) Spacer(modifier = Modifier.width(8.dp))
-                        AudioBadgePill(label = label)
-                    }
+                // Render Stream Quality Badge (e.g. "OPUS 160", "AAC 256", "AAC 128", "Lossless FLAC")
+                if (!qualityBadge.isNullOrBlank()) {
+                    StreamQualityBadgePill(
+                        badgeText = qualityBadge,
+                        onClick = onQualityBadgeClick
+                    )
+                }
 
-                // Spatial Audio badge — shown only when Spatializer API reports availability
-                if (capability.spatialLabel != null) {
-                    val hasPrecedingBadge = capability.badgeLabels.size > 1 ||
-                        (capability.badgeLabels.size == 1 && capability.badgeLabels.first() != "Spatial Audio")
-                    if (hasPrecedingBadge) Spacer(modifier = Modifier.width(8.dp))
-                    SpatialAudioBadgePill(active = capability.spatializerActive)
+                // Render DTS / Hi-Res / External DAC badges
+                val hardwareBadges = capability.badgeLabels.filter { it != "Spatial Audio" }
+                hardwareBadges.forEachIndexed { _, label ->
+                    Spacer(modifier = Modifier.width(8.dp))
+                    AudioBadgePill(label = label)
+                }
+
+                // Spatial Audio badge — active when spatial audio is enabled
+                if (showSpatial) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    SpatialAudioBadgePill(active = spatialAudioEnabled)
                 }
             }
         }
+    }
+}
+
+/**
+ * Interactive pill badge for the current audio stream quality.
+ * Tapping opens the SongDetailsSheet for complete technical inspection.
+ */
+@Composable
+fun StreamQualityBadgePill(
+    badgeText: String,
+    onClick: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val badgeTextColor = colorScheme.onSurface.copy(alpha = 0.85f)
+    val badgeBackground = colorScheme.onSurface.copy(alpha = 0.08f)
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(badgeBackground)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        val dotColor = when {
+            badgeText.contains("FLAC", ignoreCase = true) || badgeText.contains("Lossless", ignoreCase = true) -> Color(0xFF48BB78)
+            badgeText.contains("256", ignoreCase = true) -> Color(0xFF00BCD4)
+            badgeText.contains("OPUS", ignoreCase = true) -> colorScheme.primary
+            else -> colorScheme.primary.copy(alpha = 0.8f)
+        }
+
+        Icon(
+            imageVector = Icons.Rounded.GraphicEq,
+            contentDescription = "Audio Quality: $badgeText",
+            tint = dotColor,
+            modifier = Modifier.size(10.dp)
+        )
+
+        Spacer(modifier = Modifier.width(4.dp))
+
+        Text(
+            text = badgeText,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.3.sp
+            ),
+            color = badgeTextColor,
+            maxLines = 1
+        )
     }
 }
 
@@ -109,50 +178,39 @@ private fun AudioBadgePill(
     val badgeTextColor = colorScheme.onSurface.copy(alpha = 0.85f)
     val badgeBackground = colorScheme.onSurface.copy(alpha = 0.08f)
 
-    if (label.contains("Dolby", ignoreCase = true)) {
-        Icon(
-            painter = painterResource(id = R.drawable.ic_dolby_atmos),
-            contentDescription = "Dolby Atmos",
-            tint = badgeTextColor,
-            modifier = modifier
-                .padding(end = 8.dp, top = 4.dp, bottom = 4.dp)
-                .size(width = 106.dp, height = 15.dp)
-        )
-    } else {
-        Row(
-            modifier = modifier
-                .clip(RoundedCornerShape(50))
-                .background(badgeBackground)
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
-        ) {
-            val dotColor = when {
-                label.contains("DTS", ignoreCase = true) -> Color(0xFFE85D04)   // DTS orange
-                label.contains("Hi-Res", ignoreCase = true) -> Color(0xFF48BB78) // Hi-Res green
-                else -> colorScheme.primary
-            }
-
-            // Tiny colored dot as visual flair
-            androidx.compose.foundation.Canvas(
-                modifier = Modifier.size(5.dp)
-            ) {
-                drawCircle(color = dotColor)
-            }
-
-            Spacer(modifier = Modifier.width(5.dp))
-
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.3.sp
-                ),
-                color = badgeTextColor,
-                maxLines = 1
-            )
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(badgeBackground)
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        val dotColor = when {
+            label.contains("DTS", ignoreCase = true) -> Color(0xFFE85D04)   // DTS orange
+            label.contains("Hi-Res", ignoreCase = true) -> Color(0xFF48BB78) // Hi-Res green
+            else -> colorScheme.primary
         }
+
+        // Tiny colored dot as visual flair
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier.size(5.dp)
+        ) {
+            drawCircle(color = dotColor)
+        }
+
+        Spacer(modifier = Modifier.width(5.dp))
+
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 10.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.3.sp
+            ),
+            color = badgeTextColor,
+            maxLines = 1
+        )
     }
 }
 
@@ -175,7 +233,7 @@ private fun SpatialAudioBadgePill(
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
-    // Teal color matching the "spatial" aesthetic without clashing with Dolby blue
+    // Teal color matching the "spatial" aesthetic
     val spatialActiveColor = Color(0xFF00BCD4)   // Material Cyan 500
     val spatialInactiveColor = colorScheme.onSurface.copy(alpha = 0.35f)
 

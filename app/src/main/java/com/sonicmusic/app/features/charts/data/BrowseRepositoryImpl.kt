@@ -6,6 +6,7 @@ import com.sonicmusic.app.data.local.dao.PlaybackHistoryDao
 import com.sonicmusic.app.data.local.entity.BrowseSectionEntity
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ChartSection
+import com.sonicmusic.app.domain.model.CommunityPlaylist
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.MoodGenre
 import com.sonicmusic.app.domain.model.Song
@@ -13,6 +14,7 @@ import com.sonicmusic.app.domain.repository.BrowseRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -45,12 +47,14 @@ class BrowseRepositoryImpl @Inject constructor(
         private const val KEY_TRENDING_ALBUMS = "trending_albums"
         private const val KEY_TRENDING_ARTISTS = "trending_artists"
         private const val KEY_MIXED_FOR_YOU = "mixed_for_you"
+        private const val KEY_COMMUNITY_PLAYLISTS = "trending_community_playlists"
 
         // Cache TTLs (in ms)
         private const val TTL_MOODS_GENRES = 30 * 60 * 1000L    // 30 minutes
         private const val TTL_CHARTS = 60 * 60 * 1000L          // 1 hour
         private const val TTL_TRENDING = 15 * 60 * 1000L        // 15 minutes
         private const val TTL_MIXED = 30 * 60 * 1000L           // 30 minutes
+        private const val TTL_COMMUNITY_PLAYLISTS = 60 * 60 * 1000L // 1 hour
     }
 
     // ══════════════════════════════════════════
@@ -71,6 +75,9 @@ class BrowseRepositoryImpl @Inject constructor(
 
     @Volatile private var cachedMixedForYou: List<Song>? = null
     @Volatile private var cachedMixedForYouAt: Long = 0L
+
+    @Volatile private var cachedCommunityPlaylists: List<CommunityPlaylist>? = null
+    @Volatile private var cachedCommunityPlaylistsAt: Long = 0L
 
     // ══════════════════════════════════════════
     // MOODS & GENRES
@@ -352,6 +359,110 @@ class BrowseRepositoryImpl @Inject constructor(
         }
 
     // ══════════════════════════════════════════
+    // TRENDING COMMUNITY PLAYLISTS
+    // ══════════════════════════════════════════
+
+    override suspend fun getTrendingCommunityPlaylists(
+        limit: Int,
+        forceRefresh: Boolean
+    ): Result<List<CommunityPlaylist>> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+
+        if (!forceRefresh) {
+            // In-memory cache hit
+            cachedCommunityPlaylists?.takeIf { now - cachedCommunityPlaylistsAt < TTL_COMMUNITY_PLAYLISTS }?.let {
+                Log.d(TAG, "Trending community playlists in-memory cache hit (${it.size} items)")
+                return@withContext Result.success(it.take(limit))
+            }
+
+            // Room cache hit
+            browseSectionDao.getValidCache(KEY_COMMUNITY_PLAYLISTS, now)?.let { entity ->
+                val playlists = deserializeCommunityPlaylists(entity.jsonData)
+                if (playlists.isNotEmpty()) {
+                    cachedCommunityPlaylists = playlists
+                    cachedCommunityPlaylistsAt = entity.cachedAt
+                    Log.d(TAG, "Trending community playlists Room cache hit (${playlists.size} items)")
+                    return@withContext Result.success(playlists.take(limit))
+                }
+            }
+        }
+
+        // Network fetch
+        try {
+            val result = youTubeiService.getTrendingCommunityPlaylists(limit)
+            val rawPlaylists = result.getOrNull().orEmpty()
+            if (rawPlaylists.isNotEmpty()) {
+                // Efficiently fetch up to 3 preview tracks for the first few playlists in parallel
+                val topCount = minOf(rawPlaylists.size, 8)
+                val hydratedPlaylists = coroutineScope {
+                    rawPlaylists.mapIndexed { index, playlist ->
+                        async {
+                            if (index < topCount && playlist.previewTracks.isEmpty()) {
+                                val previewTracks = youTubeiService.getPlaylistPreviewTracks(
+                                    playlist.browseId.ifBlank { playlist.id },
+                                    limit = 3
+                                ).getOrDefault(emptyList())
+                                playlist.copy(previewTracks = previewTracks)
+                            } else {
+                                playlist
+                            }
+                        }
+                    }.awaitAll()
+                }
+
+                cachedCommunityPlaylists = hydratedPlaylists
+                cachedCommunityPlaylistsAt = now
+                persistToRoom(KEY_COMMUNITY_PLAYLISTS, serializeCommunityPlaylists(hydratedPlaylists), TTL_COMMUNITY_PLAYLISTS)
+                Log.d(TAG, "Trending community playlists fetched & hydrated (${hydratedPlaylists.size} items)")
+                Result.success(hydratedPlaylists.take(limit))
+            } else {
+                // Empty network result: preserve cached content if available
+                cachedCommunityPlaylists?.takeIf { it.isNotEmpty() }?.let {
+                    Log.d(TAG, "Empty network result, preserving in-memory cached community playlists")
+                    return@withContext Result.success(it.take(limit))
+                }
+                browseSectionDao.getCache(KEY_COMMUNITY_PLAYLISTS)?.let { entity ->
+                    val fallback = deserializeCommunityPlaylists(entity.jsonData)
+                    if (fallback.isNotEmpty()) {
+                        Log.d(TAG, "Empty network result, preserving Room cached community playlists")
+                        return@withContext Result.success(fallback.take(limit))
+                    }
+                }
+                Result.success(emptyList())
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Trending community playlists network error, falling back to cache", e)
+            cachedCommunityPlaylists?.takeIf { it.isNotEmpty() }?.let {
+                return@withContext Result.success(it.take(limit))
+            }
+            browseSectionDao.getCache(KEY_COMMUNITY_PLAYLISTS)?.let { entity ->
+                val fallback = deserializeCommunityPlaylists(entity.jsonData)
+                if (fallback.isNotEmpty()) {
+                    return@withContext Result.success(fallback.take(limit))
+                }
+            }
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun getPlaylistSongs(browseId: String): Result<List<Song>> = withContext(Dispatchers.IO) {
+        try {
+            val normalizedId = if (browseId.startsWith("PL") && !browseId.startsWith("VL")) "VL$browseId" else browseId
+            val detailsResult = youTubeiService.getPlaylistDetailsFromInnertube(normalizedId)
+            if (detailsResult.isSuccess) {
+                Result.success(detailsResult.getOrThrow().second)
+            } else {
+                youTubeiService.getPlaylistPreviewTracks(normalizedId, limit = 50)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get playlist songs for $browseId", e)
+            Result.failure(e)
+        }
+    }
+
+    // ══════════════════════════════════════════
     // CONTINUATION SHELVES
     // ══════════════════════════════════════════
 
@@ -549,7 +660,7 @@ class BrowseRepositoryImpl @Inject constructor(
                 put("thumbnailUrl", song.thumbnailUrl)
                 put("contentType", song.contentType.name)
                 song.artistId?.let { put("artistId", it) }
-                song.category?.let { put("category", it) }
+                if (song.category.isNotBlank()) put("category", song.category)
                 song.viewCount?.let { put("viewCount", it) }
                 song.albumBrowseId?.let { put("albumBrowseId", it) }
                 song.albumName?.let { put("albumName", it) }
@@ -584,6 +695,50 @@ class BrowseRepositoryImpl @Inject constructor(
                 albumBrowseId = albumBrowseId,
                 albumName = albumName
             )
+        }
+    }
+
+    private fun serializeCommunityPlaylists(playlists: List<CommunityPlaylist>): String {
+        val array = JSONArray()
+        playlists.forEach { pl ->
+            val obj = JSONObject().apply {
+                put("id", pl.id)
+                put("title", pl.title)
+                put("creator", pl.creator)
+                put("thumbnailUrl", pl.thumbnailUrl)
+                pl.trackCount?.let { put("trackCount", it) }
+                pl.trackCountText?.let { put("trackCountText", it) }
+                put("browseId", pl.browseId)
+                pl.viewCountText?.let { put("viewCountText", it) }
+                if (pl.previewTracks.isNotEmpty()) {
+                    put("previewTracks", serializeSongsArray(pl.previewTracks))
+                }
+            }
+            array.put(obj)
+        }
+        return array.toString()
+    }
+
+    private fun deserializeCommunityPlaylists(json: String): List<CommunityPlaylist> {
+        return try {
+            val array = JSONArray(json)
+            (0 until array.length()).mapNotNull { i ->
+                val obj = array.optJSONObject(i) ?: return@mapNotNull null
+                val previewTracks = deserializeSongsArray(obj.optJSONArray("previewTracks"))
+                CommunityPlaylist(
+                    id = obj.optString("id", ""),
+                    title = obj.optString("title", ""),
+                    creator = obj.optString("creator", ""),
+                    thumbnailUrl = obj.optString("thumbnailUrl", ""),
+                    trackCount = if (obj.has("trackCount")) obj.optInt("trackCount") else null,
+                    trackCountText = obj.optString("trackCountText").takeIf { it.isNotBlank() },
+                    browseId = obj.optString("browseId", ""),
+                    viewCountText = obj.optString("viewCountText").takeIf { it.isNotBlank() },
+                    previewTracks = previewTracks
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 }

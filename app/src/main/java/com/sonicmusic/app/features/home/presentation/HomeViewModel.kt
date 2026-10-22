@@ -7,10 +7,12 @@ import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
 import com.sonicmusic.app.data.repository.RegionRepository
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.HomeContent
+import com.sonicmusic.app.domain.model.CommunityPlaylist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.domain.repository.BrowseRepository
 import com.sonicmusic.app.domain.repository.ArtistRepository
+import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.features.home.domain.GetHomeContentUseCase
 import com.sonicmusic.app.shared.components.pullrefresh.RefreshResult
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
@@ -53,6 +55,7 @@ class HomeViewModel @Inject constructor(
     private val artistRepository: ArtistRepository,
     private val networkMonitor: com.sonicmusic.app.core.network.NetworkMonitor,
     private val downloadRepository: com.sonicmusic.app.features.library.data.DownloadRepository,
+    private val playlistRepository: PlaylistRepository,
     private val homeRefreshManager: HomeRefreshManager
 ) : ViewModel() {
 
@@ -110,13 +113,17 @@ class HomeViewModel @Inject constructor(
     private var moreJob: Job? = null
 
     val countryName: StateFlow<String?> = regionRepository.countryName
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnlineState
 
     val downloadedSongIds: StateFlow<Set<String>> = downloadRepository.getDownloadedSongs()
         .map { list -> list.filter { it.status == DownloadStatus.COMPLETED }.map { it.videoId }.toSet() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    val savedPlaylistRemoteIds: StateFlow<Set<String>> = playlistRepository.getAllPlaylists()
+        .map { list -> list.mapNotNull { it.remoteId }.toSet() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
     init {
         loadHomeContent()
@@ -428,14 +435,6 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * Play a song with dynamic recommendations - YouTube Music Style
-     * Does not dump the whole section into the queue; generates fresh recommendations instead.
-     */
-    fun onSongClickWithContext(song: Song, contextSongs: List<Song>, shuffle: Boolean = false) {
-        playerServiceConnection.playSongWithRadio(song)
-    }
-
-    /**
      * Play a song with YouTube Music Radio-style queue
      * When user clicks a song, it plays that song and generates fresh recommendations based on it.
      */
@@ -489,6 +488,140 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
+     * Add single song to queue
+     */
+    fun addToQueue(song: Song) {
+        playerServiceConnection.addSongToQueue(song)
+    }
+
+    /**
+     * Play a community playlist.
+     * Loads the selected playlist's actual tracks, starts playback via Media3 ExoPlayer pipeline,
+     * and updates queue.
+     */
+    fun playCommunityPlaylist(playlist: CommunityPlaylist, shuffle: Boolean = false) {
+        viewModelScope.launch {
+            try {
+                val remoteId = playlist.browseId.ifBlank { playlist.id }
+                val fetched = browseRepository.getPlaylistSongs(remoteId).getOrNull()
+                val songsToUse = fetched?.takeIf { it.isNotEmpty() }
+                    ?: playlist.previewTracks.takeIf { it.isNotEmpty() }
+
+                if (songsToUse.isNullOrEmpty()) {
+                    _error.value = "No playable tracks found in playlist"
+                    return@launch
+                }
+
+                val songsToPlay = if (shuffle) songsToUse.shuffled() else songsToUse
+                songsToPlay.forEach { queueRepository.markSongAsQueued(it.id) }
+                playerServiceConnection.playSongsLazy(
+                    songs = songsToPlay,
+                    startIndex = 0,
+                    songRepository = songRepository
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error playing community playlist", e)
+                _error.value = "Failed to play: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Insert community playlist tracks to play next.
+     */
+    fun playCommunityPlaylistNext(playlist: CommunityPlaylist) {
+        viewModelScope.launch {
+            try {
+                val remoteId = playlist.browseId.ifBlank { playlist.id }
+                val fetched = browseRepository.getPlaylistSongs(remoteId).getOrNull()
+                val songsToUse = fetched?.takeIf { it.isNotEmpty() }
+                    ?: playlist.previewTracks.takeIf { it.isNotEmpty() }
+
+                if (songsToUse.isNullOrEmpty()) {
+                    _error.value = "No tracks available to play next"
+                    return@launch
+                }
+
+                songsToUse.asReversed().forEach { song ->
+                    playerServiceConnection.insertPlayNextLazy(song, songRepository)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adding playlist to play next", e)
+            }
+        }
+    }
+
+    /**
+     * Add community playlist tracks to the end of the queue.
+     */
+    fun addCommunityPlaylistToQueue(playlist: CommunityPlaylist) {
+        viewModelScope.launch {
+            try {
+                val remoteId = playlist.browseId.ifBlank { playlist.id }
+                val fetched = browseRepository.getPlaylistSongs(remoteId).getOrNull()
+                val songsToUse = fetched?.takeIf { it.isNotEmpty() }
+                    ?: playlist.previewTracks.takeIf { it.isNotEmpty() }
+
+                if (songsToUse.isNullOrEmpty()) {
+                    _error.value = "No tracks available to queue"
+                    return@launch
+                }
+
+                songsToUse.forEach { song ->
+                    playerServiceConnection.addSongToQueue(song)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adding playlist to queue", e)
+            }
+        }
+    }
+
+    /**
+     * Save community playlist to local library.
+     */
+    fun toggleSaveCommunityPlaylist(playlist: CommunityPlaylist) {
+        viewModelScope.launch {
+            try {
+                val remoteId = playlist.browseId.ifBlank { playlist.id }
+                val isSaved = remoteId in savedPlaylistRemoteIds.value
+                if (isSaved) {
+                    Log.d(TAG, "Playlist ${playlist.title} already saved in library")
+                    return@launch
+                }
+
+                val fetchResult = playlistRepository.fetchRemotePlaylist(remoteId)
+                fetchResult.onSuccess { (remotePlaylist, songs) ->
+                    playlistRepository.saveRemotePlaylist(
+                        remotePlaylist.copy(
+                            name = playlist.title.ifBlank { remotePlaylist.name },
+                            coverArtUrl = playlist.thumbnailUrl.ifBlank { remotePlaylist.coverArtUrl }
+                        ),
+                        songs
+                    )
+                    Log.d(TAG, "Saved community playlist ${playlist.title} with ${songs.size} songs")
+                }.onFailure {
+                    val domainPlaylist = com.sonicmusic.app.domain.model.Playlist(
+                        id = 0,
+                        name = playlist.title,
+                        description = "Curated by ${playlist.creator}",
+                        coverArtUrl = playlist.thumbnailUrl,
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                        songCount = playlist.previewTracks.size,
+                        songs = playlist.previewTracks,
+                        isLocal = false,
+                        remoteId = remoteId
+                    )
+                    playlistRepository.saveRemotePlaylist(domainPlaylist, playlist.previewTracks)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save community playlist", e)
+                _error.value = "Failed to save playlist: ${e.message}"
+            }
+        }
+    }
+
+    /**
      * Validate section before navigating to section detail.
      *
      * @return section key if it can be opened, otherwise null.
@@ -529,7 +662,7 @@ class HomeViewModel @Inject constructor(
      *
      * Falls back to radio queue if the section cannot be resolved.
      */
-    fun onSectionSongClick(section: String, song: Song): Boolean {
+    fun onSectionSongClick(@Suppress("UNUSED_PARAMETER") section: String, song: Song): Boolean {
         onSongClickWithRadioQueue(song)
         return true
     }

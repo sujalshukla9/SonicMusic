@@ -7,81 +7,114 @@ package com.sonicmusic.app.domain.model
  * Tracks codec, bitrate, sample rate, bit depth, and quality tier.
  */
 data class AudioStreamInfo(
-    val codec: String = "Unknown",
+    val codec: String = "",
     val bitrate: Int = 0,
-    val sampleRate: Int = 44100,
-    val bitDepth: Int = 16,
-    val qualityTier: StreamQuality = StreamQuality.HIGH,
+    val sampleRate: Int = 0,
+    val bitDepth: Int = 0,
+    val qualityTier: StreamQuality = StreamQuality.BEST,
     val containerFormat: String = "",
-    val channelCount: Int = 2,
+    val channelCount: Int = 0,
     val isEnhanced: Boolean = false,
     val isLocal: Boolean = false,
-    /**
-     * True only when the selected InnerTube playback rendition has explicit
-     * Dolby Atmos/JOC metadata. Generic Dolby, multichannel, AC-4, and spatial
-     * flags are insufficient. This does not indicate device capability.
-     */
-    val hasDolbyAtmos: Boolean = false,
+    val itag: Int? = null,
+    val loudnessDb: Double? = null,
+    val contentLength: Long? = null,
 ) {
     /**
-     * Whether this stream qualifies as high-res
+     * Whether this stream qualifies as genuine high-res audio.
+     * Only verified lossless uncompressed/losslessly-compressed formats (FLAC, ALAC, WAV)
+     * exceeding CD standard (sample rate > 48kHz or bit depth > 16-bit) qualify as Hi-Res.
+     * Lossy streams (YouTube AAC/Opus) never qualify as Hi-Res.
      */
     val isHighRes: Boolean
-        get() = qualityTier.isHighRes || bitrate >= 256 || sampleRate > 44100
+        get() = (codec.equals("FLAC", true) || codec.equals("ALAC", true) || codec.equals("WAV", true)) &&
+                (sampleRate > 48000 || bitDepth > 16)
 
     /**
-     * Human-readable quality badge like Apple Music shows
-     * e.g., "AAC 256", "AAC", "Hi-Res"
+     * Human-readable quality badge.
+     * Displays only verified properties (e.g. "OPUS 128", "AAC 130", "AAC 256", "Lossless FLAC").
+     * Never assigns fake bitrate values or labels lossy streams as Hi-Res or lossless.
      */
     val qualityBadge: String
         get() = when {
             isEnhanced && isHighRes -> "Enhanced · Hi-Res"
             isEnhanced -> "Enhanced"
-            // AAC at 256kbps (our primary best quality)
-            (codec.equals("AAC", true) || codec.equals("AAC-LC", true)) && bitrate >= 256 -> "AAC 256"
-            codec.equals("AAC-HE", true) -> "HE-AAC"
-            codec.equals("AAC", true) || codec.equals("AAC-LC", true) -> "AAC"
-            // OPUS only shown when it's actually selected (last resort)
-            codec.equals("OPUS", true) && bitrate >= 256 -> "Hi-Res"
-            codec.equals("OPUS", true) -> "OPUS"
-            else -> codec.uppercase()
+            isLocal -> if (codec.isNotBlank() && codec != "Unknown") "Local · ${codec.uppercase()}" else "Local"
+            codec.equals("FLAC", true) -> if (isHighRes) "Hi-Res Lossless" else "Lossless FLAC"
+            codec.equals("ALAC", true) -> if (isHighRes) "Hi-Res Lossless" else "Lossless ALAC"
+            codec.equals("WAV", true) -> if (isHighRes) "Hi-Res WAV" else "WAV"
+            codec.equals("OPUS", true) -> if (bitrate > 0) "OPUS $bitrate" else "OPUS"
+            codec.equals("AAC-HE", true) -> if (bitrate > 0) "HE-AAC $bitrate" else "HE-AAC"
+            codec.contains("AAC", true) -> if (bitrate > 0) "AAC $bitrate" else "AAC"
+            codec.isNotBlank() && codec != "Unknown" -> if (bitrate > 0) "${codec.uppercase()} $bitrate" else codec.uppercase()
+            bitrate > 0 -> "$bitrate kbps"
+            else -> "Audio"
         }
 
-
     /**
-     * Full quality description for settings/info display
-     * e.g., "OPUS · 256 kbps · 48 kHz · 16-bit"
+     * Full quality description for settings/info display.
+     * Formats only verified fields, omitting unverified or absent metadata.
+     * e.g., "OPUS · 128 kbps · 48 kHz · Stereo"
      */
     val fullDescription: String
         get() {
             val parts = mutableListOf<String>()
-            parts.add(codec.uppercase())
-            if (bitrate > 0) parts.add("${bitrate} kbps")
-            parts.add("${sampleRate / 1000f}".removeSuffix(".0") + " kHz")
-            parts.add("${bitDepth}-bit")
+            if (codec.isNotBlank() && codec != "Unknown") {
+                parts.add(codec.uppercase())
+            }
+            if (bitrate > 0) {
+                parts.add("$bitrate kbps")
+            }
+            if (sampleRate > 0) {
+                parts.add("${sampleRate / 1000f}".removeSuffix(".0") + " kHz")
+            }
+            if (bitDepth > 0) {
+                parts.add("${bitDepth}-bit")
+            }
+            if (channelCount > 0) {
+                when (channelCount) {
+                    1 -> parts.add("Mono")
+                    2 -> parts.add("Stereo")
+                    else -> parts.add("${channelCount}ch")
+                }
+            }
+            if (parts.isEmpty()) {
+                return "Audio Stream"
+            }
             return parts.joinToString(" · ")
         }
 
     /**
      * Compact signal path description
-     * e.g., "OPUS 256kbps → AudioEngine → DAC"
+     * e.g., "OPUS 128kbps → AudioEngine → DAC"
      */
     fun getSignalPath(outputDevice: String = "Speaker"): String {
-        val source = "${codec.uppercase()} ${bitrate}kbps"
+        val source = if (bitrate > 0 && codec.isNotBlank() && codec != "Unknown") {
+            "${codec.uppercase()} ${bitrate}kbps"
+        } else if (codec.isNotBlank() && codec != "Unknown") {
+            codec.uppercase()
+        } else if (bitrate > 0) {
+            "${bitrate}kbps"
+        } else {
+            "Audio"
+        }
         return "$source → AudioEngine → $outputDevice"
     }
 
     companion object {
         /**
-         * Detect codec from MIME type
+         * Detect codec from MIME type or codec string
          */
         fun codecFromMimeType(mimeType: String): String = when {
             mimeType.contains("opus", true) -> "OPUS"
             mimeType.contains("mp4a.40.2", true) -> "AAC-LC"
             mimeType.contains("mp4a.40.5", true) -> "AAC-HE"
-            mimeType.contains("mp4a", true) -> "AAC"
-            mimeType.contains("vorbis", true) -> "Vorbis"
+            mimeType.contains("mp4a", true) || mimeType.contains("aac", true) -> "AAC"
             mimeType.contains("flac", true) -> "FLAC"
+            mimeType.contains("alac", true) -> "ALAC"
+            mimeType.contains("vorbis", true) -> "Vorbis"
+            mimeType.contains("mp3", true) || mimeType.contains("mpeg", true) -> "MP3"
+            mimeType.contains("wav", true) -> "WAV"
             else -> "Unknown"
         }
 
@@ -90,42 +123,60 @@ data class AudioStreamInfo(
          */
         fun containerFromMimeType(mimeType: String): String = when {
             mimeType.contains("webm", true) -> "WebM"
-            mimeType.contains("mp4", true) -> "M4A"
+            mimeType.contains("mp4", true) || mimeType.contains("m4a", true) -> "M4A"
             mimeType.contains("ogg", true) -> "OGG"
+            mimeType.contains("flac", true) -> "FLAC"
+            mimeType.contains("wav", true) -> "WAV"
+            mimeType.contains("mp3", true) || mimeType.contains("mpeg", true) -> "MP3"
             else -> "Unknown"
         }
 
         /**
-         * Determine quality tier from stream parameters.
+         * Standard YouTube nominal bitrates in kbps for known itags when manifest bitrate is omitted.
+         */
+        fun nominalBitrateForItag(itag: Int?): Int? = when (itag) {
+            251 -> 160
+            141, 338 -> 256
+            22 -> 192
+            140, 171 -> 128
+            18 -> 96
+            250 -> 70
+            249 -> 50
+            600 -> 35
+            599 -> 32
+            else -> null
+        }
+
+        /**
+         * Standard YouTube sample rates in Hz for known itags when manifest sample rate is omitted.
+         */
+        fun nominalSampleRateForItag(itag: Int?): Int? = when (itag) {
+            251, 250, 249, 600 -> 48000
+            141, 140, 171, 338, 22, 18 -> 44100
+            599 -> 22050
+            else -> null
+        }
+
+        /**
+         * Determine quality tier from verified stream parameters.
          *
-         * AAC ≥256kbps → BEST  (our primary quality target)
-         * AAC ≥128kbps → HIGH
-         * OPUS ≥256kbps → HIGH (high-quality but not our preferred codec)
+         * AAC ≥256kbps → BEST
+         * OPUS ≥128kbps → BEST (48kHz fullband, high acoustic transparency)
+         * OPUS ≥96kbps  → HIGH
+         * AAC ≥120kbps  → HIGH
          * others        → MEDIUM / LOW by bitrate
          */
         fun qualityTierFromStream(codec: String, bitrate: Int): StreamQuality = when {
-            codec.equals("AAC-LC", true) && bitrate >= 256 -> StreamQuality.BEST
-            codec.equals("AAC", true) && bitrate >= 256 -> StreamQuality.BEST
-            codec.equals("AAC-LC", true) && bitrate >= 128 -> StreamQuality.HIGH
-            codec.equals("AAC", true) && bitrate >= 128 -> StreamQuality.HIGH
+            bitrate <= 0 -> StreamQuality.BEST
+            codec.contains("AAC", true) && bitrate >= 256 -> StreamQuality.BEST
+            codec.equals("OPUS", true) && bitrate >= 125 -> StreamQuality.BEST
+            codec.equals("OPUS", true) && bitrate >= 96 -> StreamQuality.HIGH
+            codec.contains("AAC", true) && bitrate >= 120 -> StreamQuality.HIGH
             codec.equals("AAC-HE", true) && bitrate >= 64 -> StreamQuality.HIGH
-            codec.equals("OPUS", true) && bitrate >= 256 -> StreamQuality.HIGH
-            bitrate >= 256 -> StreamQuality.HIGH
-            bitrate >= 128 -> StreamQuality.MEDIUM
+            bitrate >= 200 -> StreamQuality.BEST
+            bitrate >= 120 -> StreamQuality.HIGH
+            bitrate >= 80 -> StreamQuality.MEDIUM
             else -> StreamQuality.LOW
-        }
-
-
-        /**
-         * Estimate sample rate from itag
-         * YouTube typically serves 48kHz for OPUS, 44.1kHz for AAC
-         */
-        fun sampleRateFromCodec(codec: String): Int = when {
-            codec.equals("OPUS", true) -> 48000
-            codec.equals("AAC-LC", true) -> 44100
-            codec.equals("AAC-HE", true) -> 44100
-            codec.equals("AAC", true) -> 44100
-            else -> 44100
         }
     }
 }

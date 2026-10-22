@@ -9,6 +9,7 @@ import com.sonicmusic.app.data.local.entity.SongEntity
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.data.remote.source.NewPipeService
 import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
@@ -19,11 +20,16 @@ import com.sonicmusic.app.features.recommendations.engine.NewReleaseScoringEngin
 import com.sonicmusic.app.features.recommendations.engine.TrendingScoringEngine
 import com.sonicmusic.app.features.player.audio.AudioEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import com.sonicmusic.app.data.local.dao.DownloadedSongDao
 import com.sonicmusic.app.data.mapper.toEntity
 import com.sonicmusic.app.data.mapper.toSong
+import java.io.File
 import java.util.Calendar
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -33,6 +39,7 @@ import javax.inject.Singleton
 @Singleton
 class SongRepositoryImpl @Inject constructor(
     private val songDao: SongDao,
+    private val downloadedSongDao: DownloadedSongDao,
     private val youTubeiService: YouTubeiService,
     private val newPipeService: NewPipeService,
     private val audioStreamExtractor: AudioStreamExtractor,
@@ -65,16 +72,31 @@ class SongRepositoryImpl @Inject constructor(
         )
     }
 
-    // Keep quality awareness for in-memory URL cache validity.
+    data class CachedStream(
+        val url: String,
+        val info: AudioStreamInfo,
+        val quality: StreamQuality,
+        val expiresAtMs: Long
+    )
+
+    // Ephemeral in-memory stream cache (never persist temporary cipher URLs to disk DB)
+    private val memoryStreamCache = ConcurrentHashMap<String, CachedStream>()
     private val streamQualityCache = ConcurrentHashMap<String, StreamQuality>()
+    private val streamInfoCache = ConcurrentHashMap<String, AudioStreamInfo>()
+
+    init {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                songDao.clearAllCachedStreamUrls()
+                Log.d(TAG, "Cleared all legacy cached stream URLs from database")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to clear legacy cached stream URLs", e)
+            }
+        }
+    }
     
     override suspend fun searchSongs(query: String, limit: Int): Result<List<Song>> {
         return youTubeiService.searchSongs(query, limit)
-            .onSuccess { songs ->
-                // Cache songs to database
-                val entities = songs.map { it.toEntity() }
-                songDao.insertAll(entities)
-            }
     }
 
     override suspend fun getSearchSuggestions(query: String): Result<List<String>> {
@@ -129,68 +151,59 @@ class SongRepositoryImpl @Inject constructor(
                     song.toEntity().copy(
                         isLiked = cachedSong.isLiked,
                         likedAt = cachedSong.likedAt,
-                        cachedStreamUrl = cachedSong.cachedStreamUrl,
-                        cacheExpiry = cachedSong.cacheExpiry
+                        cachedStreamUrl = null,
+                        cacheExpiry = null
                     )
                 } else {
-                    song.toEntity()
+                    song.toEntity().copy(
+                        cachedStreamUrl = null,
+                        cacheExpiry = null
+                    )
                 }
                 songDao.insertSong(entityToInsert)
             }
     }
 
-    override suspend fun getStreamUrl(songId: String, quality: StreamQuality): Result<String> {
-        return getStreamWithInfo(songId, quality).map { it.first }
+    override suspend fun getStreamUrl(songId: String, quality: StreamQuality, forceRefresh: Boolean): Result<String> {
+        return getStreamWithInfo(songId, quality, forceRefresh).map { it.first }
     }
 
     override suspend fun getStreamWithInfo(
         songId: String,
         quality: StreamQuality,
+        forceRefresh: Boolean,
     ): Result<Pair<String, AudioStreamInfo>> {
         val effectiveQuality = resolveQuality(quality)
 
         // Prefer offline file when available.
         songDownloadManager.getPlaybackFile(songId).getOrNull()?.let { localFile ->
             val localUri = localFile.absolutePath
-            val localInfo = fallbackStreamInfo(
-                quality = StreamQuality.BEST,
-                codec = "LOCAL",
-                container = localFile.extension.ifBlank { "File" },
-            )
-            audioEngine.updateStreamInfo(localInfo)
+            val localInfo = streamInfoCache[songId] ?: buildLocalStreamInfo(songId, localFile)
+            streamInfoCache[songId] = localInfo
+            // Note: do not mutate global audioEngine here, as getStreamWithInfo can be called for metadata preview of any song.
             return Result.success(localUri to localInfo)
         }
 
-        val cachedSong = songDao.getSongById(songId)?.takeIf { it.title.isNotBlank() && it.artist.isNotBlank() }
-        if (cachedSong?.cachedStreamUrl != null &&
-            cachedSong.cacheExpiry != null &&
-            cachedSong.cacheExpiry > System.currentTimeMillis() &&
-            streamQualityCache[songId] == effectiveQuality
-        ) {
-            // Confirm the cached URL's own InnerTube rendition. Do not inherit a
-            // video-level result from a different quality or codec.
-            val hasAtmos = audioStreamExtractor.detectDolbyAtmos(songId, cachedSong.cachedStreamUrl)
-            val cachedInfo = fallbackStreamInfo(quality = effectiveQuality).copy(hasDolbyAtmos = hasAtmos)
-            audioEngine.updateStreamInfo(cachedInfo)
-            return Result.success(cachedSong.cachedStreamUrl to cachedInfo)
+        if (!forceRefresh) {
+            val cached = memoryStreamCache[songId]
+            if (cached != null &&
+                cached.expiresAtMs > (System.currentTimeMillis() + 60_000L) &&
+                cached.quality == effectiveQuality
+            ) {
+                streamInfoCache[songId] = cached.info
+                return Result.success(cached.url to cached.info)
+            }
         }
 
-        val (streamUrl, info) = audioStreamExtractor.extractAudioStream(songId, effectiveQuality)
+        val (streamUrl, info) = audioStreamExtractor.extractAudioStream(songId, effectiveQuality, forceRefresh)
             .getOrElse { return Result.failure(it) }
 
+        val expiry = AudioStreamCandidate.extractExpiryFromUrl(streamUrl)
+            ?: (System.currentTimeMillis() + (15 * 60 * 1000L))
+        memoryStreamCache[songId] = CachedStream(streamUrl, info, effectiveQuality, expiry)
         streamQualityCache[songId] = effectiveQuality
+        streamInfoCache[songId] = info
 
-        val expiry = System.currentTimeMillis() + (30 * 60 * 1000)
-        if (cachedSong != null) {
-            songDao.updateSong(
-                cachedSong.copy(
-                    cachedStreamUrl = streamUrl,
-                    cacheExpiry = expiry,
-                )
-            )
-        }
-
-        audioEngine.updateStreamInfo(info)
         return Result.success(streamUrl to info)
     }
 
@@ -258,8 +271,7 @@ class SongRepositoryImpl @Inject constructor(
                 Log.d(TAG, "English hits directly from YTM: ${hits.size} songs")
                 Result.success(hits.take(safeLimit))
             } else {
-                val year = Calendar.getInstance().get(Calendar.YEAR)
-                val fallbackSongs = youTubeiService.searchSongs("top english songs $year", safeLimit)
+                val fallbackSongs = youTubeiService.searchSongs("top international pop hits", safeLimit)
                     .getOrNull().orEmpty()
                     .filter(::isLikelyEnglishTrack)
                 Result.success(fallbackSongs.take(safeLimit))
@@ -294,11 +306,14 @@ class SongRepositoryImpl @Inject constructor(
     }
 
     override suspend fun clearCachedStreamUrl(songId: String) {
+        memoryStreamCache.remove(songId)
+        streamQualityCache.remove(songId)
+        streamInfoCache.remove(songId)
         val cachedSong = songDao.getSongById(songId)
         cachedSong?.let {
             songDao.updateSong(it.copy(cachedStreamUrl = null, cacheExpiry = null))
         }
-        streamQualityCache.remove(songId)
+        Log.d(TAG, "Cleared cached stream URL and stream info for: $songId")
     }
 
     override suspend fun cacheSong(song: Song) {
@@ -308,11 +323,14 @@ class SongRepositoryImpl @Inject constructor(
                 base.copy(
                     isLiked = existing.isLiked,
                     likedAt = existing.likedAt,
-                    cachedStreamUrl = existing.cachedStreamUrl,
-                    cacheExpiry = existing.cacheExpiry
+                    cachedStreamUrl = null,
+                    cacheExpiry = null
                 )
             } else {
-                base
+                base.copy(
+                    cachedStreamUrl = null,
+                    cacheExpiry = null
+                )
             }
         }
         songDao.insertSong(entity)
@@ -372,64 +390,66 @@ class SongRepositoryImpl @Inject constructor(
             Character.UnicodeScript.of(it.code) == Character.UnicodeScript.LATIN
         }
         val latinRatio = latinCount.toFloat() / letters.length.toFloat()
-        return latinRatio >= 0.85f
+        return latinRatio >= 0.70f
     }
 
-    private fun fallbackStreamInfo(
-        quality: StreamQuality,
-        codec: String? = null,
-        container: String? = null
-    ): AudioStreamInfo {
-        val bitrate = when (quality) {
-            StreamQuality.BEST -> 256
-            StreamQuality.HIGH -> 256
-            StreamQuality.MEDIUM -> 128
-            StreamQuality.LOW -> 64
+    private suspend fun buildLocalStreamInfo(songId: String, localFile: File): AudioStreamInfo {
+        val ext = localFile.extension.lowercase(Locale.ROOT)
+        val isOpus = ext == "opus" || ext == "webm"
+        val isAac = ext == "m4a" || ext == "mp4" || ext == "aac"
+        val isFlac = ext == "flac"
+
+        val codec = when {
+            isOpus -> "OPUS"
+            isAac -> "AAC"
+            isFlac -> "FLAC"
+            else -> ext.uppercase(Locale.ROOT)
         }
+        val container = when {
+            isOpus -> "WebM"
+            isAac -> "M4A"
+            isFlac -> "FLAC"
+            else -> ext.uppercase(Locale.ROOT)
+        }
+        var localSampleRate = 0
+        var localBitDepth = 0
+        var localChannels = 0
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(localFile.absolutePath)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()?.let {
+                    if (it > 0) localSampleRate = it
+                }
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_BITS_PER_SAMPLE)?.toIntOrNull()?.let {
+                    if (it > 0) localBitDepth = it
+                }
+            }
+            retriever.release()
+        } catch (_: Exception) {}
+
+        val downloadedSong = downloadedSongDao.getDownloadedSong(songId)
+        val durationMs = downloadedSong?.durationMs ?: 0L
+        val fileSize = if (localFile.exists() && localFile.length() > 0) localFile.length() else (downloadedSong?.fileSizeBytes ?: 0L)
+        val calculatedBitrate = if (durationMs > 0 && fileSize > 0) {
+            ((fileSize * 8) / durationMs).toInt()
+        } else {
+            0
+        }
+
         return AudioStreamInfo(
-            codec = codec ?: "AAC",
-            bitrate = bitrate,
-            sampleRate = 44100,
-            bitDepth = 16,
-            qualityTier = quality,
-            containerFormat = container ?: "M4A",
-            isEnhanced = false
+            codec = codec,
+            bitrate = calculatedBitrate,
+            sampleRate = localSampleRate,
+            bitDepth = localBitDepth,
+            qualityTier = AudioStreamInfo.qualityTierFromStream(codec, calculatedBitrate),
+            containerFormat = container,
+            channelCount = localChannels,
+            isEnhanced = false,
+            isLocal = true,
+            contentLength = fileSize.takeIf { it > 0 },
         )
     }
-
-
-    /** Shared artist → genre map for scoring engines. */
-    private val ARTIST_GENRE_MAP = mapOf(
-        "Arijit Singh" to listOf(" Bollywood", " Romantic"),
-        "Shreya Ghoshal" to listOf(" Bollywood", " Classical"),
-        "Atif Aslam" to listOf(" Bollywood", " Pop"),
-        "Pritam" to listOf(" Bollywood", " Film"),
-        "A.R. Rahman" to listOf(" Bollywood", " Classical", " World"),
-        "Neha Kakkar" to listOf(" Bollywood", " Pop"),
-        "Badshah" to listOf(" Hip-Hop", " Bollywood"),
-        "Honey Singh" to listOf(" Hip-Hop", " Bollywood"),
-        "Jubin Nautiyal" to listOf(" Bollywood", " Pop"),
-        "B Praak" to listOf(" Bollywood", " Punjabi"),
-        "Vishal Mishra" to listOf(" Bollywood", " Romantic"),
-        "Diljit Dosanjh" to listOf(" Punjabi", " Pop"),
-        "AP Dhillon" to listOf(" Punjabi", " Hip-Hop"),
-        "Drake" to listOf(" Hip-Hop", " R&B"),
-        "Taylor Swift" to listOf(" Pop", " Country"),
-        "The Weeknd" to listOf(" R&B", " Pop"),
-        "Ed Sheeran" to listOf(" Pop", " Acoustic"),
-        "BTS" to listOf(" K-Pop", " Pop"),
-        "Eminem" to listOf(" Hip-Hop", " Rap"),
-        "Billie Eilish" to listOf(" Pop", " Alternative"),
-        "Post Malone" to listOf(" Hip-Hop", " Pop"),
-        "Dua Lipa" to listOf(" Pop", " Dance"),
-        "Travis Scott" to listOf(" Hip-Hop", " Trap"),
-        "Lana Del Rey" to listOf(" Indie", " Pop"),
-        "Coldplay" to listOf(" Rock", " Pop"),
-        "Imagine Dragons" to listOf(" Rock", " Pop"),
-        "Ariana Grande" to listOf(" Pop", " R&B"),
-        "Justin Bieber" to listOf(" Pop", " R&B"),
-        "Maroon 5" to listOf(" Pop", " Rock"),
-        "Sunidhi Chauhan" to listOf(" Bollywood", " Pop"),
-        "Sonu Nigam" to listOf(" Bollywood", " Classical")
-    )
 }

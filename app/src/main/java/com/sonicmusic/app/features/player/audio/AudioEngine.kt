@@ -20,6 +20,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.StreamQuality
+import androidx.media3.common.Format
 
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +66,7 @@ import javax.inject.Singleton
  * AUDIO EFFECTS
  * - 5-Band Parametric EQ with professional presets
  * - Sound Check (LUFS loudness normalization)
- * - Spatial Audio (Dolby Atmos-like 3D immersion)
+ * - Spatial Audio (3D immersion)
  * - Bass Boost with adjustable strength
  * - Crossfade with smooth transitions
  * - Reverb with concert hall presets
@@ -90,6 +91,7 @@ class AudioEngine @Inject constructor(
         private val KEY_SPATIAL_AUDIO = booleanPreferencesKey("spatial_audio_enabled")
         private val KEY_SPATIAL_STRENGTH = intPreferencesKey("spatial_strength")
         private val KEY_SPATIAL_MIGRATED = booleanPreferencesKey("spatial_migrated_v1")
+        private val KEY_FIDELITY_MIGRATED = booleanPreferencesKey("audio_fidelity_migrated_v2")
         private val KEY_EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         private val KEY_EQ_PRESET = stringPreferencesKey("eq_preset")
         private val KEY_REVERB_ENABLED = booleanPreferencesKey("reverb_enabled")
@@ -104,6 +106,7 @@ class AudioEngine @Inject constructor(
         const val DEFAULT_CROSSFADE_DURATION = 3000
         const val DEFAULT_LOUDNESS_TARGET = -16f  // Apple Music standard (-16 LUFS)
         const val MAX_VIRTUALIZER_STRENGTH = 1000
+        const val DEFAULT_VIRTUALIZER_STRENGTH = 500
         private const val JAMES_DSP_MUD_CUT_MAX_MB = 180
         private const val JAMES_DSP_PRESENCE_RECOVERY_MAX_MB = 90
         private const val JAMES_DSP_HEADROOM_MAX_MB = 260
@@ -122,24 +125,11 @@ class AudioEngine @Inject constructor(
                 Log.w(TAG, "Failed to load saved audio prefs at startup", e)
             }
         }
-        // Observe capability detector changes dynamically to initialize Dolby DSP when detected
+        // Coordinate in-app Virtualizer with OS Spatializer & route changes
         scope.launch {
             capabilityDetector.capability.collect { cap ->
-                Log.d(TAG, "Dolby capability changed: ${cap.dolbyLabel} (descriptor=${cap.dolbyEffectDescriptor})")
-                val deviceSupportsDolby = cap.supportsDolbyAtmos
-                val shouldEnableDolby = deviceSupportsDolby && currentStreamHasDolbyAtmos
-                val sessionId = currentAudioSessionId
-                if (sessionId != 0 && cap.dolbyEffectDescriptor != null) {
-                    initializeDolbyDsp(sessionId)
-                } else {
-                    // Release in-app Dolby effect if descriptor absent, but preserve device Dolby capability
-                    dolbyEffect?.release()
-                    dolbyEffect = null
-                    _audioEngineState.value = _audioEngineState.value.copy(
-                        dolbyDspAvailable = deviceSupportsDolby,
-                        dolbyDspEnabled = shouldEnableDolby
-                    )
-                }
+                Log.d(TAG, "AudioCapability updated: osSpatialProcessingActive=${cap.osSpatialProcessingActive}, route=${cap.currentOutputRouteName}")
+                updateVirtualizerState()
             }
         }
     }
@@ -149,15 +139,11 @@ class AudioEngine @Inject constructor(
     private var virtualizer: Virtualizer? = null
     private var equalizer: Equalizer? = null
     private var reverb: PresetReverb? = null
-    private var dolbyEffect: AudioEffect? = null
     
     // Current audio session
     private var currentAudioSessionId: Int = 0
     private val customBandLevels = ShortArray(5) { 0 }
     
-    // Per-song Dolby Atmos state: true only when the current song's InnerTube
-    // metadata confirms Dolby Atmos audio streams are available.
-    private var currentStreamHasDolbyAtmos: Boolean = false
     
     // ═══════════════════════════════════════════════════════════════
     // STATE FLOWS
@@ -222,7 +208,6 @@ class AudioEngine @Inject constructor(
         initializeVirtualizer(audioSessionId)
         initializeEqualizer(audioSessionId)
         initializeReverb(audioSessionId)
-        initializeDolbyDsp(audioSessionId)
         
         // Detect output device capabilities
         detectOutputDevice()
@@ -250,18 +235,9 @@ class AudioEngine @Inject constructor(
     private fun initializeVirtualizer(audioSessionId: Int) {
         try {
             if (isEffectTypeSupported(AudioEffect.EFFECT_TYPE_VIRTUALIZER)) {
-                val isEnabled = _audioEngineState.value.spatialAudioEnabled
-                val strengthVal = _audioEngineState.value.spatialStrength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH).toShort()
-                virtualizer = Virtualizer(0, audioSessionId).apply {
-                    try {
-                        forceVirtualizationMode(Virtualizer.VIRTUALIZATION_MODE_AUTO)
-                    } catch (_: Exception) {}
-                    if (strengthSupported) {
-                        setStrength(strengthVal)
-                    }
-                    enabled = isEnabled
-                }
-                Log.d(TAG, "Virtualizer (Spatial Audio) initialized (enabled=$isEnabled, strength=$strengthVal)")
+                virtualizer = Virtualizer(0, audioSessionId)
+                updateVirtualizerState()
+                Log.d(TAG, "Virtualizer initialized on session $audioSessionId")
             } else {
                 Log.d(TAG, "Virtualizer not supported on this device")
             }
@@ -320,30 +296,41 @@ class AudioEngine @Inject constructor(
         val cellularTier = prefs[KEY_CELLULAR_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.HIGH
         val downloadTier = prefs[KEY_DOWNLOAD_QUALITY_TIER]?.let { StreamQuality.fromName(it) } ?: StreamQuality.BEST
         
-        val isMigrated = prefs[KEY_SPATIAL_MIGRATED] ?: false
-        val spatialAudioEnabled = if (!isMigrated) {
-            // First time / upgrade: ensure spatial sound is enabled by default
+        val isFidelityMigrated = prefs[KEY_FIDELITY_MIGRATED] ?: false
+        val spatialAudioEnabled: Boolean
+        val spatialStrength: Int
+        val soundCheckEnabled: Boolean
+
+        if (!isFidelityMigrated) {
+            // Audio Fidelity Reset:
+            // Previous versions forced destructive 100% Virtualizer immersion and dynamic range compression ON by default,
+            // which caused audio to sound hollow, phase-cancelled, and muffled.
+            // Reset to clean, bit-perfect, uncompressed audio by default.
+            spatialAudioEnabled = false
+            spatialStrength = DEFAULT_VIRTUALIZER_STRENGTH
+            soundCheckEnabled = false
             scope.launch {
                 try {
                     context.audioPrefs.edit {
-                        it[KEY_SPATIAL_AUDIO] = true
-                        it[KEY_SPATIAL_STRENGTH] = 800
-                        it[KEY_SPATIAL_MIGRATED] = true
+                        it[KEY_SPATIAL_AUDIO] = false
+                        it[KEY_SPATIAL_STRENGTH] = DEFAULT_VIRTUALIZER_STRENGTH
+                        it[KEY_SOUND_CHECK] = false
+                        it[KEY_FIDELITY_MIGRATED] = true
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to persist initial spatial audio prefs", e)
+                    Log.w(TAG, "Failed to persist audio fidelity reset prefs", e)
                 }
             }
-            true
         } else {
-            prefs[KEY_SPATIAL_AUDIO] ?: true
+            spatialAudioEnabled = prefs[KEY_SPATIAL_AUDIO] ?: false
+            spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: DEFAULT_VIRTUALIZER_STRENGTH
+            soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: false
         }
-        val spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800
 
         val state = AudioEngineState(
             crossfadeEnabled = prefs[KEY_CROSSFADE_ENABLED] ?: false,
             crossfadeDuration = prefs[KEY_CROSSFADE_DURATION] ?: DEFAULT_CROSSFADE_DURATION,
-            soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: true,
+            soundCheckEnabled = soundCheckEnabled,
             loudnessTarget = prefs[KEY_LOUDNESS_TARGET] ?: DEFAULT_LOUDNESS_TARGET,
 
             spatialAudioEnabled = spatialAudioEnabled,
@@ -427,93 +414,58 @@ class AudioEngine @Inject constructor(
         }
     }
     
+    private var currentActiveSongId: String? = null
+
     /**
      * Update the currently playing stream's metadata.
-     * Called by PlaybackService when a new stream starts playing.
+     * Called by PlaybackService / PlayerServiceConnection when a new stream starts playing.
      */
-    fun updateStreamInfo(info: AudioStreamInfo) {
+    fun updateStreamInfo(info: AudioStreamInfo, songId: String? = null) {
+        if (songId != null) {
+            currentActiveSongId = songId
+        }
         _currentStreamInfo.value = info
-        Log.d(TAG, "Now Playing: ${info.fullDescription}")
+        Log.d(TAG, "Now Playing (${songId ?: "unknown"}): ${info.fullDescription}")
         Log.d(TAG, "Quality Badge: ${info.qualityBadge}")
         Log.d(TAG, "Signal Path: ${info.getSignalPath(getOutputDeviceName())}")
-
-        // ── Per-song Dolby Atmos decision ──────────────────────────
-        // Enable Dolby Atmos DSP ONLY when:
-        //   1. The device supports Dolby Atmos (the existing detector positively reports Dolby Atmos support)
-        //   2. The current song's InnerTube metadata confirms Dolby Atmos
-        //      selected stream is explicitly labelled Atmos (hasDolbyAtmos == true)
-        //
-        // If the song doesn't have Dolby Atmos data, we keep normal
-        // stereo/audio processing — no false Atmos badge is shown.
-        currentStreamHasDolbyAtmos = info.hasDolbyAtmos
-        val deviceSupportsDolby = capabilityDetector.capability.value.supportsDolbyAtmos
-        val shouldEnableDolby = deviceSupportsDolby && info.hasDolbyAtmos
-        Log.d(TAG, "Dolby Atmos per-song check: streamHasAtmos=${info.hasDolbyAtmos}, deviceSupportsDolby=$deviceSupportsDolby, shouldEnable=$shouldEnableDolby")
-
-        _audioEngineState.value = _audioEngineState.value.copy(
-            dolbyDspAvailable = deviceSupportsDolby,
-            dolbyDspEnabled = shouldEnableDolby
-        )
-
-        dolbyEffect?.let { effect ->
-            try {
-                effect.enabled = shouldEnableDolby
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to update Dolby Atmos effect status", e)
-            }
-        }
-
-        // Spatial audio handling for Atmos
-        if (shouldEnableDolby) {
-            if (dolbyEffect != null && virtualizer?.enabled == true) {
-                Log.w(TAG, "Dolby DSP effect active, disabling built-in Virtualizer to avoid double spatialization")
-                virtualizer?.enabled = false
-                _audioEngineState.value = _audioEngineState.value.copy(
-                    spatialAudioEnabled = false
-                )
-            } else if (dolbyEffect == null && virtualizer != null) {
-                // Device supports Dolby via HAL/system service (e.g. Motorola/Samsung).
-                // Engage virtualizer for spatial sound immersion.
-                Log.d(TAG, "Engaging spatial sound immersion for Dolby Atmos stream")
-                virtualizer?.enabled = true
-                virtualizer?.setStrength(800.toShort())
-                _audioEngineState.value = _audioEngineState.value.copy(
-                    spatialAudioEnabled = true
-                )
-            }
-        } else {
-            // When Dolby is disabled for this song, restore user's saved Spatial Audio preference
-            scope.launch {
-                try {
-                    val prefs = context.audioPrefs.data.first()
-                    val savedSpatial = prefs[KEY_SPATIAL_AUDIO] ?: true
-                    val savedStrength = prefs[KEY_SPATIAL_STRENGTH] ?: 800
-                    setSpatialAudio(savedSpatial, savedStrength)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to restore spatial audio preference", e)
-                }
-            }
-        }
     }
     
+    /**
+     * Enrich or update the stream metadata with verified parameters directly from
+     * ExoPlayer's hardware/media decoder when tracks are loaded.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun updateFromExoPlayerFormat(format: Format, songId: String? = null) {
+        if (songId != null && currentActiveSongId != null && songId != currentActiveSongId) {
+            Log.d(TAG, "Ignoring ExoPlayer format update for mismatching song $songId (active is $currentActiveSongId)")
+            return
+        }
+        val current = _currentStreamInfo.value ?: AudioStreamInfo()
+        val sampleRate = if (format.sampleRate > 0) format.sampleRate else current.sampleRate
+        val channelCount = if (format.channelCount > 0) format.channelCount else current.channelCount
+        val exoBitrate = if (format.bitrate > 0) Math.round(format.bitrate / 1000.0).toInt() else 0
+        val bitrate = if (exoBitrate > 0) exoBitrate else current.bitrate
+        val detectedCodec = if (!format.sampleMimeType.isNullOrBlank()) {
+            AudioStreamInfo.codecFromMimeType(format.sampleMimeType!!)
+        } else current.codec
+
+        val updated = current.copy(
+            codec = if (detectedCodec.isNotBlank() && detectedCodec != "Unknown") detectedCodec else current.codec,
+            sampleRate = sampleRate,
+            channelCount = channelCount,
+            bitrate = bitrate,
+            qualityTier = if (bitrate > 0) AudioStreamInfo.qualityTierFromStream(detectedCodec, bitrate) else current.qualityTier
+        )
+        _currentStreamInfo.value = updated
+        Log.d(TAG, "Enriched stream info from ExoPlayer decoder: ${updated.fullDescription}")
+    }
+
     /**
      * Clear stream info (when playback stops or changes song)
      */
     fun clearStreamInfo() {
+        currentActiveSongId = null
         _currentStreamInfo.value = null
-        currentStreamHasDolbyAtmos = false
-        val deviceSupportsDolby = capabilityDetector.capability.value.supportsDolbyAtmos
-        dolbyEffect?.let { effect ->
-            try {
-                effect.enabled = false
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to disable Dolby Atmos on clear", e)
-            }
-        }
-        _audioEngineState.value = _audioEngineState.value.copy(
-            dolbyDspAvailable = deviceSupportsDolby,
-            dolbyDspEnabled = false
-        )
     }
     
     // ═══════════════════════════════════════════════════════════════
@@ -712,46 +664,57 @@ class AudioEngine @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════
-    // SPATIAL AUDIO (Dolby Atmos-like experience)
+    // SPATIAL AUDIO (Virtualizer)
     // ═══════════════════════════════════════════════════════════════
     
     /**
-     * Enable/disable Spatial Audio with adjustable immersion
-     * @param strength 0-1000 (0% to 100% immersion)
+     * Updates the underlying Virtualizer state based on user preference and OS Spatializer.
+     * When the system Spatializer is actively processing audio (e.g. Pixel Buds or Samsung 360 Audio),
+     * the Virtualizer automatically yields to avoid double spatial processing artifacts.
      */
-    fun setSpatialAudio(enabled: Boolean, strength: Int = 800) {
-        val actualEnabled = if (enabled && dolbyEffect != null && dolbyEffect?.enabled == true) {
-            Log.w(TAG, "Dolby DSP is active, disabling app's built-in Spatial Audio")
-            false
-        } else {
-            enabled
-        }
-        val clampedStrength = strength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH)
+    private fun updateVirtualizerState() {
+        val userEnabled = _audioEngineState.value.spatialAudioEnabled
+        val osSpatialActive = capabilityDetector.capability.value.osSpatialProcessingActive
+        val strengthVal = _audioEngineState.value.spatialStrength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH).toShort()
 
         virtualizer?.let { v ->
             try {
-                if (actualEnabled) {
+                if (userEnabled && !osSpatialActive) {
                     try {
                         v.forceVirtualizationMode(Virtualizer.VIRTUALIZATION_MODE_AUTO)
                     } catch (_: Exception) {}
                     if (v.strengthSupported) {
-                        v.setStrength(clampedStrength.toShort())
+                        v.setStrength(strengthVal)
                     }
                     v.enabled = true
-                    Log.d(TAG, "Platform Spatial Audio ON: ${(clampedStrength / 10)}% immersion")
+                    Log.d(TAG, "Platform Spatial Audio (Virtualizer) ON: ${(strengthVal / 10)}% immersion")
+                } else if (userEnabled && osSpatialActive) {
+                    // System Spatializer is active on this route; bypass Virtualizer to prevent double-processing
+                    v.enabled = false
+                    Log.d(TAG, "Platform Spatial Audio: OS Spatializer active on ${capabilityDetector.capability.value.currentOutputRouteName}, Virtualizer yielded")
                 } else {
                     v.enabled = false
                     Log.d(TAG, "Platform Spatial Audio OFF")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error setting Platform Spatial Audio", e)
+                Log.e(TAG, "Error updating Virtualizer state", e)
             }
         }
+    }
+
+    /**
+     * Enable/disable Spatial Audio with adjustable immersion
+     * @param strength 0-1000 (0% to 100% immersion)
+     */
+    fun setSpatialAudio(enabled: Boolean, strength: Int = DEFAULT_VIRTUALIZER_STRENGTH) {
+        val clampedStrength = strength.coerceIn(0, MAX_VIRTUALIZER_STRENGTH)
 
         _audioEngineState.value = _audioEngineState.value.copy(
             spatialAudioEnabled = enabled,
             spatialStrength = clampedStrength,
         )
+
+        updateVirtualizerState()
 
         scope.launch {
             context.audioPrefs.edit {
@@ -836,82 +799,7 @@ class AudioEngine @Inject constructor(
         Log.d(TAG, if (enabled) "Crossfade ON: ${clampedDuration}ms" else "Crossfade OFF")
     }
     
-    private fun initializeDolbyDsp(audioSessionId: Int) {
-        if (audioSessionId == 0) return
-        val deviceSupportsDolby = capabilityDetector.capability.value.supportsDolbyAtmos
-        val shouldEnableDolby = deviceSupportsDolby && currentStreamHasDolbyAtmos
-        val descriptor = capabilityDetector.capability.value.dolbyEffectDescriptor
-
-        if (descriptor == null) {
-            Log.d(TAG, "Dolby effect descriptor is null (system/HAL Dolby), deviceSupportsDolby=$deviceSupportsDolby, shouldEnable=$shouldEnableDolby")
-            dolbyEffect?.release()
-            dolbyEffect = null
-            _audioEngineState.value = _audioEngineState.value.copy(
-                dolbyDspAvailable = deviceSupportsDolby,
-                dolbyDspEnabled = shouldEnableDolby
-            )
-            if (shouldEnableDolby && virtualizer != null) {
-                virtualizer?.enabled = true
-                virtualizer?.setStrength(800.toShort())
-                _audioEngineState.value = _audioEngineState.value.copy(spatialAudioEnabled = true)
-            }
-            return
-        }
-
-        if (dolbyEffect != null) {
-            try {
-                if (dolbyEffect?.enabled != shouldEnableDolby) {
-                    dolbyEffect?.enabled = shouldEnableDolby
-                    _audioEngineState.value = _audioEngineState.value.copy(
-                        dolbyDspAvailable = deviceSupportsDolby,
-                        dolbyDspEnabled = shouldEnableDolby
-                    )
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to update existing dolby effect status", e)
-            }
-            return
-        }
-
-        try {
-            Log.d(TAG, "Instantiating Dolby DSP effect via reflection: type=${descriptor.type}, uuid=${descriptor.uuid}")
-            val constructor = AudioEffect::class.java.getDeclaredConstructor(
-                java.util.UUID::class.java,
-                java.util.UUID::class.java,
-                java.lang.Integer.TYPE,
-                java.lang.Integer.TYPE
-            ).apply {
-                isAccessible = true
-            }
-            val effect = constructor.newInstance(descriptor.type, descriptor.uuid, 0, audioSessionId) as AudioEffect
-            effect.enabled = shouldEnableDolby
-            dolbyEffect = effect
-            val isEnabled = effect.enabled
-            Log.d(TAG, "Dolby Atmos DSP initialized successfully: enabled=$isEnabled")
-            
-            _audioEngineState.value = _audioEngineState.value.copy(
-                dolbyDspAvailable = deviceSupportsDolby,
-                dolbyDspEnabled = isEnabled
-            )
-
-            // Conflict resolution: disable built-in Virtualizer
-            if (isEnabled && virtualizer?.enabled == true) {
-                Log.w(TAG, "Dolby DSP is active, auto-disabling app's built-in Virtualizer to avoid double spatialization")
-                virtualizer?.enabled = false
-                _audioEngineState.value = _audioEngineState.value.copy(
-                    spatialAudioEnabled = false
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize Dolby Atmos DSP on session $audioSessionId", e)
-            dolbyEffect = null
-            _audioEngineState.value = _audioEngineState.value.copy(
-                dolbyDspAvailable = deviceSupportsDolby,
-                dolbyDspEnabled = false
-            )
-        }
-    }
-
+    
     /**
      * Reset all effects to default
      */
@@ -921,19 +809,9 @@ class AudioEngine @Inject constructor(
         setCellularQualityTier(StreamQuality.HIGH)
         setDownloadQualityTier(StreamQuality.BEST)
         setEqualizer(false)
-        setSpatialAudio(true, 800)
+        setSpatialAudio(true, MAX_VIRTUALIZER_STRENGTH)
         setReverb(false)
         setCrossfade(false)
-        try {
-            if (dolbyEffect != null) {
-                // On reset, respect per-song Dolby Atmos detection
-                val shouldEnableDolby = capabilityDetector.capability.value.supportsDolbyAtmos && currentStreamHasDolbyAtmos
-                dolbyEffect?.enabled = shouldEnableDolby
-                _audioEngineState.value = _audioEngineState.value.copy(dolbyDspEnabled = shouldEnableDolby)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to update dolby effect in resetToDefault", e)
-        }
         Log.d(TAG, "Reset to defaults")
     }
     
@@ -947,7 +825,6 @@ class AudioEngine @Inject constructor(
             virtualizer?.release()
             equalizer?.release()
             reverb?.release()
-            dolbyEffect?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing effects", e)
         }
@@ -956,7 +833,6 @@ class AudioEngine @Inject constructor(
         virtualizer = null
         equalizer = null
         reverb = null
-        dolbyEffect = null
     }
     
     fun release() {
@@ -997,13 +873,13 @@ data class AudioEngineState(
     // Crossfade
     val crossfadeEnabled: Boolean = false,
     val crossfadeDuration: Int = AudioEngine.DEFAULT_CROSSFADE_DURATION,
-    // Sound Check
-    val soundCheckEnabled: Boolean = true,
+    // Sound Check (disabled by default for pristine bit-perfect audio)
+    val soundCheckEnabled: Boolean = false,
     val loudnessTarget: Float = AudioEngine.DEFAULT_LOUDNESS_TARGET,
 
-    // Spatial Audio
-    val spatialAudioEnabled: Boolean = true,
-    val spatialStrength: Int = 800,
+    // Spatial Audio (disabled by default to prevent comb-filtering & muffled midrange)
+    val spatialAudioEnabled: Boolean = false,
+    val spatialStrength: Int = AudioEngine.DEFAULT_VIRTUALIZER_STRENGTH,
     // Equalizer
     val eqEnabled: Boolean = false,
     val eqPreset: String = "flat",
@@ -1014,7 +890,4 @@ data class AudioEngineState(
     val wifiQualityTier: StreamQuality = StreamQuality.BEST,
     val cellularQualityTier: StreamQuality = StreamQuality.HIGH,
     val downloadQualityTier: StreamQuality = StreamQuality.BEST,
-    // Dolby Atmos DSP
-    val dolbyDspAvailable: Boolean = false,
-    val dolbyDspEnabled: Boolean = false,
 )

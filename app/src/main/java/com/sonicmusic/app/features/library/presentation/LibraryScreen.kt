@@ -145,6 +145,7 @@ fun LibraryScreen(
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0),
+        containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column {
@@ -157,6 +158,10 @@ fun LibraryScreen(
                     },
                     scrollBehavior = scrollBehavior,
                     windowInsets = WindowInsets.statusBars,
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f)
+                    ),
                     actions = {
                         IconButton(onClick = { viewModel.toggleSearch() }) {
                             Icon(

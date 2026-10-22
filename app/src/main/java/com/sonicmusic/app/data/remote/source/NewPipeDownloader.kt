@@ -15,21 +15,21 @@ import java.util.concurrent.TimeUnit
  * Required by NewPipe Extractor library to make HTTP requests.
  * Uses OkHttp for network calls.
  */
-class NewPipeDownloader private constructor() : Downloader() {
+class NewPipeDownloader private constructor(customClient: OkHttpClient? = null) : Downloader() {
 
     companion object {
         private var instance: NewPipeDownloader? = null
         
         @Synchronized
-        fun getInstance(): NewPipeDownloader {
+        fun getInstance(okHttpClient: OkHttpClient? = null): NewPipeDownloader {
             if (instance == null) {
-                instance = NewPipeDownloader()
+                instance = NewPipeDownloader(okHttpClient)
             }
             return instance!!
         }
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = (customClient?.newBuilder() ?: OkHttpClient.Builder())
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)

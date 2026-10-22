@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.data.local.entity.DownloadStatus
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
@@ -18,8 +19,12 @@ import com.sonicmusic.app.features.player.audio.AudioCapabilityDetector
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
 import com.sonicmusic.app.features.recommendations.engine.RecommendationEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -43,6 +48,20 @@ class SongActionSheetViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val currentPlayingSong = playerServiceConnection.currentSong
+    val currentStreamInfo: StateFlow<AudioStreamInfo?> = playerServiceConnection.currentStreamInfo
+    val audioQualityUiState: StateFlow<com.sonicmusic.app.features.player.audio.AudioQualityUiState?> = playerServiceConnection.audioQualityUiState
+
+    fun getStreamInfoForSong(songId: String): Flow<AudioStreamInfo?> = flow {
+        if (currentPlayingSong.value?.id == songId) {
+            emit(currentStreamInfo.value)
+        }
+        val result = songRepository.getStreamWithInfo(songId, StreamQuality.BEST)
+        emit(result.getOrNull()?.second)
+    }.flowOn(Dispatchers.IO)
+
+    fun getDownloadedFileSize(songId: String): Flow<Long?> = flow {
+        emit(songDownloadManager.getDownloadedFileSize(songId))
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Play selected song immediately.

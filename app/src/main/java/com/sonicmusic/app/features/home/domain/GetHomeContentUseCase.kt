@@ -151,6 +151,11 @@ class GetHomeContentUseCase @Inject constructor(
                     browseRepository.getHomeShelvesWithContinuation(forceRefresh = forceRefresh).getOrNull()
                 }
             }
+            val communityPlaylistsDeferred = async {
+                withTimeoutOrNull(SECTION_TIMEOUT_MS) {
+                    browseRepository.getTrendingCommunityPlaylists(HOME_SECTION_LIMIT, forceRefresh = forceRefresh).getOrNull()
+                }
+            }
 
             val trendingAlbums = distinctSongs(trendingAlbumsDeferred.await(), HOME_SECTION_LIMIT)
             val charts = chartsDeferred.await()
@@ -158,6 +163,7 @@ class GetHomeContentUseCase @Inject constructor(
             val artistSectionsRaw = artistsDeferred.await()
             val forgottenRaw = distinctSongs(forgottenDeferred.await(), HOME_SECTION_LIMIT)
             val homeShelvesResult = homeShelvesDeferred.await()
+            val communityPlaylists = communityPlaylistsDeferred.await().orEmpty()
 
             val englishHits = distinctSongs(
                 songs = filterLikelyEnglishSongs(englishHitsRaw),
@@ -178,6 +184,7 @@ class GetHomeContentUseCase @Inject constructor(
                 englishHits = if (englishHits.isNotEmpty()) englishHits else currentContent.englishHits,
                 artists = if (artistSections.isNotEmpty()) artistSections else currentContent.artists,
                 forgottenFavorites = if (forgottenFavorites.isNotEmpty()) forgottenFavorites else currentContent.forgottenFavorites,
+                communityPlaylists = if (communityPlaylists.isNotEmpty()) communityPlaylists else currentContent.communityPlaylists,
                 continuationShelves = if (homeShelvesResult?.first?.isNotEmpty() == true) homeShelvesResult.first else currentContent.continuationShelves,
                 continuationToken = homeShelvesResult?.second ?: currentContent.continuationToken
             )

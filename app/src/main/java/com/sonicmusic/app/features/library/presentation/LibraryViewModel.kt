@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.async
@@ -60,23 +61,38 @@ class LibraryViewModel @Inject constructor(
         private const val RECENTLY_PLAYED_LIMIT = 10 // Preview only; full list loaded in RecentlyPlayedScreen
     }
 
-    private val _likedSongs = MutableStateFlow<List<Song>>(emptyList())
-    val likedSongs: StateFlow<List<Song>> = _likedSongs.asStateFlow()
+    val likedSongs: StateFlow<List<Song>> = songRepository.getLikedSongs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
-    val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
+    val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _recentlyPlayed = MutableStateFlow<List<PlaybackHistory>>(emptyList())
-    val recentlyPlayed: StateFlow<List<PlaybackHistory>> = _recentlyPlayed.asStateFlow()
+    val recentlyPlayed: StateFlow<List<PlaybackHistory>> = historyRepository.getRecentlyPlayed(RECENTLY_PLAYED_LIMIT)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     
-    private val _localSongs = MutableStateFlow<List<LocalSong>>(emptyList())
-    val localSongs: StateFlow<List<LocalSong>> = _localSongs.asStateFlow()
+    val localSongs: StateFlow<List<LocalSong>> = localMusicRepository.getLocalSongs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _artists = MutableStateFlow<List<FollowedArtistEntity>>(emptyList())
-    val artists: StateFlow<List<FollowedArtistEntity>> = _artists.asStateFlow()
+    val artists: StateFlow<List<FollowedArtistEntity>> = artistRepository.getFollowedArtists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _downloadedSongs = MutableStateFlow<List<Song>>(emptyList())
-    val downloadedSongs: StateFlow<List<Song>> = _downloadedSongs.asStateFlow()
+    private val downloadedSongsFlow = songDownloadManager.getDownloadedSongs()
+
+    val downloadedSongs: StateFlow<List<Song>> = downloadedSongsFlow
+        .map { downloaded ->
+            downloaded
+                .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
+                .map { entity ->
+                    Song(
+                        id = entity.songId,
+                        title = entity.title,
+                        artist = entity.artists,
+                        duration = (entity.durationMs / 1000).toInt(),
+                        thumbnailUrl = entity.thumbnailUrl
+                    )
+                }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     /** Active downloads being tracked — exposed for UI progress indicators */
     val activeDownloads = songDownloadManager.activeDownloads
@@ -118,15 +134,15 @@ class LibraryViewModel @Inject constructor(
 
     // Filtered playlists based on search query
     val filteredPlaylists: StateFlow<List<Playlist>> = combine(
-        _playlists, _searchQuery.debounce(300)
-    ) { playlists, query ->
-        if (query.isBlank()) playlists
-        else playlists.filter { it.name.contains(query, ignoreCase = true) }
+        playlists, _searchQuery.debounce(300)
+    ) { playlistsList, query ->
+        if (query.isBlank()) playlistsList
+        else playlistsList.filter { it.name.contains(query, ignoreCase = true) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Filtered liked songs based on search query
     val filteredLikedSongs: StateFlow<List<Song>> = combine(
-        _likedSongs, _searchQuery.debounce(300)
+        likedSongs, _searchQuery.debounce(300)
     ) { songs, query ->
         if (query.isBlank()) songs
         else songs.filter {
@@ -148,10 +164,13 @@ class LibraryViewModel @Inject constructor(
     private val _freeSpaceBytes = MutableStateFlow(Long.MAX_VALUE)
     val freeSpaceBytes: StateFlow<Long> = _freeSpaceBytes.asStateFlow()
 
-    private val _totalDownloadSize = MutableStateFlow(0L)
-    val totalDownloadSize: StateFlow<Long> = _totalDownloadSize.asStateFlow()
-
-    private val downloadedSongsFlow = songDownloadManager.getDownloadedSongs()
+    val totalDownloadSize: StateFlow<Long> = downloadedSongsFlow
+        .map { downloaded ->
+            downloaded
+                .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
+                .sumOf { it.fileSizeBytes }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
 
     val filteredDownloadedSongs: StateFlow<List<DownloadedSong>> = combine(
         downloadedSongsFlow,
@@ -189,76 +208,10 @@ class LibraryViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        loadLibraryData()
-    }
-
-    private fun loadLibraryData() {
         viewModelScope.launch {
-            _isLoading.value = true
-
-            // Launch all data loaders
-            launch {
-                songRepository.getLikedSongs().collect { songs ->
-                    _likedSongs.value = songs
-                }
-            }
-
-            launch {
-                playlistRepository.getAllPlaylists().collect { playlists ->
-                    _playlists.value = playlists
-                }
-            }
-
-            launch {
-                historyRepository.getRecentlyPlayed(RECENTLY_PLAYED_LIMIT).collect { history ->
-                    _recentlyPlayed.value = history
-                }
-            }
-
-            launch {
-                historyRepository.pruneOldHistory(500)
-            }
-            
-            launch {
-                localMusicRepository.getLocalSongs().collect { songs ->
-                    _localSongs.value = songs
-                }
-            }
-
-            launch {
-                artistRepository.getFollowedArtists().collect { artistList ->
-                    _artists.value = artistList
-                }
-            }
-
-            launch {
-                songDownloadManager.getDownloadedSongs().collect { downloaded ->
-                    _downloadedSongs.value = downloaded
-                        .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
-                        .map { entity ->
-                            Song(
-                                id = entity.songId,
-                                title = entity.title,
-                                artist = entity.artists,
-                                duration = (entity.durationMs / 1000).toInt(),
-                                thumbnailUrl = entity.thumbnailUrl
-                            )
-                        }
-
-                    _totalDownloadSize.value = downloaded
-                        .filter { it.status == com.sonicmusic.app.data.local.entity.DownloadStatus.COMPLETED }
-                        .sumOf { it.fileSizeBytes }
-                }
-            }
-
-            // Initially load storage metrics
-            updateStorageMetrics()
-
-            // Dismiss loading spinner once ANY data arrives
-            // (all these flows emit immediately from Room)
-            kotlinx.coroutines.delay(300)
-            _isLoading.value = false
+            historyRepository.pruneOldHistory(500)
         }
+        updateStorageMetrics()
     }
     
     fun refreshLocalMusic() {
@@ -418,7 +371,7 @@ class LibraryViewModel @Inject constructor(
 
     // --- Play All / Shuffle Liked Songs ---
     fun playAllLikedSongs() {
-        val songs = _likedSongs.value
+        val songs = likedSongs.value
         if (songs.isEmpty()) return
 
         // Use lazy loading — starts playback instantly, fetches remaining URLs in background
@@ -426,14 +379,14 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun shuffleLikedSongs() {
-        val songs = _likedSongs.value.shuffled()
+        val songs = likedSongs.value.shuffled()
         if (songs.isEmpty()) return
 
         playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
     fun playAllDownloadedSongs(shuffle: Boolean = false) {
-        val songs = if (shuffle) _downloadedSongs.value.shuffled() else _downloadedSongs.value
+        val songs = if (shuffle) downloadedSongs.value.shuffled() else downloadedSongs.value
         if (songs.isEmpty()) return
 
         playerServiceConnection.playSongsLazy(songs, 0, songRepository)

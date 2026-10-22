@@ -44,7 +44,7 @@ class SectionCacheManager @Inject constructor() {
      * @param key Section cache key (e.g., " quick_picks_US")
      * @return The cached value, or null if missing or expired.
      */
-    @Suppress(" UNCHECKED_CAST")
+    @Suppress("UNCHECKED_CAST")
     fun <T> get(key: String): T? {
         val entry = cache[key] as? CacheEntry<T> ?: return null
         if (entry.isExpired()) {
@@ -60,7 +60,7 @@ class SectionCacheManager @Inject constructor() {
      * @param key Section cache key
      * @return Pair of (data, isExpired), or null if not cached at all.
      */
-    @Suppress(" UNCHECKED_CAST")
+    @Suppress("UNCHECKED_CAST")
     fun <T> getWithStaleness(key: String): Pair<T, Boolean>? {
         val entry = cache[key] as? CacheEntry<T> ?: return null
         return entry.data to entry.isExpired()
@@ -100,7 +100,7 @@ class SectionCacheManager @Inject constructor() {
         val now = System.currentTimeMillis()
         var count = 0
         cache.entries.removeIf { entry ->
-            val expired = (entry.value as CacheEntry<*>).isExpired(now)
+            val expired = entry.value.isExpired(now)
             if (expired) count++
             expired
         }
@@ -120,7 +120,7 @@ class SectionCacheManager @Inject constructor() {
     fun diagnostics(): CacheDiagnostics {
         val now = System.currentTimeMillis()
         val entries = cache.entries.toList()
-        val expired = entries.count { (it.value as CacheEntry<*>).isExpired(now) }
+        val expired = entries.count { it.value.isExpired(now) }
         return CacheDiagnostics(
             totalEntries = entries.size,
             expiredEntries = expired,

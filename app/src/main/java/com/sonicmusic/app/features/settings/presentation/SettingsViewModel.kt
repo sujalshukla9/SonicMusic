@@ -12,6 +12,7 @@ import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
+import com.sonicmusic.app.domain.model.NavbarStyle
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
 import com.sonicmusic.app.features.player.audio.AudioEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,6 +41,7 @@ class SettingsViewModel @Inject constructor(
     private val appUpdateService: AppUpdateService,
     private val recentSearchRepository: RecentSearchRepository,
     private val databaseBackupManager: com.sonicmusic.app.data.local.database.DatabaseBackupManager,
+    private val audioCapabilityDetector: com.sonicmusic.app.features.player.audio.AudioCapabilityDetector,
     @SuppressLint("StaticFieldLeak") @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -86,7 +88,15 @@ class SettingsViewModel @Inject constructor(
 
     val spatialStrength: StateFlow<Int> = audioEngine.audioEngineState
         .map { it.spatialStrength }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 800)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH)
+
+    val audioCapability: StateFlow<com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability> =
+        audioCapabilityDetector.capability
+            .stateIn(
+                viewModelScope,
+                SharingStarted.Eagerly,
+                com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability()
+            )
 
     // Repository Settings
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode
@@ -139,6 +149,9 @@ class SettingsViewModel @Inject constructor(
 
     val playerControlStyle: StateFlow<PlayerControlStyle> = settingsRepository.playerControlStyle
         .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerControlStyle.CLASSIC)
+
+    val navbarStyle: StateFlow<NavbarStyle> = settingsRepository.navbarStyle
+        .stateIn(viewModelScope, SharingStarted.Eagerly, NavbarStyle.MODERN)
 
     private val _appUpdateState = MutableStateFlow(AppUpdateState())
     val appUpdateState: StateFlow<AppUpdateState> = _appUpdateState.asStateFlow()
@@ -259,11 +272,11 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setSpatialAudio(enabled: Boolean, strength: Int = 800) {
+    fun setSpatialAudio(enabled: Boolean, strength: Int = com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH) {
         audioEngine.setSpatialAudio(enabled, strength)
     }
 
-    fun setSpatialStrength(strength: Int) {
+    fun setSpatialStrength(strength: Int = com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH) {
         val currentEnabled = audioEngine.audioEngineState.value.spatialAudioEnabled
         audioEngine.setSpatialAudio(currentEnabled, strength)
     }
@@ -323,6 +336,12 @@ class SettingsViewModel @Inject constructor(
     fun setPlayerControlStyle(style: PlayerControlStyle) {
         viewModelScope.launch {
             settingsRepository.setPlayerControlStyle(style)
+        }
+    }
+
+    fun setNavbarStyle(style: NavbarStyle) {
+        viewModelScope.launch {
+            settingsRepository.setNavbarStyle(style)
         }
     }
 

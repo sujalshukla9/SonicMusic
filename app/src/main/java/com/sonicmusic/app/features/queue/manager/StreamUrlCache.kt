@@ -30,15 +30,17 @@ class StreamUrlCache @Inject constructor(
     /**
      * Gets a resolved stream URL from cache if valid; otherwise resolves and caches it.
      */
-    suspend fun getStreamUrl(videoId: String): String? {
-        val cached = cache[videoId]
-        if (cached != null && cached.expiresAtMs > System.currentTimeMillis()) {
-            Log.d(TAG, "Cache hit for $videoId")
-            return cached.url
+    suspend fun getStreamUrl(videoId: String, forceRefresh: Boolean = false): String? {
+        if (!forceRefresh) {
+            val cached = cache[videoId]
+            if (cached != null && cached.expiresAtMs > System.currentTimeMillis()) {
+                Log.d(TAG, "Cache hit for $videoId")
+                return cached.url
+            }
         }
 
-        Log.d(TAG, "Cache miss or expired for $videoId. Resolving...")
-        val result = songRepository.getStreamUrl(videoId, StreamQuality.BEST)
+        Log.d(TAG, "Cache miss, expired, or forced refresh for $videoId. Resolving...")
+        val result = songRepository.getStreamUrl(videoId, StreamQuality.BEST, forceRefresh = forceRefresh)
         return if (result.isSuccess) {
             val url = result.getOrThrow()
             val expiresAtMs = extractExpiry(url)
@@ -48,6 +50,14 @@ class StreamUrlCache @Inject constructor(
             Log.e(TAG, "Failed to resolve stream URL for $videoId", result.exceptionOrNull())
             null
         }
+    }
+
+    /**
+     * Invalidate cached stream URL for a specific video ID (e.g. on playback error or 403).
+     */
+    fun invalidate(videoId: String) {
+        cache.remove(videoId)
+        Log.d(TAG, "Invalidated cached stream URL for $videoId")
     }
 
     /**

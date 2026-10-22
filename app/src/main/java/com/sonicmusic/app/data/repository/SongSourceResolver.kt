@@ -7,16 +7,17 @@ import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import java.io.File
+import com.sonicmusic.app.domain.model.AudioStreamInfo
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Playback source types.
+ * Playback source types with atomic verified stream metadata.
  */
 sealed class SongSource {
-    data class Local(val filePath: String) : SongSource()
-    data class Remote(val streamUrl: String) : SongSource()
-    object Unavailable : SongSource()
+    data class Local(val filePath: String, val info: AudioStreamInfo) : SongSource()
+    data class Remote(val streamUrl: String, val info: AudioStreamInfo) : SongSource()
+    data object Unavailable : SongSource()
 }
 
 /**
@@ -40,7 +41,15 @@ class SongSourceResolver @Inject constructor(
             val file = File(downloadedSong.localFilePath)
             if (file.exists()) {
                 Log.d(TAG, "Found offline local file: ${downloadedSong.localFilePath}")
-                return SongSource.Local(downloadedSong.localFilePath)
+                val localResult = runCatching {
+                    songRepository.get().getStreamWithInfo(videoId, StreamQuality.BEST).getOrNull()
+                }.getOrNull()
+                val info = localResult?.second ?: AudioStreamInfo(
+                    codec = "Local",
+                    isLocal = true,
+                    contentLength = file.length().takeIf { it > 0 }
+                )
+                return SongSource.Local(downloadedSong.localFilePath, info)
             } else {
                 // Song deleted from disk externally but DB still has entry -> detect on access, mark as REMOVED, prompt re-download
                 Log.w(TAG, "Offline file not found on disk, updating DB status to REMOVED: $videoId")
@@ -52,8 +61,8 @@ class SongSourceResolver @Inject constructor(
         if (networkMonitor.isConnectedNow()) {
             return try {
                 Log.d(TAG, "Fetching remote stream URL online for: $videoId")
-                val streamUrl = songRepository.get().getStreamUrl(videoId, StreamQuality.BEST).getOrThrow()
-                SongSource.Remote(streamUrl)
+                val (streamUrl, info) = songRepository.get().getStreamWithInfo(videoId, StreamQuality.BEST).getOrThrow()
+                SongSource.Remote(streamUrl, info)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to fetch remote stream URL", e)
                 SongSource.Unavailable

@@ -33,6 +33,8 @@ fun SearchSuggestionsDropdown(
     onTextSuggestionClick: (String) -> Unit,
     onContentSuggestionClick: (SearchSuggestionItem) -> Unit,
     onRecentSearchClick: (String) -> Unit,
+    onDeleteRecentSearch: ((String) -> Unit)? = null,
+    onInsertQuery: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier,
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp
 ) {
@@ -51,7 +53,7 @@ fun SearchSuggestionsDropdown(
             ) {
                 // 1. Loading Indicator at the top of the list if loading
                 if (isLoading) {
-                    item {
+                    item(key = "sug_loading") {
                         LinearProgressIndicator(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -64,7 +66,7 @@ fun SearchSuggestionsDropdown(
 
                 // 2. Recent Searches that match
                 if (recentSearches.isNotEmpty()) {
-                    item {
+                    item(key = "header_recent_searches") {
                         Text(
                             text = "Recent Searches",
                             style = MaterialTheme.typography.labelMedium,
@@ -74,15 +76,18 @@ fun SearchSuggestionsDropdown(
                         )
                     }
 
-                    items(recentSearches) { search ->
-                        TextSuggestionRow(
-                            icon = Icons.Rounded.History,
+                    items(
+                        items = recentSearches,
+                        key = { "recent_sug_$it" }
+                    ) { search ->
+                        RecentSearchSuggestionRow(
                             text = search,
-                            onClick = { onRecentSearchClick(search) }
+                            onClick = { onRecentSearchClick(search) },
+                            onDelete = onDeleteRecentSearch?.let { { it(search) } }
                         )
                     }
 
-                    item {
+                    item(key = "divider_recent_searches") {
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
@@ -131,18 +136,22 @@ fun SearchSuggestionsDropdown(
                         )
                     }
 
-                    items(textSuggestions) { suggestion ->
+                    items(
+                        items = textSuggestions,
+                        key = { "text_sug_$it" }
+                    ) { suggestion ->
                         TextSuggestionRow(
                             icon = Icons.Rounded.Search,
                             text = suggestion,
-                            onClick = { onTextSuggestionClick(suggestion) }
+                            onClick = { onTextSuggestionClick(suggestion) },
+                            onInsert = onInsertQuery?.let { { it(suggestion) } }
                         )
                     }
                 }
 
                 // 5. Empty State
                 if (recentSearches.isEmpty() && contentSuggestions.isEmpty() && textSuggestions.isEmpty() && !isLoading) {
-                    item {
+                    item(key = "sug_empty") {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -163,10 +172,57 @@ fun SearchSuggestionsDropdown(
 }
 
 @Composable
+private fun RecentSearchSuggestionRow(
+    text: String,
+    onClick: () -> Unit,
+    onDelete: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.History,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
+
+        Spacer(modifier = Modifier.width(16.dp))
+
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        if (onDelete != null) {
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "Remove from history",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun TextSuggestionRow(
     icon: ImageVector,
     text: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onInsert: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -192,12 +248,26 @@ private fun TextSuggestionRow(
             overflow = TextOverflow.Ellipsis,
         )
 
-        Icon(
-            imageVector = Icons.Rounded.NorthWest,
-            contentDescription = "Copy query to search",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier.size(18.dp),
-        )
+        if (onInsert != null) {
+            IconButton(
+                onClick = onInsert,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.NorthWest,
+                    contentDescription = "Insert into search query",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        } else {
+            Icon(
+                imageVector = Icons.Rounded.NorthWest,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 

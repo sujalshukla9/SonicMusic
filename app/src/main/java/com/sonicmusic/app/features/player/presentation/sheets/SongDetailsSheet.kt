@@ -18,13 +18,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SdStorage
 import androidx.compose.material.icons.rounded.SurroundSound
+import androidx.compose.material.icons.rounded.Tune
+import java.util.Locale
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.features.player.audio.AudioCapabilityDetector
+import com.sonicmusic.app.features.player.audio.AudioQualityUiState
+import com.sonicmusic.app.features.player.audio.PlaybackStatus
 import com.sonicmusic.app.shared.components.SongThumbnail
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -58,6 +64,7 @@ fun SongDetailsSheet(
     onDismiss: () -> Unit,
     audioCapability: AudioCapabilityDetector.AudioCapability = AudioCapabilityDetector.AudioCapability(),
     isPlaying: Boolean = false,
+    audioQualityUiState: AudioQualityUiState? = null,
     modifier: Modifier = Modifier
 ) {
     if (!isVisible || song == null) return
@@ -222,10 +229,28 @@ fun SongDetailsSheet(
                 shape = RoundedCornerShape(16.dp),
                 color = colorScheme.surfaceContainer
             ) {
-                if (streamInfo != null) {
+                if (streamInfo != null || audioQualityUiState != null) {
+                    val summaryDesc = audioQualityUiState?.formattedDescription
+                        ?: streamInfo?.fullDescription
+                        ?: "Audio Stream"
+                    val effectiveCodec = audioQualityUiState?.codec?.ifBlank { null }
+                        ?: streamInfo?.codec?.ifBlank { null }
+                        ?: "Unknown"
+                    val br = audioQualityUiState?.sourceBitrateKbps
+                        ?: streamInfo?.bitrate
+                        ?: 0
+                    val sr = audioQualityUiState?.sampleRate
+                        ?: streamInfo?.sampleRate
+                        ?: 0
+                    val ch = audioQualityUiState?.channelCount
+                        ?: streamInfo?.channelCount
+                        ?: 0
+                    val container = audioQualityUiState?.container?.ifBlank { null }
+                        ?: streamInfo?.containerFormat?.ifBlank { null }
+
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
 
-                        // Quality badge row with colored chip
+                        // Live quality summary row
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -233,7 +258,10 @@ fun SongDetailsSheet(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.weight(1f, fill = false),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Icon(
                                     imageVector = Icons.Rounded.GraphicEq,
                                     contentDescription = null,
@@ -241,12 +269,21 @@ fun SongDetailsSheet(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = " Quality",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = colorScheme.onSurfaceVariant
-                                )
+                                Column {
+                                    Text(
+                                        text = "Quality Stream",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = summaryDesc,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Medium,
+                                        color = colorScheme.onSurface
+                                    )
+                                }
                             }
+                            Spacer(modifier = Modifier.width(8.dp))
                             Box(
                                 modifier = Modifier
                                     .background(
@@ -255,8 +292,11 @@ fun SongDetailsSheet(
                                     )
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
+                                val liveBadge = streamInfo?.qualityBadge?.takeIf { it != "Audio" }
+                                    ?: audioQualityUiState?.toAudioStreamInfo()?.qualityBadge?.takeIf { it != "Audio" }
+                                    ?: (if (effectiveCodec != "Unknown") effectiveCodec.uppercase() else "Auto")
                                 Text(
-                                    text = streamInfo.qualityBadge,
+                                    text = liveBadge,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = colorScheme.onPrimaryContainer
@@ -264,63 +304,107 @@ fun SongDetailsSheet(
                             }
                         }
 
+                        // Playback status (if diagnostics state available)
+                        if (audioQualityUiState != null) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            val statusLabel = when (audioQualityUiState.status) {
+                                PlaybackStatus.PREPARING -> "Preparing stream…"
+                                PlaybackStatus.PLAYING -> "Playing"
+                                PlaybackStatus.BUFFERING -> "Buffering…"
+                                PlaybackStatus.RECOVERING -> "Recovering (${audioQualityUiState.statusMessage ?: "Refreshing"})"
+                                PlaybackStatus.ERROR -> "Error (${audioQualityUiState.statusMessage ?: "Playback failed"})"
+                                PlaybackStatus.OFFLINE -> "Offline Playback"
+                                PlaybackStatus.IDLE -> "Ready"
+                            }
+                            SongDetailsRow(
+                                icon = Icons.Rounded.QueryStats,
+                                label = "Playback Status",
+                                value = statusLabel
+                            )
+                        }
+
+                        // Quality selection strategy
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp),
                             color = colorScheme.outlineVariant.copy(alpha = 0.4f)
                         )
-
                         SongDetailsRow(
-                            icon = Icons.Rounded.AudioFile,
-                            label = "Codec",
-                            value = if (streamInfo.isLocal) "Local File" else streamInfo.codec.uppercase()
+                            icon = Icons.Rounded.Tune,
+                            label = "Quality Mode",
+                            value = audioQualityUiState?.selectionMode ?: "Automatic (Best Available)"
                         )
 
-                        if (streamInfo.bitrate > 0 && !streamInfo.isLocal) {
+                        // Format ID (itag) if known
+                        val effectiveItag = streamInfo?.itag ?: audioQualityUiState?.itag
+                        if (effectiveItag != null && effectiveItag > 0) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(horizontal = 16.dp),
                                 color = colorScheme.outlineVariant.copy(alpha = 0.4f)
                             )
                             SongDetailsRow(
-                                icon = Icons.Rounded.GraphicEq,
-                                label = "Bitrate",
-                                value = "${streamInfo.bitrate} kbps"
+                                icon = Icons.Rounded.Tune,
+                                label = "Format ID",
+                                value = "itag $effectiveItag"
                             )
                         }
 
+                        // Verified Codec
+                        if (effectiveCodec.isNotBlank() && effectiveCodec != "Unknown") {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            val isLocal = streamInfo?.isLocal == true || audioQualityUiState?.status == PlaybackStatus.OFFLINE
+                            SongDetailsRow(
+                                icon = Icons.Rounded.AudioFile,
+                                label = "Codec",
+                                value = if (isLocal) "${effectiveCodec.uppercase()} (Local)" else effectiveCodec.uppercase()
+                            )
+                        }
+
+                        // Verified Bitrate or honest "Bitrate unavailable"
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp),
                             color = colorScheme.outlineVariant.copy(alpha = 0.4f)
                         )
+                        SongDetailsRow(
+                            icon = Icons.Rounded.GraphicEq,
+                            label = "Bitrate",
+                            value = if (br > 0) "$br kbps" else "Bitrate unavailable"
+                        )
 
+                        // Sample Rate (truthful display)
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                        val sampleRateValue = if (sr > 0) {
+                            val srKHz = "${sr / 1000f}".removeSuffix(".0") + " kHz"
+                            "$srKHz ($sr Hz)"
+                        } else {
+                            "Unavailable"
+                        }
                         SongDetailsRow(
                             icon = Icons.Rounded.GraphicEq,
                             label = "Sample Rate",
-                            value = "${streamInfo.sampleRate / 1000f}".removeSuffix(".0") + " kHz"
+                            value = sampleRateValue
                         )
 
-                        if (streamInfo.bitDepth > 0) {
+                        // Channels
+                        if (ch > 0) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(horizontal = 16.dp),
                                 color = colorScheme.outlineVariant.copy(alpha = 0.4f)
                             )
-                            SongDetailsRow(
-                                icon = Icons.Rounded.GraphicEq,
-                                label = "Bit Depth",
-                                value = "${streamInfo.bitDepth}-bit"
-                            )
-                        }
-
-                        if (streamInfo.channelCount > 0) {
-                            HorizontalDivider(
-                                modifier = Modifier.padding(horizontal = 16.dp),
-                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
-                            )
-                            val channelLabel = when (streamInfo.channelCount) {
-                                1 -> "Mono"
-                                2 -> "Stereo"
-                                6 -> "5.1 Surround"
-                                8 -> "7.1 Surround"
-                                else -> "${streamInfo.channelCount}ch"
+                            val channelLabel = when (ch) {
+                                1 -> "Mono (1ch)"
+                                2 -> "Stereo (2ch)"
+                                6 -> "5.1 Surround (6ch)"
+                                8 -> "7.1 Surround (8ch)"
+                                else -> "$ch Channels"
                             }
                             SongDetailsRow(
                                 icon = Icons.Rounded.GraphicEq,
@@ -329,7 +413,8 @@ fun SongDetailsSheet(
                             )
                         }
 
-                        if (streamInfo.containerFormat.isNotBlank() && streamInfo.containerFormat != "Unknown") {
+                        // Container
+                        if (!container.isNullOrBlank() && container != "Unknown") {
                             HorizontalDivider(
                                 modifier = Modifier.padding(horizontal = 16.dp),
                                 color = colorScheme.outlineVariant.copy(alpha = 0.4f)
@@ -337,19 +422,66 @@ fun SongDetailsSheet(
                             SongDetailsRow(
                                 icon = Icons.Rounded.AudioFile,
                                 label = "Container",
-                                value = streamInfo.containerFormat
+                                value = container
                             )
                         }
 
-                        // Signal path row
+                        // Hardware / Media3 Decoder
+                        if (!audioQualityUiState?.decoderName.isNullOrBlank()) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            SongDetailsRow(
+                                icon = Icons.Rounded.Tune,
+                                label = "Decoder",
+                                value = audioQualityUiState!!.decoderName!!
+                            )
+                        }
+
+                        // Media3 Output diagnostics
+                        if (audioQualityUiState?.playingSampleRate != null && audioQualityUiState.playingSampleRate > 0) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            val playingSrKHz = "${audioQualityUiState.playingSampleRate / 1000f}".removeSuffix(".0") + " kHz"
+                            val playingChLabel = if (audioQualityUiState.playingChannelCount != null) {
+                                if (audioQualityUiState.playingChannelCount == 2) "Stereo" else "${audioQualityUiState.playingChannelCount}ch"
+                            } else ""
+                            SongDetailsRow(
+                                icon = Icons.Rounded.Headphones,
+                                label = "Player Output",
+                                value = listOfNotNull(playingSrKHz, playingChLabel.ifBlank { null }).joinToString(" · ")
+                            )
+                        }
+
+                        // Loudness
+                        if (streamInfo?.loudnessDb != null) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            val formattedLoudness = String.format(Locale.US, "%.1f dB", streamInfo.loudnessDb)
+                            SongDetailsRow(
+                                icon = Icons.Rounded.GraphicEq,
+                                label = "Loudness",
+                                value = formattedLoudness
+                            )
+                        }
+
+                        // Signal path row with dynamic output route
                         HorizontalDivider(
                             modifier = Modifier.padding(horizontal = 16.dp),
                             color = colorScheme.outlineVariant.copy(alpha = 0.4f)
                         )
+                        val outputDevice = audioCapability.currentOutputRouteName.ifBlank { "Speaker" }
+                        val signalPathValue = streamInfo?.getSignalPath(outputDevice)
+                            ?: (if (effectiveCodec != "Unknown") "${effectiveCodec.uppercase()} → Media3 ExoPlayer → AudioTrack → $outputDevice" else "Audio Stream → ExoPlayer → $outputDevice")
                         SongDetailsRow(
                             icon = Icons.Rounded.GraphicEq,
                             label = "Signal Path",
-                            value = streamInfo.getSignalPath()
+                            value = signalPathValue
                         )
                     }
                 } else {
@@ -459,6 +591,43 @@ fun SongDetailsSheet(
                             label = "Format Eligible",
                             value = if (audioCapability.canBeSpatializedStereoOpus) "Yes" else "No"
                         )
+
+                        // Output Route / Device
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                        SongDetailsRow(
+                            icon = Icons.Rounded.Headphones,
+                            label = "Output Device",
+                            value = audioCapability.currentOutputRouteName
+                        )
+
+                        // Best spatial mode supported
+                        if (audioCapability.bestSpatialFormat != "None") {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            SongDetailsRow(
+                                icon = Icons.Rounded.SurroundSound,
+                                label = "Spatial Mode",
+                                value = audioCapability.bestSpatialFormat
+                            )
+                        }
+
+                        // Head tracking status
+                        if (audioCapability.headTrackingAvailable) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                                color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            )
+                            SongDetailsRow(
+                                icon = Icons.Rounded.Explore,
+                                label = "Head Tracking",
+                                value = audioCapability.headTrackingModeName.ifBlank { "Supported" }
+                            )
+                        }
                     }
                 }
             }
@@ -468,6 +637,9 @@ fun SongDetailsSheet(
             val durationSec = if (song.duration > 0) song.duration else (durationMs / 1000).toInt()
             val fileSizeLabel = when {
                 isDownloaded -> formatFileSize(downloadedFileSizeBytes!!)
+                streamInfo?.contentLength != null && streamInfo.contentLength > 0 -> {
+                    formatFileSize(streamInfo.contentLength)
+                }
                 streamInfo != null && streamInfo.bitrate > 0 && durationSec > 0 -> {
                     val estimatedBytes = (streamInfo.bitrate * 1000L * durationSec) / 8
                     "${formatFileSize(estimatedBytes)} (Estimated)"

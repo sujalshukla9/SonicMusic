@@ -74,7 +74,7 @@ fun ModernPlayerControls(
     state: PlayerUiState,
     actions: PlayerActions,
     accentColor: Color,
-    surfaceTonalColor: Color,
+    @Suppress("UNUSED_PARAMETER") surfaceTonalColor: Color,
     onOpenArtist: (String, String?) -> Unit,
     artistId: String?,
     artists: List<ArtistRef> = emptyList(),

@@ -1,6 +1,9 @@
 package com.sonicmusic.app.features.player.presentation.sheets
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material3.ripple
+import com.sonicmusic.app.theme.pressScale
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -168,26 +171,33 @@ fun AddToPlaylistSheet(
                 playlists.forEach { playlist ->
                     val artworkUrl = playlist.coverArtUrl?.takeIf { it.isNotBlank() }
                         ?: fallbackArtworkUrl?.takeIf { it.isNotBlank() }
+                    val playlistInteractionSource = remember { MutableInteractionSource() }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                if (checkDuplicate != null) {
-                                    scope.launch {
-                                        val isDuplicate = checkDuplicate(playlist.id)
-                                        if (isDuplicate) {
-                                            selectedPlaylistForDuplicate = playlist
-                                        } else {
-                                            onSelectPlaylist(playlist.id, false)
-                                            onDismiss()
+                            .clip(RoundedCornerShape(12.dp))
+                            .pressScale(playlistInteractionSource, targetScale = 0.98f)
+                            .clickable(
+                                interactionSource = playlistInteractionSource,
+                                indication = ripple(),
+                                onClick = {
+                                    if (checkDuplicate != null) {
+                                        scope.launch {
+                                            val isDuplicate = checkDuplicate(playlist.id)
+                                            if (isDuplicate) {
+                                                selectedPlaylistForDuplicate = playlist
+                                            } else {
+                                                onSelectPlaylist(playlist.id, false)
+                                                onDismiss()
+                                            }
                                         }
+                                    } else {
+                                        onSelectPlaylist(playlist.id, false)
+                                        onDismiss()
                                     }
-                                } else {
-                                    onSelectPlaylist(playlist.id, false)
-                                    onDismiss()
                                 }
-                            }
-                            .padding(vertical = 12.dp),
+                            )
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {

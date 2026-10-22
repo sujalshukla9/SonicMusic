@@ -161,16 +161,21 @@ abstract class RepositoryModule {
     companion object {
         @Provides
         @Singleton
-        fun provideNewPipeService(): NewPipeService {
-            return NewPipeService()
+        fun provideNewPipeService(
+            okHttpClient: okhttp3.OkHttpClient,
+            audioQualitySelector: com.sonicmusic.app.features.player.audio.AudioQualitySelector
+        ): NewPipeService {
+            return NewPipeService(okHttpClient, audioQualitySelector)
         }
 
         @Provides
         @Singleton
         fun provideAudioStreamExtractor(
-            newPipeService: NewPipeService
+            newPipeService: NewPipeService,
+            okHttpClient: okhttp3.OkHttpClient,
+            audioQualitySelector: com.sonicmusic.app.features.player.audio.AudioQualitySelector
         ): AudioStreamExtractor {
-            return AudioStreamExtractor(newPipeService)
+            return AudioStreamExtractor(newPipeService, okHttpClient, audioQualitySelector)
         }
     }
 }
