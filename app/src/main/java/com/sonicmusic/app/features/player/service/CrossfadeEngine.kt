@@ -1,11 +1,14 @@
 package com.sonicmusic.app.features.player.service
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
+import com.sonicmusic.app.features.player.audio.PlaybackGain
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -64,6 +67,7 @@ class CrossfadeEngine(
     private val player1: ExoPlayer,
     private val player2: ExoPlayer,
     private val mediaSessionProvider: () -> MediaSession?,
+    private val gainForItem: (MediaItem?) -> Float,
     private val onPlayerSwapped: (ExoPlayer) -> Unit
 ) {
 
@@ -75,6 +79,7 @@ class CrossfadeEngine(
 
         /** Interval between volume envelope updates in milliseconds */
         const val FADE_STEP_INTERVAL_MS = 30L
+        private const val MIN_FADE_DURATION_MS = 250L
 
         /**
          * Calculates outgoing track volume gain for a normalized progress t in [0.0, 1.0].
@@ -261,7 +266,8 @@ class CrossfadeEngine(
         }
 
         // Commit to overlapping crossfade
-        val activeFadeDurationMs = remainingMs.coerceAtMost(effectiveDurationMs).coerceAtLeast(1_000L)
+        val activeFadeDurationMs = remainingMs.coerceAtMost(effectiveDurationMs)
+        if (activeFadeDurationMs < MIN_FADE_DURATION_MS) return
         executeCrossfade(outgoing, incoming, activeFadeDurationMs)
     }
 
@@ -275,49 +281,48 @@ class CrossfadeEngine(
         outgoingPlayerForActiveFade = outgoing
         incomingPlayerForActiveFade = incoming
 
-        Log.d(TAG, "Commencing Apple Music equal-power crossfade over ${fadeDurationMs}ms...")
+        Log.d(TAG, "Starting crossfade over ${fadeDurationMs}ms")
 
         crossfadeJob?.cancel()
         crossfadeJob = scope.launch(Dispatchers.Main) {
             try {
-                // 1. Start incoming player at 0 volume
                 incoming.volume = 0f
-                incoming.playWhenReady = true
-                incoming.play()
 
-                // 2. Synchronize MediaSession to incoming player so UI/Notification updates smoothly
+                // Make the incoming player authoritative before its playback callbacks arrive.
                 val session = mediaSessionProvider()
                 session?.setPlayer(incoming)
                 activePlayer = incoming
                 standbyPlayer = outgoing
                 onPlayerSwapped(incoming)
+                incoming.play()
+                if (!isActive) return@launch
 
-                // 3. Step volume envelopes
-                val steps = (fadeDurationMs / FADE_STEP_INTERVAL_MS).toInt().coerceIn(15, 400)
-                val stepDelay = (fadeDurationMs / steps).coerceAtLeast(16L)
+                val outgoingItem = outgoing.currentMediaItem
+                val incomingItem = incoming.currentMediaItem
+                val startedAt = SystemClock.elapsedRealtime()
 
-                for (step in 1..steps) {
-                    if (!isActive) break
-
-                    val progress = step.toFloat() / steps.toFloat()
-                    val outGain = calculateOutgoingGain(progress, curve)
-                    val inGain = calculateIncomingGain(progress, curve)
-
+                while (isActive && incoming.playWhenReady) {
+                    val elapsed = SystemClock.elapsedRealtime() - startedAt
+                    val progress = (elapsed.toFloat() / fadeDurationMs).coerceIn(0f, 1f)
+                    val (outGain, inGain) = PlaybackGain.crossfade(
+                        outgoing = calculateOutgoingGain(progress, curve) * gainForItem(outgoingItem),
+                        incoming = calculateIncomingGain(progress, curve) * gainForItem(incomingItem)
+                    )
                     outgoing.volume = outGain
                     incoming.volume = inGain
 
-                    delay(stepDelay)
+                    if (progress >= 1f) break
+                    delay(minOf(FADE_STEP_INTERVAL_MS, fadeDurationMs - elapsed))
                 }
 
-                // 4. Completed successfully
+                if (!isActive) return@launch
                 Log.d(TAG, "Crossfade transition completed successfully.")
                 finishTransition(outgoing, incoming, completedNormally = true)
+            } catch (e: CancellationException) {
+                // cancelCrossfade owns cleanup and may restore the outgoing player.
+                throw e
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) {
-                    Log.d(TAG, "Crossfade cancelled normally (user track switch or pause)")
-                } else {
-                    Log.e(TAG, "Crossfade interrupted or error occurred", e)
-                }
+                Log.e(TAG, "Crossfade interrupted or error occurred", e)
                 finishTransition(outgoing, incoming, completedNormally = false)
             }
         }
@@ -332,8 +337,9 @@ class CrossfadeEngine(
         outgoing.clearMediaItems()
         outgoing.volume = 1f // Reset volume for standby state
 
-        incoming.volume = 1f
+        incoming.volume = gainForItem(incoming.currentMediaItem)
 
+        crossfadeJob = null
         outgoingPlayerForActiveFade = null
         incomingPlayerForActiveFade = null
         preparedMediaId = null
@@ -387,13 +393,13 @@ class CrossfadeEngine(
                 outgoing.clearMediaItems()
                 outgoing.volume = 1f
             } else {
-                outgoing.volume = 1f
+                outgoing.volume = gainForItem(outgoing.currentMediaItem)
             }
         }
 
         if (incoming != null) {
             if (keepIncoming) {
-                incoming.volume = 1f
+                incoming.volume = gainForItem(incoming.currentMediaItem)
             } else {
                 incoming.volume = 0f
                 incoming.stop()
@@ -418,12 +424,8 @@ class CrossfadeEngine(
      * Coordinated pause handling during active crossfade.
      */
     fun onUserPause() {
-        if (isCrossfading) {
-            outgoingPlayerForActiveFade?.pause()
-            incomingPlayerForActiveFade?.pause()
-        } else {
-            activePlayer.pause()
-        }
+        activePlayer.pause()
+        cancelCrossfade()
     }
 
     /**

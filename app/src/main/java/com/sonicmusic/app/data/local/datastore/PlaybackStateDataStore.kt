@@ -13,9 +13,12 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sonicmusic.app.domain.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -35,6 +38,17 @@ data class SavedPlaybackState(
     val repeatMode: Int = 0
 )
 
+private const val SAVED_QUEUE_LIMIT = 50
+
+internal fun savedQueueWindow(song: Song, queue: List<Song>, index: Int): Pair<List<Song>, Int> {
+    val matchingIndex = if (queue.getOrNull(index)?.id == song.id) index else queue.indexOfFirst { it.id == song.id }
+    val activeIndex = if (matchingIndex >= 0) matchingIndex else index.coerceIn(0, queue.size)
+    val fullQueue = if (matchingIndex >= 0) queue else queue.toMutableList().apply { add(activeIndex, song) }
+    val start = (activeIndex - SAVED_QUEUE_LIMIT / 2)
+        .coerceIn(0, (fullQueue.size - SAVED_QUEUE_LIMIT).coerceAtLeast(0))
+    return fullQueue.subList(start, minOf(start + SAVED_QUEUE_LIMIT, fullQueue.size)) to (activeIndex - start)
+}
+
 @Singleton
 class PlaybackStateDataStore @Inject constructor(
     @ApplicationContext private val context: Context
@@ -49,6 +63,7 @@ class PlaybackStateDataStore @Inject constructor(
 
         private object Keys {
             val CURRENT_SONG = stringPreferencesKey("current_song_json")
+            val CURRENT_SONG_ID = stringPreferencesKey("current_song_id")
             val PLAYBACK_POSITION_MS = longPreferencesKey("playback_position_ms")
             val QUEUE_SONGS = stringPreferencesKey("queue_songs_json")
             val QUEUE_INDEX = intPreferencesKey("queue_index")
@@ -77,39 +92,21 @@ class PlaybackStateDataStore @Inject constructor(
                 runCatching { json.decodeFromString<List<Song>>(it) }.getOrNull()
             } ?: emptyList()
 
+            val savedIndex = prefs[Keys.QUEUE_INDEX] ?: 0
+            val (restoredQueue, restoredIndex) = if (song == null) queue to savedIndex
+            else savedQueueWindow(song, queue, savedIndex)
             SavedPlaybackState(
                 song = song,
                 positionMs = prefs[Keys.PLAYBACK_POSITION_MS] ?: 0L,
-                queue = queue,
-                queueIndex = prefs[Keys.QUEUE_INDEX] ?: 0,
+                queue = restoredQueue,
+                queueIndex = restoredIndex,
                 shuffleEnabled = prefs[Keys.SHUFFLE_ENABLED] ?: false,
                 repeatMode = prefs[Keys.REPEAT_MODE] ?: 0
             )
-        }
+        }.flowOn(Dispatchers.Default)
 
-    suspend fun getSavedPlaybackStateOnce(): SavedPlaybackState? {
-        return runCatching {
-            val prefs = context.playbackDataStore.data
-                .catch { emit(emptyPreferences()) }
-                .firstOrNull() ?: return null
-
-            val songJson = prefs[Keys.CURRENT_SONG] ?: return null
-            val song = runCatching { json.decodeFromString<Song>(songJson) }.getOrNull() ?: return null
-            val queueJson = prefs[Keys.QUEUE_SONGS]
-            val queue = queueJson?.let {
-                runCatching { json.decodeFromString<List<Song>>(it) }.getOrNull()
-            } ?: listOf(song)
-
-            SavedPlaybackState(
-                song = song,
-                positionMs = prefs[Keys.PLAYBACK_POSITION_MS] ?: 0L,
-                queue = queue,
-                queueIndex = prefs[Keys.QUEUE_INDEX] ?: 0,
-                shuffleEnabled = prefs[Keys.SHUFFLE_ENABLED] ?: false,
-                repeatMode = prefs[Keys.REPEAT_MODE] ?: 0
-            )
-        }.getOrNull()
-    }
+    suspend fun getSavedPlaybackStateOnce(): SavedPlaybackState? =
+        playbackState.firstOrNull()?.takeIf { it.song != null }
 
     suspend fun savePlaybackState(
         song: Song?,
@@ -122,31 +119,41 @@ class PlaybackStateDataStore @Inject constructor(
         if (song == null) return
         try {
             val songJson = json.encodeToString(song)
-            val safeQueue = queue.take(50)
+            val (safeQueue, savedIndex) = savedQueueWindow(song, queue, queueIndex)
             val queueJson = json.encodeToString(safeQueue)
 
             context.playbackDataStore.edit { prefs ->
                 prefs[Keys.CURRENT_SONG] = songJson
+                prefs[Keys.CURRENT_SONG_ID] = song.id
                 prefs[Keys.PLAYBACK_POSITION_MS] = positionMs.coerceAtLeast(0L)
                 prefs[Keys.QUEUE_SONGS] = queueJson
-                prefs[Keys.QUEUE_INDEX] = queueIndex.coerceIn(0, (safeQueue.size - 1).coerceAtLeast(0))
+                prefs[Keys.QUEUE_INDEX] = savedIndex
                 prefs[Keys.SHUFFLE_ENABLED] = shuffleEnabled
                 prefs[Keys.REPEAT_MODE] = repeatMode
                 prefs[Keys.LAST_UPDATED] = System.currentTimeMillis()
             }
             Log.d(TAG, "Saved playback state: ${song.title} at ${positionMs}ms (queue: ${safeQueue.size})")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save playback state: ${e.message}")
         }
     }
 
-    suspend fun updatePosition(positionMs: Long) {
+    suspend fun updatePosition(songId: String, positionMs: Long) {
         if (positionMs < 0) return
         try {
             context.playbackDataStore.edit { prefs ->
+                val storedSongId = prefs[Keys.CURRENT_SONG_ID] ?: prefs[Keys.CURRENT_SONG]?.let {
+                    runCatching { json.decodeFromString<Song>(it).id }.getOrNull()
+                }
+                if (storedSongId != songId) return@edit
+                prefs[Keys.CURRENT_SONG_ID] = songId
                 prefs[Keys.PLAYBACK_POSITION_MS] = positionMs
                 prefs[Keys.LAST_UPDATED] = System.currentTimeMillis()
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update position: ${e.message}")
         }

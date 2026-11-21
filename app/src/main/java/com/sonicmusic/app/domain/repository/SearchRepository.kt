@@ -1,25 +1,12 @@
 package com.sonicmusic.app.domain.repository
 
-import androidx.paging.PagingData
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.state.SearchFilters
-import kotlinx.coroutines.flow.Flow
 
 /**
  * Repository interface for search operations with pagination support
  */
 interface SearchRepository {
-    
-    /**
-     * Search for songs with pagination support
-     * @param query Search query string
-     * @param filters Optional search filters
-     * @return Flow of paginated search results
-     */
-    fun searchSongsPaged(
-        query: String, 
-        filters: SearchFilters = SearchFilters()
-    ): Flow<PagingData<Song>>
     
     /**
      * Search for songs (non-paged, for initial/quick searches)

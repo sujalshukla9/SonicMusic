@@ -1,7 +1,14 @@
 package com.sonicmusic.app.data.repository
 
+import android.content.Context
+import android.telephony.TelephonyManager
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.remote.api.RegionApi
+import com.sonicmusic.app.data.remote.source.NewPipeService
+import com.sonicmusic.app.data.remote.source.YouTubePlaybackSessionStore
+import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.CountryUtils
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
@@ -14,28 +21,45 @@ import javax.inject.Singleton
 class RegionRepository @Inject constructor(
     private val regionApi: RegionApi,
     private val settingsDataStore: SettingsDataStore,
-    private val newPipeService: com.sonicmusic.app.data.remote.source.NewPipeService,
-    private val youTubeiService: com.sonicmusic.app.data.remote.source.YouTubeiService
+    private val newPipeService: NewPipeService,
+    private val youTubeiService: YouTubeiService,
+    private val sessionStore: YouTubePlaybackSessionStore,
+    @ApplicationContext private val context: Context
 ) {
     private val initMutex = Mutex()
 
     companion object {
-        private const val FALLBACK_COUNTRY_CODE = "US"
         private const val SECONDARY_REGION_URL = "https://ipwho.is/"
         private const val TERTIARY_REGION_URL = "https://freeipapi.com/api/json"
+        private const val CACHE_TTL_MS = 24 * 60 * 60 * 1000L // 24 hours
     }
 
     val regionCode: Flow<String?> = settingsDataStore.regionCode
     val countryCode: Flow<String?> = settingsDataStore.countryCode
     val countryName: Flow<String?> = settingsDataStore.countryName
+    val isRegionManual: Flow<Boolean> = settingsDataStore.isRegionManual
 
     /**
-     * initializes the region by checking if it's already set.
-     * If not, it tries to get it from the API, falling back to the device locale.
+     * Initializes the region by checking if it's already set and valid.
+     * Skips auto-detection if user has manually selected a region.
+     * Uses cache to avoid unnecessary network API calls.
      */
     suspend fun initializeRegion() {
         initMutex.withLock {
             try {
+                // If user manually chose a region, keep it and restore NewPipe without running auto-detection
+                val isManual = settingsDataStore.isRegionManual.first()
+                if (isManual) {
+                    val currentCountry = normalizeCountryCode(
+                        settingsDataStore.countryCode.first()?.trim()?.takeIf { it.isNotEmpty() }
+                    )
+                    if (currentCountry != null) {
+                        newPipeService.updateRegion(currentCountry)
+                        android.util.Log.d("RegionRepository", "Preserved manual region: $currentCountry")
+                        return
+                    }
+                }
+
                 val currentRegion = settingsDataStore.regionCode.first()
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
@@ -51,11 +75,14 @@ class RegionRepository @Inject constructor(
                     (currentCountry != null && currentCountryName.equals(cachedCountryCode, ignoreCase = true) ||
                         isLikelyCode(currentCountryName))
 
-                // If cache is missing, stale, or is a fallback, fetch fresh region from IP.
-                if (currentRegion == null || currentCountry == null || currentCountryName == null || isNameJustCode || !isRegionFromIp) {
+                val lastDetectedAt = settingsDataStore.regionDetectedAt.first()
+                val isCacheFresh = (System.currentTimeMillis() - lastDetectedAt) < CACHE_TTL_MS
+
+                // If cache is missing, stale, or incomplete, fetch fresh region.
+                if (currentRegion == null || currentCountry == null || currentCountryName == null || isNameJustCode || !isRegionFromIp || !isCacheFresh) {
                     fetchAndSaveRegion()
                 } else {
-                    // Canonicalize legacy country codes like UK -> GB.
+                    // Canonicalize legacy country codes (e.g. UK -> GB)
                     if (!cachedCountryCode.equals(currentCountry, ignoreCase = true)) {
                         settingsDataStore.setCountryCode(currentCountry)
                         if (currentRegion.equals(cachedCountryCode, ignoreCase = true)) {
@@ -80,8 +107,7 @@ class RegionRepository @Inject constructor(
                     newPipeService.updateRegion(currentCountry)
                 }
             } catch (e: Exception) {
-                // Never crash app startup due to region detection failures.
-                android.util.Log.e("RegionRepository", " Error initializing region", e)
+                android.util.Log.e("RegionRepository", "Error initializing region", e)
                 fallbackToLocale()
             }
         }
@@ -95,15 +121,46 @@ class RegionRepository @Inject constructor(
         }
     }
 
+    suspend fun setManualCountry(countryCode: String) {
+        val canonicalCountry = normalizeCountryCode(countryCode) ?: return
+        val countryName = normalizeCountryName(null, canonicalCountry)
+
+        settingsDataStore.setCountryCode(canonicalCountry)
+        settingsDataStore.setRegionCode(canonicalCountry)
+        settingsDataStore.setCountryName(countryName)
+        settingsDataStore.setIsRegionFromIp(false)
+        settingsDataStore.setIsRegionManual(true)
+        settingsDataStore.setRegionDetectedAt(System.currentTimeMillis())
+
+        newPipeService.updateRegion(canonicalCountry)
+        android.util.Log.d("RegionRepository", "Set manual country to: $canonicalCountry ($countryName)")
+    }
+
+    suspend fun setAutoDetectRegion() {
+        settingsDataStore.setIsRegionManual(false)
+        refreshRegion()
+    }
+
     private suspend fun fetchAndSaveRegion() {
-        // 1. Primary: Dynamic detection directly from YouTube Music / InnerTube context
-        val innertubeResponse = runCatching { youTubeiService.detectCountryFromInnertube() }.getOrNull()
-        if (innertubeResponse != null && saveRegionFromInnertube(innertubeResponse)) {
-            android.util.Log.d("RegionRepository", "Resolved region dynamically from InnerTube context: $innertubeResponse")
+        // Priority 1: Dynamic detection directly from YouTube Music / InnerTube session context
+        val sessionCookies = runCatching { sessionStore.snapshot().session?.cookies }.getOrNull()
+        val innertubeResponse = runCatching {
+            youTubeiService.detectCountryFromInnertube(sessionCookies)
+        }.getOrNull()
+
+        if (innertubeResponse != null && saveRegionFromDetectedCountry(innertubeResponse, isFromIp = true)) {
+            android.util.Log.d("RegionRepository", "Resolved region dynamically from InnerTube/YTM session: $innertubeResponse")
             return
         }
 
-        // 2. Secondary: External IP geolocation APIs as fallback
+        // Priority 2: Device's network country (TelephonyManager - cellular tower / SIM)
+        val telephonyCountry = detectCellularCountry()
+        if (telephonyCountry != null && saveRegionFromDetectedCountry(telephonyCountry, isFromIp = false)) {
+            android.util.Log.d("RegionRepository", "Resolved region from network/SIM country: $telephonyCountry")
+            return
+        }
+
+        // Priority 3: External IP geolocation APIs as fallback (for Wi-Fi devices without cellular)
         val primaryResponse = runCatching { regionApi.getRegion() }.getOrNull()
         if (primaryResponse != null && saveRegionFromResponse(primaryResponse)) {
             return
@@ -119,20 +176,33 @@ class RegionRepository @Inject constructor(
             return
         }
 
-        android.util.Log.e("RegionRepository", "All region fetch attempts failed, falling back to locale")
+        // Priority 4: Device locale (dynamic, non-hardcoded)
+        android.util.Log.e("RegionRepository", "All online region detection failed, falling back to device locale")
         fallbackToLocale()
     }
 
-    private suspend fun saveRegionFromInnertube(countryCode: String): Boolean {
+    private fun detectCellularCountry(): String? {
+        try {
+            val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+            val networkCountry = telephonyManager?.networkCountryIso?.trim()?.takeIf { it.isNotEmpty() }
+            val simCountry = telephonyManager?.simCountryIso?.trim()?.takeIf { it.isNotEmpty() }
+            return normalizeCountryCode(networkCountry) ?: normalizeCountryCode(simCountry)
+        } catch (e: Exception) {
+            android.util.Log.w("RegionRepository", "Failed detecting cellular country", e)
+            return null
+        }
+    }
+
+    private suspend fun saveRegionFromDetectedCountry(countryCode: String, isFromIp: Boolean): Boolean {
         val country = normalizeCountryCode(countryCode) ?: return false
         val countryName = normalizeCountryName(null, country)
 
         settingsDataStore.setCountryCode(country)
         settingsDataStore.setRegionCode(country)
         settingsDataStore.setCountryName(countryName)
-        settingsDataStore.setIsRegionFromIp(true)
+        settingsDataStore.setIsRegionFromIp(isFromIp)
+        settingsDataStore.setRegionDetectedAt(System.currentTimeMillis())
 
-        // Update NewPipe region
         newPipeService.updateRegion(country)
         return true
     }
@@ -150,23 +220,23 @@ class RegionRepository @Inject constructor(
         settingsDataStore.setRegionCode(region)
         settingsDataStore.setCountryName(countryName)
         settingsDataStore.setIsRegionFromIp(true)
+        settingsDataStore.setRegionDetectedAt(System.currentTimeMillis())
 
-        // Update NewPipe region
         newPipeService.updateRegion(country)
         return true
     }
 
     private suspend fun fallbackToLocale() {
-        val locale = Locale.getDefault()
-        val country = normalizeCountryCode(locale.country) ?: FALLBACK_COUNTRY_CODE
-        val countryName = normalizeCountryName(locale.displayCountry, country)
+        val country = normalizeCountryCode(Locale.getDefault().country)
+            ?: CountryUtils.resolveFallbackCountryCode()
+        val countryName = normalizeCountryName(Locale.getDefault().displayCountry, country)
 
         settingsDataStore.setCountryCode(country)
-        settingsDataStore.setRegionCode(country) // Use country as region fallback
+        settingsDataStore.setRegionCode(country)
         settingsDataStore.setCountryName(countryName)
         settingsDataStore.setIsRegionFromIp(false)
+        settingsDataStore.setRegionDetectedAt(System.currentTimeMillis())
 
-        // Update NewPipe region
         newPipeService.updateRegion(country)
     }
 
@@ -192,7 +262,7 @@ class RegionRepository @Inject constructor(
         if (!normalized.isNullOrEmpty() && !isLikelyCode(normalized)) return normalized
 
         val localeName = Locale("", countryCode).displayCountry
-        return if (localeName.isNullOrBlank()) countryCode else localeName
+        return if (localeName.isNullOrBlank()) CountryUtils.getCountryName(countryCode) else localeName
     }
 
     private fun canonicalizeIsoCountryCode(code: String): String {

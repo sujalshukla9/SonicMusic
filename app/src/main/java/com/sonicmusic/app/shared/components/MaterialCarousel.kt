@@ -18,6 +18,7 @@ import androidx.compose.material3.carousel.HorizontalUncontainedCarousel
 import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -29,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.deviceLocalSongId
 import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.theme.Dimens
 import com.sonicmusic.app.theme.LocalThumbnailShape
@@ -122,6 +124,8 @@ fun SongCarousel(
     if (songs.isEmpty()) return
 
     val carouselState = rememberCarouselState { songs.size }
+    val thumbnailShape = LocalThumbnailShape.current
+    val currentShape = remember(thumbnailShape) { thumbnailShape.toComposeShape() }
 
     if (useMultiBrowse) {
         HorizontalMultiBrowseCarousel(
@@ -134,8 +138,7 @@ fun SongCarousel(
                 .height(itemWidth)
         ) { index ->
             val song = songs[index]
-            val isSongEnabled = isOnline || song.id in downloadedSongIds
-            val currentShape = LocalThumbnailShape.current.toComposeShape()
+            val isSongEnabled = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
 
             key("${song.id}_$index") {
                 SongCarouselCard(
@@ -160,8 +163,7 @@ fun SongCarousel(
                 .height(itemWidth)
         ) { index ->
             val song = songs[index]
-            val isSongEnabled = isOnline || song.id in downloadedSongIds
-            val currentShape = LocalThumbnailShape.current.toComposeShape()
+            val isSongEnabled = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
 
             key("${song.id}_$index") {
                 SongCarouselCard(

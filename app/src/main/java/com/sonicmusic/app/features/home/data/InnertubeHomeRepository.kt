@@ -1,557 +1,154 @@
 package com.sonicmusic.app.features.home.data
 
+import android.os.SystemClock
 import android.util.Log
-import com.sonicmusic.app.data.local.datastore.SettingsDataStore
-import com.sonicmusic.app.data.remote.source.Innertube
-import com.sonicmusic.app.features.home.data.HomeContentFilter
-import com.sonicmusic.app.features.home.data.HomeMapper
-import com.sonicmusic.app.domain.model.HomeSong
-import com.sonicmusic.app.domain.model.HomeSection
+import com.sonicmusic.app.data.remote.source.YouTubePlaybackSession
+import com.sonicmusic.app.data.remote.source.YouTubePlaybackSessionStore
+import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.data.repository.RegionRepository
+import com.sonicmusic.app.domain.model.HomeContent
+import com.sonicmusic.app.domain.model.HomeContinuation
+import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.CachedHomeFeed
+import com.sonicmusic.app.domain.model.CachedHomePage
+import com.sonicmusic.app.domain.repository.HomeFeedScope
 import com.sonicmusic.app.domain.repository.HomeRepository
-import com.sonicmusic.app.domain.repository.QuickPicksRepository
-import com.sonicmusic.app.domain.repository.UserTasteRepository
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import org.json.JSONArray
-import org.json.JSONObject
-import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
-/**
- * Repository for fetching and processing the YouTube Music home feed.
- * Implements a clean end-to-end pipeline returning only official songs.
- */
 @Singleton
 class InnertubeHomeRepository @Inject constructor(
-    private val okHttpClient: OkHttpClient,
-    private val settingsDataStore: SettingsDataStore,
-    private val quickPicksRepository: QuickPicksRepository,
-    private val userTasteRepository: UserTasteRepository,
-    private val listenAgainRepository: com.sonicmusic.app.domain.repository.ListenAgainRepository,
-    private val recommendationRepository: com.sonicmusic.app.domain.repository.RecommendationRepository
+    private val youtubeMusic: YouTubeiService,
+    private val regions: RegionRepository,
+    private val sessions: YouTubePlaybackSessionStore,
+    private val cache: HomeCacheDataSource
 ) : HomeRepository {
-    companion object {
-        private const val TAG = "InnertubeHomeRepo"
-        private const val CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
-    }
+    private val requests = Mutex()
 
-    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    // Thread-safe in-memory cache mapped by "$region:$authenticated" cache keys
-    private val feedCache = ConcurrentHashMap<String, CacheEntry>()
-
-    private data class CacheEntry(
-        val sections: List<HomeSection>,
-        val timestamp: Long
+    private data class Response(
+        val scope: HomeFeedScope,
+        val token: String?,
+        val content: HomeContent,
+        val completedAt: Long
     )
 
-    override suspend fun getHomeFeed(customCookies: String?): List<HomeSection> {
-        return getHomeFeedInternal(customCookies, forceRefresh = false)
-    }
+    private var lastResponse: Response? = null
 
-    override suspend fun refreshQuickPicks(): HomeSection = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Refreshing Quick Picks from local QuickPicksRepository")
-        val songs = quickPicksRepository.getQuickPicks(limit = 20, forceRefresh = true)
-        val homeSongs = songs.map { song ->
-            val resolved = song.resolvedArtists
-            HomeSong(
-                videoId = song.id,
-                title = song.title,
-                artists = if (resolved.isNotEmpty()) resolved.map { it.name } else listOf(song.artist),
-                album = song.albumName ?: song.album,
-                thumbnailUrl = song.thumbnailUrl,
-                durationText = null,
-                artistBrowseIds = resolved.mapNotNull { it.browseId },
-                artistRefs = resolved
-            )
-        }
-        HomeSection("Quick Picks", homeSongs)
-    }
+    override val scopes = combine(regions.countryCode, sessions.revisions) { country, _ ->
+        scopeFor(country, sessions.snapshot())
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
 
-    override suspend fun refreshMadeForYou(): HomeSection = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Refreshing Made for You from local UserTasteRepository")
-        val songsResult = userTasteRepository.getPersonalizedMix(limit = 20)
-        val songs = songsResult.getOrDefault(emptyList())
-        val homeSongs = songs.map { song ->
-            val resolved = song.resolvedArtists
-            HomeSong(
-                videoId = song.id,
-                title = song.title,
-                artists = if (resolved.isNotEmpty()) resolved.map { it.name } else listOf(song.artist),
-                album = song.albumName ?: song.album,
-                thumbnailUrl = song.thumbnailUrl,
-                durationText = null,
-                artistBrowseIds = resolved.mapNotNull { it.browseId },
-                artistRefs = resolved
-            )
-        }
-        HomeSection("Made for You", homeSongs)
-    }
+    override suspend fun cachedHome(scope: HomeFeedScope): CachedHomeFeed? = cache.read(scope)?.feed
 
-    override suspend fun refreshListenAgain(): HomeSection = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Refreshing Listen Again from local ListenAgainRepository")
-        val songs = try {
-            listenAgainRepository.getListenAgainSongs(27)
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val homeSongs = songs.map { song ->
-            val resolved = song.resolvedArtists
-            HomeSong(
-                videoId = song.id,
-                title = song.title,
-                artists = if (resolved.isNotEmpty()) resolved.map { it.name } else listOf(song.artist),
-                album = song.albumName ?: song.album,
-                thumbnailUrl = song.thumbnailUrl,
-                durationText = null,
-                artistBrowseIds = resolved.mapNotNull { it.browseId },
-                artistRefs = resolved
-            )
-        }
-        HomeSection("Listen Again", homeSongs)
-    }
-
-    override suspend fun refreshForgottenFavorites(): HomeSection = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Refreshing Forgotten Favorites from local RecommendationRepository")
-        val songs = try {
-            recommendationRepository.getForgottenFavorites(20).getOrDefault(emptyList())
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val homeSongs = songs.map { song ->
-            val resolved = song.resolvedArtists
-            HomeSong(
-                videoId = song.id,
-                title = song.title,
-                artists = if (resolved.isNotEmpty()) resolved.map { it.name } else listOf(song.artist),
-                album = song.albumName ?: song.album,
-                thumbnailUrl = song.thumbnailUrl,
-                durationText = null,
-                artistBrowseIds = resolved.mapNotNull { it.browseId },
-                artistRefs = resolved
-            )
-        }
-        HomeSection("Forgotten Favorites", homeSongs)
-    }
-
-    /**
-     * Executes the pipeline orchestrator:
-     * Chains: Fetch raw JSON -> Parse shelves -> Filter song-only & Blacklists -> Drop empty shelves -> Map to HomeSection.
-     *
-     * @param customCookies Optional session cookies to fetch personalized shelf recommendations.
-     * @param forceRefresh If true, clears the memory cache first.
-     * @return List of clean home sections containing official song tracks.
-     */
-    // In-flight request deduplication map
-    private val inFlightHomeRequests = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<List<HomeSection>>>()
-
-    suspend fun getHomeFeedInternal(customCookies: String? = null, forceRefresh: Boolean = false): List<HomeSection> = withContext(Dispatchers.IO) {
-        val region = settingsDataStore.countryCode.first() ?: "US"
-        val cacheKey = "$region:${customCookies != null}"
-
-        if (forceRefresh) {
-            feedCache.remove(cacheKey)
-            Log.d(TAG, "Bypassed and cleared memory cache for key: $cacheKey")
-        } else {
-            // 1. CACHING LAYER: Return cached sections if within TTL
-            val cached = feedCache[cacheKey]
-            if (cached != null && (System.currentTimeMillis() - cached.timestamp) < CACHE_TTL_MS) {
-                Log.d(TAG, "Memory cache hit for key: $cacheKey")
-                return@withContext cached.sections
+    override suspend fun refreshHome(scope: HomeFeedScope, force: Boolean, usePublicFeed: Boolean): HomeContent {
+        val requestedAt = SystemClock.elapsedRealtime()
+        return requests.withLock {
+            val session = checkScope(scope).takeUnless { usePublicFeed }
+            val feedScope = if (usePublicFeed) scope.publicFeed() else scope
+            val cached = cache.read(feedScope)
+            if (!force && cached != null && cached.isFresh) {
+                return@withLock cached.feed.firstPage
             }
-        }
+            recentResponse(feedScope, null, requestedAt)?.let { return@withLock it }
 
-        // In-flight deduplication: if request for this cacheKey is already running, join it
-        val runningDeferred = inFlightHomeRequests[cacheKey]
-        if (runningDeferred != null && runningDeferred.isActive) {
-            Log.d(TAG, "Joining existing in-flight home feed request for: $cacheKey")
-            return@withContext runningDeferred.await()
-        }
-
-        val deferred = repoScope.async {
-            try {
-                // 2. NETWORK LAYER: Fetch raw home JSON response
-                val rawJson = fetchHomeJson(region, customCookies)
-                if (rawJson.isNullOrBlank()) {
-                    Log.w(TAG, "Empty or null response fetched from home feed.")
-                    return@async feedCache[cacheKey]?.sections ?: emptyList()
-                }
-
-                // 3. PARSING LAYER: Parse JSON into raw shelves and handle nested items safely
-                val rawSections = parseHomeJson(rawJson)
-
-                // 4. SONG-ONLY FILTER LAYER: Exclude video/UGC types and filter empty shelves
-                val cleanRawSections = HomeContentFilter.filterSections(rawSections)
-
-                // 5. MAPPING LAYER: Map raw sections to finalized clean HomeSections
-                val finalSections = cleanRawSections.map(HomeMapper::mapToHomeSection)
-
-                // Cache the processed feed
-                feedCache[cacheKey] = CacheEntry(finalSections, System.currentTimeMillis())
-                Log.d(TAG, "Clean home feed pipeline succeeded. Cached ${finalSections.size} sections.")
-
-                finalSections
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to run clean home feed pipeline", e)
-                feedCache[cacheKey]?.sections ?: emptyList()
-            } finally {
-                inFlightHomeRequests.remove(cacheKey)
+            val content = request(scope, session)
+            if (content.shelves.isEmpty() && content.continuation == null) {
+                throw IOException("YouTube Music returned no usable Home sections")
             }
-        }
-
-        inFlightHomeRequests[cacheKey] = deferred
-        deferred.await()
-    }
-
-    /**
-     * POST requests to the FEmusic_home endpoint.
-     */
-    private fun fetchHomeJson(region: String, cookies: String?): String? {
-        val language = "en"
-        val requestBody = Innertube.buildYtmContext(language, region) {
-            put("browseId", com.sonicmusic.app.data.remote.source.YtmBrowseId.Home.value)
-        }
-        val acceptLanguage = "$language-$region,$language;q=0.9,en;q=0.8"
-        val request = Innertube.musicPost(
-            endpoint = Innertube.BROWSE,
-            body = requestBody,
-            acceptLanguage = acceptLanguage,
-            cookies = cookies
-        )
-
-        return try {
-            val response = okHttpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                response.body?.string()
-            } else {
-                Log.w(TAG, "HTTP error fetching FEmusic_home: ${response.code}")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed network request for home browse ID", e)
-            null
+            checkScope(scope)
+            val feed = cached?.feed?.takeIf {
+                !force && it.schemaVersion == CachedHomeFeed.CURRENT_VERSION &&
+                    it.loadedPages.isNotEmpty() && it.firstPage.shelves == content.shelves
+            } ?: CachedHomeFeed(content, schemaVersion = CachedHomeFeed.CURRENT_VERSION)
+            cache.save(feedScope, feed)
+            Log.d(TAG, "Home browse loaded ${content.shelves.size} sections (account=${session != null})")
+            lastResponse = Response(feedScope, null, feed.firstPage, SystemClock.elapsedRealtime())
+            feed.firstPage
         }
     }
 
-    /**
-     * Parses the outer browse JSON structure into raw section shelves.
-     */
-    private fun parseHomeJson(jsonString: String): List<RawHomeSection> {
-        val sectionsList = mutableListOf<RawHomeSection>()
-        try {
-            val json = JSONObject(jsonString)
-            val sections = json.optJSONObject("contents")
-                ?.optJSONObject("singleColumnBrowseResultsRenderer")
-                ?.optJSONArray("tabs")
-                ?.optJSONObject(0)
-                ?.optJSONObject("tabRenderer")
-                ?.optJSONObject("content")
-                ?.optJSONObject("sectionListRenderer")
-                ?.optJSONArray("contents")
-                ?: return sectionsList
-
-            for (i in 0 until sections.length()) {
-                val sectionObj = sections.optJSONObject(i) ?: continue
-                try {
-                    // Parse individual section; if one section is corrupted, it is skipped without breaking others
-                    parseSingleSection(sectionObj)?.let { sectionsList.add(it) }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Skipped corrupted section at index $i", e)
+    override suspend fun loadMoreHome(
+        scope: HomeFeedScope,
+        continuation: HomeContinuation,
+        usePublicFeed: Boolean
+    ): HomeContent {
+        val requestedAt = SystemClock.elapsedRealtime()
+        return requests.withLock {
+            val session = checkScope(scope).takeUnless { usePublicFeed }
+            val feedScope = if (usePublicFeed) scope.publicFeed() else scope
+            recentResponse(feedScope, continuation.token, requestedAt)?.let { return@withLock it }
+            val content = request(scope, session, continuation)
+            checkScope(scope)
+            val cached = cache.read(feedScope)
+            if (cached != null) {
+                val feed = cached.feed
+                val tail = feed.loadedPages.lastOrNull()?.content ?: feed.firstPage
+                if (tail.continuation?.token == continuation.token &&
+                    feed.loadedPages.size < MAX_CACHED_CONTINUATIONS &&
+                    feed.loadedPages.none { it.requestToken == continuation.token }
+                ) {
+                    val page = CachedHomePage(continuation.token, content)
+                    cache.save(feedScope, feed.copy(loadedPages = feed.loadedPages + page), cached.cachedAt)
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed parsing home JSON payload", e)
+            Log.d(TAG, "Home continuation loaded ${content.shelves.size} sections")
+            lastResponse = Response(feedScope, continuation.token, content, SystemClock.elapsedRealtime())
+            content
         }
-        return sectionsList
     }
 
-    private fun parseSingleSection(sectionObj: JSONObject): RawHomeSection? {
-        // 1. Horizontal Carousel
-        val carousel = sectionObj.optJSONObject("musicCarouselShelfRenderer")
-        if (carousel != null) {
-            val title = extractHeaderTitle(carousel.optJSONObject("header"))
-            val contents = carousel.optJSONArray("contents") ?: return null
-            val songs = mutableListOf<RawHomeSong>()
-            for (j in 0 until contents.length()) {
-                val item = contents.optJSONObject(j) ?: continue
-                parseSingleItem(item)?.let { songs.add(it) }
-            }
-            return RawHomeSection(title, songs)
-        }
+    private fun recentResponse(scope: HomeFeedScope, token: String?, requestedAt: Long): HomeContent? =
+        lastResponse?.takeIf {
+            it.scope == scope && it.token == token && it.completedAt >= requestedAt
+        }?.content
 
-        // 2. Vertical list shelf
-        val shelf = sectionObj.optJSONObject("musicShelfRenderer")
-        if (shelf != null) {
-            val title = extractText(shelf.optJSONObject("title"))
-            val contents = shelf.optJSONArray("contents") ?: return null
-            val songs = mutableListOf<RawHomeSong>()
-            for (j in 0 until contents.length()) {
-                val item = contents.optJSONObject(j) ?: continue
-                parseSingleItem(item)?.let { songs.add(it) }
-            }
-            return RawHomeSection(title, songs)
-        }
-
-        return null
+    private suspend fun request(
+        scope: HomeFeedScope,
+        session: YouTubePlaybackSession?,
+        continuation: HomeContinuation? = null
+    ): HomeContent {
+        return withTimeoutOrNull(12_000L) {
+            youtubeMusic.browseHomeFeed(scope.region, scope.language, session, continuation)
+        } ?: throw IOException("YouTube Music Home took too long to respond")
     }
 
-    private fun extractHeaderTitle(headerObj: JSONObject?): String {
-        val basicHeader = headerObj?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
-        if (basicHeader != null) {
-            return extractText(basicHeader.optJSONObject("title"))
-        }
-        return "Recommended"
+    override suspend fun quickPicksFromPlaylist(
+        scope: HomeFeedScope,
+        playlistId: String,
+        usePublicFeed: Boolean
+    ): List<Song> {
+        val session = checkScope(scope).takeUnless { usePublicFeed }
+        val tracks = withTimeoutOrNull(5_000L) {
+            youtubeMusic.browseHomePlaylistTracks(playlistId, scope.region, scope.language, session)
+        }.orEmpty()
+        checkScope(scope)
+        return tracks
     }
 
-    private fun parseSingleItem(item: JSONObject): RawHomeSong? {
-        val listItem = item.optJSONObject("musicResponsiveListItemRenderer")
-        if (listItem != null) {
-            return parseResponsiveItem(listItem)
-        }
-        val twoRow = item.optJSONObject("musicTwoRowItemRenderer")
-        if (twoRow != null) {
-            return parseTwoRowItem(twoRow)
-        }
-        return null
+    private suspend fun checkScope(scope: HomeFeedScope): YouTubePlaybackSession? {
+        val country = regions.countryCode.first()
+        val snapshot = sessions.snapshot()
+        if (scopeFor(country, snapshot) != scope) throw CancellationException("Home scope changed")
+        return snapshot.session
     }
 
-    private fun parseResponsiveItem(listItem: JSONObject): RawHomeSong? {
-        val videoId = listItem.optJSONObject("playlistItemData")?.optString("videoId")
-            ?: extractVideoIdFromOverlay(listItem)
-            ?: return null
-
-        val flexColumns = listItem.optJSONArray("flexColumns") ?: return null
-        if (flexColumns.length() == 0) return null
-
-        // Column 0 contains the Title runs
-        val title = extractFlexText(flexColumns.optJSONObject(0))
-        if (title.isBlank()) return null
-
-        var artists = listOf<String>()
-        var albumName: String? = null
-        var durationText: String? = null
-        var artistBrowseIds = listOf<String>()
-        var artistRefs = listOf<com.sonicmusic.app.domain.model.ArtistRef>()
-
-        // Column 1 contains runs metadata (Artist, Album, Views, Separator, etc.)
-        if (flexColumns.length() > 1) {
-            val runs = flexColumns.optJSONObject(1)
-                ?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
-                ?.optJSONObject("text")
-                ?.optJSONArray("runs")
-
-            if (runs != null && runs.length() > 0) {
-                val metadata = parseRunsMetadata(runs)
-                artists = metadata.artists
-                albumName = metadata.albumName
-                durationText = metadata.durationText
-                artistBrowseIds = metadata.artistBrowseIds
-                artistRefs = metadata.artistRefs
-            }
-        }
-
-        // Fixed column duration fallback if column 1 had no duration run
-        val fixedColumns = listItem.optJSONArray("fixedColumns")
-        if (fixedColumns != null && fixedColumns.length() > 0 && durationText == null) {
-            durationText = fixedColumns.optJSONObject(0)
-                ?.optJSONObject("musicResponsiveListItemFixedColumnRenderer")
-                ?.optJSONObject("text")
-                ?.optJSONArray("runs")
-                ?.optJSONObject(0)
-                ?.optString("text")
-        }
-
-        val thumbnails = listItem.optJSONObject("thumbnail")
-            ?.optJSONObject("musicThumbnailRenderer")
-            ?.optJSONObject("thumbnail")
-            ?.optJSONArray("thumbnails")
-        val thumbnailUrl = thumbnails?.optJSONObject(0)?.optString("url") ?: ""
-
-        val videoType = extractVideoType(listItem)
-
-        return RawHomeSong(
-            videoId = videoId,
-            title = title,
-            artists = artists,
-            album = albumName,
-            thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-            durationText = durationText,
-            videoType = videoType,
-            artistBrowseIds = artistBrowseIds,
-            artistRefs = artistRefs
-        )
+    private fun scopeFor(country: String?, snapshot: YouTubePlaybackSessionStore.Snapshot): HomeFeedScope {
+        val region = youtubeMusic.homeRegion(country)
+        return HomeFeedScope(snapshot.session?.homeCacheKey ?: HomeFeedScope.PUBLIC_ACCOUNT, snapshot.revision, region, youtubeMusic.homeLanguage(region))
     }
 
-    private fun parseTwoRowItem(twoRow: JSONObject): RawHomeSong? {
-        val watchEndpoint = twoRow.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
-        val videoId = watchEndpoint?.optString("videoId") ?: return null
-        if (videoId.isEmpty()) return null
-
-        val title = extractText(twoRow.optJSONObject("title"))
-        if (title.isBlank()) return null
-
-        val subtitleRuns = twoRow.optJSONObject("subtitle")?.optJSONArray("runs")
-        var artists = listOf<String>()
-        var albumName: String? = null
-        var durationText: String? = null
-        var artistBrowseIds = listOf<String>()
-        var artistRefs = listOf<com.sonicmusic.app.domain.model.ArtistRef>()
-
-        if (subtitleRuns != null && subtitleRuns.length() > 0) {
-            val metadata = parseRunsMetadata(subtitleRuns)
-            artists = metadata.artists
-            albumName = metadata.albumName
-            durationText = metadata.durationText
-            artistBrowseIds = metadata.artistBrowseIds
-            artistRefs = metadata.artistRefs
-        }
-
-        val thumbnails = twoRow.optJSONObject("thumbnailRenderer")
-            ?.optJSONObject("musicThumbnailRenderer")
-            ?.optJSONObject("thumbnail")
-            ?.optJSONArray("thumbnails")
-        val thumbnailUrl = thumbnails?.optJSONObject(0)?.optString("url") ?: ""
-
-        val videoType = watchEndpoint
-            .optJSONObject("watchEndpointMusicSupportedConfigs")
-            ?.optJSONObject("watchEndpointMusicConfig")
-            ?.optString("musicVideoType")
-
-        return RawHomeSong(
-            videoId = videoId,
-            title = title,
-            artists = artists,
-            album = albumName,
-            thumbnailUrl = upgradeThumbQuality(thumbnailUrl, videoId),
-            durationText = durationText,
-            videoType = videoType,
-            artistBrowseIds = artistBrowseIds,
-            artistRefs = artistRefs
-        )
-    }
-
-    private data class RunsParsedResult(
-        val artists: List<String>,
-        val albumName: String?,
-        val durationText: String?,
-        val artistBrowseIds: List<String> = emptyList(),
-        val artistRefs: List<com.sonicmusic.app.domain.model.ArtistRef> = emptyList()
-    )
-
-    private fun parseRunsMetadata(runs: JSONArray): RunsParsedResult {
-        val artists = mutableListOf<String>()
-        val artistBrowseIds = mutableListOf<String>()
-        val artistRefs = mutableListOf<com.sonicmusic.app.domain.model.ArtistRef>()
-        var albumName: String? = null
-        var durationText: String? = null
-
-        for (i in 0 until runs.length()) {
-            val run = runs.optJSONObject(i) ?: continue
-            val text = run.optString("text", "").trim()
-            if (text.isEmpty() || text == "•" || text == "·" || text == "|") continue
-
-            val browseEndpoint = run.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
-            val browseId = browseEndpoint?.optString("browseId", "")?.trim().orEmpty()
-            val pageType = browseEndpoint
-                ?.optJSONObject("browseEndpointContextSupportedConfigs")
-                ?.optJSONObject("browseEndpointContextMusicConfig")
-                ?.optString("pageType", "")
-                ?.lowercase()
-                .orEmpty()
-
-            val isArtist = pageType.contains("artist") || pageType.contains("user_channel") || browseId.startsWith("UC")
-            val isAlbum = pageType.contains("album") || browseId.startsWith("MPRE") || browseId.startsWith("MPLA")
-            val isDuration = text.contains(":") && text.replace(":", "").all { it.isDigit() }
-            val isViews = text.lowercase(Locale.US).contains("view")
-
-            when {
-                isArtist -> {
-                    artists.add(text)
-                    val id = browseId.takeIf { it.startsWith("UC") }
-                    if (id != null) artistBrowseIds.add(id)
-                    artistRefs.add(com.sonicmusic.app.domain.model.ArtistRef(text, id))
-                }
-                isAlbum -> {
-                    albumName = text
-                }
-                isDuration -> {
-                    durationText = text
-                }
-                isViews -> {
-                    // Ignore view count formatting runs
-                }
-                else -> {
-                    if (artists.isEmpty() && !isDuration && !isViews) {
-                        artists.add(text)
-                        artistRefs.add(com.sonicmusic.app.domain.model.ArtistRef(text, null))
-                    }
-                }
-            }
-        }
-
-        return RunsParsedResult(
-            artists = artists.ifEmpty { listOf("Unknown Artist") },
-            albumName = albumName,
-            durationText = durationText,
-            artistBrowseIds = artistBrowseIds,
-            artistRefs = if (artistRefs.isNotEmpty()) artistRefs else listOf(com.sonicmusic.app.domain.model.ArtistRef(artists.firstOrNull() ?: "Unknown Artist", null))
-        )
-    }
-
-    private fun extractFlexText(column: JSONObject?): String {
-        return column?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")
-            ?.optJSONObject("text")
-            ?.optJSONArray("runs")
-            ?.optJSONObject(0)
-            ?.optString("text", "") ?: ""
-    }
-
-    private fun extractText(textObj: JSONObject?): String {
-        return textObj?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "") 
-            ?: textObj?.optString("text", "") ?: ""
-    }
-
-    private fun extractVideoIdFromOverlay(listItem: JSONObject): String? {
-        return listItem.optJSONObject("overlay")
-            ?.optJSONObject("musicItemThumbnailOverlayRenderer")
-            ?.optJSONObject("content")
-            ?.optJSONObject("musicPlayButtonRenderer")
-            ?.optJSONObject("playNavigationEndpoint")
-            ?.optJSONObject("watchEndpoint")
-            ?.optString("videoId")
-    }
-
-    private fun extractVideoType(listItem: JSONObject): String? {
-        var watchEndpoint = listItem.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
-        if (watchEndpoint == null) {
-            watchEndpoint = listItem.optJSONObject("overlay")
-                ?.optJSONObject("musicItemThumbnailOverlayRenderer")
-                ?.optJSONObject("content")
-                ?.optJSONObject("musicPlayButtonRenderer")
-                ?.optJSONObject("playNavigationEndpoint")
-                ?.optJSONObject("watchEndpoint")
-        }
-        return watchEndpoint
-            ?.optJSONObject("watchEndpointMusicSupportedConfigs")
-            ?.optJSONObject("watchEndpointMusicConfig")
-            ?.optString("musicVideoType")
-    }
-
-    private fun upgradeThumbQuality(url: String, videoId: String): String {
-        if (url.isEmpty()) return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        if (url.contains("lh3.googleusercontent.com") || url.contains("yt3.ggpht.com")) {
-            return url.replace(Regex("=w\\d+-h\\d+"), "=w540-h540")
-        }
-        if (url.contains("i.ytimg.com")) {
-            return "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg"
-        }
-        return url
+    private companion object {
+        const val TAG = "HomeFeed"
+        const val MAX_CACHED_CONTINUATIONS = 5
     }
 }

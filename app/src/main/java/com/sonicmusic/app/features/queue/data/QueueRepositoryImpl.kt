@@ -79,6 +79,8 @@ class QueueRepositoryImpl @Inject constructor(
         private const val RECOMMENDATION_CACHE_TTL_MS = 180_000L // 3min cache (warm longer)
         private const val RECOMMENDATION_CACHE_MAX_ENTRIES = 80 // Larger cache for better locality
         private const val RECENT_FETCH_TRACKING_MAX_ENTRIES = 48
+        private val WHITESPACE_REGEX = Regex("\\s+")
+        private val NON_ALPHANUM_REGEX = Regex("[^a-z0-9 ]")
         
         // JSON configuration for safe serialization
         private val json = Json {
@@ -374,13 +376,13 @@ class QueueRepositoryImpl @Inject constructor(
 
     private fun normalizeArtist(value: String): String {
         return value.lowercase()
-            .replace(Regex("\\s+"), " ")
+            .replace(WHITESPACE_REGEX, " ")
             .trim()
     }
 
     private fun tokenize(value: String): Set<String> {
         return value.lowercase()
-            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(NON_ALPHANUM_REGEX, " ")
             .split(" ")
             .map { it.trim() }
             .filter { it.length >= 3 }

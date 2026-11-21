@@ -1,19 +1,21 @@
 package com.sonicmusic.app.app
 
+import androidx.compose.runtime.getValue
+import com.sonicmusic.app.theme.MotionTokens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColor
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -31,19 +33,22 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -63,7 +68,7 @@ object FloatingToolbarDefaults {
     val ContainerHeight: Dp = 58.dp
     val ContainerElevation: Dp = 0.dp
     val ContainerShape: Shape = CircleShape
-    val ContentPadding: PaddingValues = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+    val ContentPadding: PaddingValues = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
 
     @Composable
     fun standardFloatingToolbarColors(
@@ -106,7 +111,7 @@ fun HorizontalFloatingToolbar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
-            modifier = Modifier.height(FloatingToolbarDefaults.ContainerHeight),
+            modifier = Modifier.weight(1f, fill = false).height(FloatingToolbarDefaults.ContainerHeight),
             shape = shape,
             color = colors.containerColor,
             contentColor = colors.contentColor,
@@ -115,7 +120,7 @@ fun HorizontalFloatingToolbar(
         ) {
             CompositionLocalProvider(LocalContentColor provides colors.contentColor) {
                 Row(
-                    modifier = Modifier.padding(contentPadding),
+                    modifier = Modifier.padding(contentPadding).selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -159,31 +164,35 @@ fun HorizontalFloatingNavBar(
 ) {
     val currentRoute = currentDestination?.route
 
-    HorizontalFloatingToolbar(
-        modifier = modifier,
-        colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
-            containerColor = containerColor,
-            contentColor = contentColor
-        ),
-        floatingActionButton = floatingActionButton
-    ) {
-        items.forEach { screen ->
-            key(screen.route) {
-                val isSelected = remember(currentRoute, screen.route) {
-                    currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                }
-                val onClick = remember(screen, onItemClick) {
-                    { onItemClick(screen) }
-                }
+    BoxWithConstraints(modifier) {
+        val companionWidth = if (floatingActionButton == null) 0.dp else 68.dp
+        val showSelectedLabel = maxWidth >= 230.dp + companionWidth + 64.dp * LocalDensity.current.fontScale
+        HorizontalFloatingToolbar(
+            colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
+                containerColor = containerColor,
+                contentColor = contentColor
+            ),
+            floatingActionButton = floatingActionButton
+        ) {
+            items.forEach { screen ->
+                key(screen.route) {
+                    val isSelected = remember(currentRoute, screen.route) {
+                        currentDestination?.hierarchy?.any { it.route == screen.route } == true
+                    }
+                    val onClick = remember(screen, onItemClick) {
+                        { onItemClick(screen) }
+                    }
 
-                FloatingNavBarItem(
-                    screen = screen,
-                    selected = isSelected,
-                    onClick = onClick,
-                    indicatorColor = indicatorColor,
-                    selectedContentColor = selectedContentColor,
-                    unselectedContentColor = unselectedContentColor
-                )
+                    FloatingNavBarItem(
+                        screen = screen,
+                        selected = isSelected,
+                        showLabel = showSelectedLabel,
+                        onClick = onClick,
+                        indicatorColor = indicatorColor,
+                        selectedContentColor = selectedContentColor,
+                        unselectedContentColor = unselectedContentColor
+                    )
+                }
             }
         }
     }
@@ -197,6 +206,7 @@ fun HorizontalFloatingNavBar(
 private fun FloatingNavBarItem(
     screen: Screen,
     selected: Boolean,
+    showLabel: Boolean,
     onClick: () -> Unit,
     indicatorColor: Color,
     selectedContentColor: Color,
@@ -212,37 +222,28 @@ private fun FloatingNavBarItem(
 
     val animatedBgColor by transition.animateColor(
         transitionSpec = {
-            tween(
-                durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationFast,
-                easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
-            )
+            if (reduceMotion) snap() else MotionTokens.quickEffects()
         },
         label = "bg_${screen.route}"
     ) { isSelected ->
         if (isSelected) indicatorColor else Color.Transparent
     }
 
-    val animatedContentColor by transition.animateColor(
+    val animatedContentColor = transition.animateColor(
         transitionSpec = {
-            tween(
-                durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationFast,
-                easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
-            )
+            if (reduceMotion) snap() else MotionTokens.quickEffects()
         },
         label = "content_${screen.route}"
     ) { isSelected ->
         if (isSelected) selectedContentColor else unselectedContentColor
     }
 
-    val iconScale by transition.animateFloat(
+    val iconScale = transition.animateFloat(
         transitionSpec = {
             if (reduceMotion) {
                 androidx.compose.animation.core.snap()
             } else {
-                androidx.compose.animation.core.spring(
-                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
-                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-                )
+                MotionTokens.quickSpatial()
             }
         },
         label = "scale_${screen.route}"
@@ -252,56 +253,42 @@ private fun FloatingNavBarItem(
 
     Row(
         modifier = modifier
-            .height(44.dp)
+            .height(48.dp)
             .pressScale(interactionSource, targetScale = 0.94f)
             .clip(CircleShape)
-            .background(animatedBgColor)
-            .clickable(
+            .drawBehind { drawRect(animatedBgColor) }
+            .selectable(
+                selected = selected,
                 interactionSource = interactionSource,
                 indication = ripple(bounded = true, radius = 24.dp),
+                role = Role.Tab,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onClick()
                 }
             )
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = if (showLabel) 12.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        Icon(
-            imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
-            contentDescription = screen.title,
-            tint = animatedContentColor,
-            modifier = Modifier
-                .size(22.dp)
-                .graphicsLayer {
-                    scaleX = iconScale
-                    scaleY = iconScale
-                }
-        )
+        FloatingNavBarIcon(screen, selected, showLabel, animatedContentColor, iconScale)
 
         AnimatedVisibility(
-            visible = selected,
-            enter = if (reduceMotion) fadeIn(tween(100)) else {
+            visible = selected && showLabel,
+            enter = if (reduceMotion) androidx.compose.animation.EnterTransition.None else {
                 fadeIn(
-                    animationSpec = tween(durationMillis = 150, delayMillis = 20)
+                    animationSpec = MotionTokens.effects()
                 ) + expandHorizontally(
-                    animationSpec = tween(
-                        durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationStandard,
-                        easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
-                    ),
+                    animationSpec = MotionTokens.spatial(),
                     expandFrom = Alignment.Start,
                     clip = true
                 )
             },
-            exit = if (reduceMotion) fadeOut(tween(80)) else {
+            exit = if (reduceMotion) androidx.compose.animation.ExitTransition.None else {
                 fadeOut(
-                    animationSpec = tween(durationMillis = 80)
+                    animationSpec = MotionTokens.quickEffects()
                 ) + shrinkHorizontally(
-                    animationSpec = tween(
-                        durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationFast,
-                        easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate
-                    ),
+                    animationSpec = MotionTokens.quickSpatial(),
                     shrinkTowards = Alignment.Start,
                     clip = true
                 )
@@ -313,7 +300,7 @@ private fun FloatingNavBarItem(
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 0.2.sp
                 ),
-                color = animatedContentColor,
+                color = animatedContentColor.value,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Clip,
@@ -321,4 +308,23 @@ private fun FloatingNavBarItem(
             )
         }
     }
+}
+
+@Composable
+private fun FloatingNavBarIcon(
+    screen: Screen,
+    selected: Boolean,
+    showLabel: Boolean,
+    tint: State<Color>,
+    scale: State<Float>
+) {
+    Icon(
+        imageVector = if (selected) screen.selectedIcon else screen.unselectedIcon,
+        contentDescription = if (selected && showLabel) null else screen.title,
+        tint = tint.value,
+        modifier = Modifier.size(22.dp).graphicsLayer {
+            scaleX = scale.value
+            scaleY = scale.value
+        }
+    )
 }

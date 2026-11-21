@@ -2,59 +2,50 @@
 
 package com.sonicmusic.app.shared.components.pullrefresh
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import com.sonicmusic.app.theme.shouldReduceMotion
+import com.sonicmusic.app.theme.MotionTokens
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.SpringSpec
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -67,34 +58,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.animation.core.FastOutSlowInEasing
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.joinAll
-import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
-
-// ─── Spring presets from the PRD ────────────────────────────────────
-private val PullSpring: SpringSpec<Float> = spring(
-    dampingRatio = 0.7f,
-    stiffness = 200f
-)
-
-private val SettleSpring: SpringSpec<Float> = spring(
-    dampingRatio = 0.8f,
-    stiffness = 400f
-)
-
-private val DismissSpring: SpringSpec<Float> = spring(
-    dampingRatio = Spring.DampingRatioNoBouncy,
-    stiffness = Spring.StiffnessMediumLow
-)
-
-private val SnapSpring: SpringSpec<Float> = spring(
-    dampingRatio = 0.5f,
-    stiffness = 800f
-)
 
 // ─── Indicator sizing / offsets (dp → converted to px inside composable) ──
 private val INDICATOR_SIZE = 44.dp
@@ -107,7 +75,7 @@ private val SPINNER_ICON_SIZE = 24.dp
  * CompositionLocal providing the current pull-down offset (in pixels) of the sheet.
  * Consuming components (such as headers) can use this to adaptively collapse redundant top insets.
  */
-val LocalPullToRefreshOffset = compositionLocalOf { 0f }
+val LocalPullToRefreshOffset = compositionLocalOf<State<Float>> { mutableFloatStateOf(0f) }
 
 /**
  * Material Design 3 Expressive pull-to-refresh wrapper inspired by Google Photos.
@@ -149,6 +117,7 @@ fun M3ExpressivePullToRefresh(
     val density = LocalDensity.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
+    val requestRefresh by rememberUpdatedState(onRefresh)
     val configuration = LocalConfiguration.current
     val screenHeightDp = configuration.screenHeightDp.dp
 
@@ -184,17 +153,9 @@ fun M3ExpressivePullToRefresh(
     var lastHapticMilestone by remember { mutableIntStateOf(0) }
 
     // ── Completion icon progress (0→1 for draw-on anim) ──
-    var completionIconProgress by remember { mutableFloatStateOf(0f) }
+    val completionIconAnim = remember { Animatable(0f) }
 
-    // ── Reduced motion check ──
-    val reducedMotion = remember {
-        try {
-            android.provider.Settings.Global.getFloat(
-                view.context.contentResolver,
-                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE
-            ) == 0f
-        } catch (_: Exception) { false }
-    }
+    val reducedMotion = shouldReduceMotion()
 
     // ── React to external isRefreshing changes ──
     LaunchedEffect(isRefreshing) {
@@ -202,9 +163,9 @@ fun M3ExpressivePullToRefresh(
             state.status = RefreshStatus.REFRESHING
             state.refreshStartTimeMs = System.currentTimeMillis()
             if (!reducedMotion) {
-                launch { contentOffsetAnim.animateTo(contentRestOffsetPx, SettleSpring) }
-                launch { indicatorScaleAnim.animateTo(1f, SettleSpring) }
-                launch { indicatorAlphaAnim.animateTo(1f, tween(200)) }
+                launch { contentOffsetAnim.animateTo(contentRestOffsetPx, MotionTokens.PanelSpring) }
+                launch { indicatorScaleAnim.animateTo(1f, MotionTokens.PanelSpring) }
+                launch { indicatorAlphaAnim.animateTo(1f, MotionTokens.effects()) }
             } else {
                 contentOffsetAnim.snapTo(contentRestOffsetPx)
                 indicatorScaleAnim.snapTo(1f)
@@ -217,9 +178,9 @@ fun M3ExpressivePullToRefresh(
 
             state.lastRefreshTimeMs = System.currentTimeMillis()
             if (!reducedMotion) {
-                val j1 = launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
-                val j2 = launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
-                val j3 = launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
+                val j1 = launch { indicatorScaleAnim.animateTo(0f, MotionTokens.PanelSpring) }
+                val j2 = launch { indicatorAlphaAnim.animateTo(0f, MotionTokens.quickEffects()) }
+                val j3 = launch { contentOffsetAnim.animateTo(0f, MotionTokens.PanelSpring) }
                 joinAll(j1, j2, j3)
             } else {
                 indicatorScaleAnim.snapTo(0f)
@@ -232,7 +193,7 @@ fun M3ExpressivePullToRefresh(
             state.rawDragOffset = 0f
             state.indicatorOffset = 0f
             state.contentOffset = 0f
-            completionIconProgress = 0f
+            completionIconAnim.snapTo(0f)
         }
     }
 
@@ -244,53 +205,21 @@ fun M3ExpressivePullToRefresh(
         val remaining = PullToRefreshState.MIN_REFRESH_DISPLAY_MS - elapsed
         if (remaining > 0) delay(remaining)
 
-        when (refreshResult) {
-            RefreshResult.SUCCESS -> {
-                state.status = RefreshStatus.COMPLETING_SUCCESS
-                performHaptic(view, HapticType.SUCCESS)
-
-                completionIconProgress = 0f
-                val animatable = Animatable(0f)
-                launch {
-                    animatable.animateTo(1f, tween(300))
-                }
-                launch {
-                    while (animatable.isRunning) {
-                        completionIconProgress = animatable.value
-                        delay(16)
-                    }
-                    completionIconProgress = 1f
-                }
-
-                delay(PullToRefreshState.SUCCESS_DISPLAY_MS)
-            }
-            RefreshResult.ERROR, RefreshResult.TIMEOUT -> {
-                state.status = RefreshStatus.COMPLETING_ERROR
-                performHaptic(view, HapticType.ERROR)
-
-                completionIconProgress = 0f
-                val animatable = Animatable(0f)
-                launch {
-                    animatable.animateTo(1f, tween(300))
-                }
-                launch {
-                    while (animatable.isRunning) {
-                        completionIconProgress = animatable.value
-                        delay(16)
-                    }
-                    completionIconProgress = 1f
-                }
-
-                delay(PullToRefreshState.ERROR_DISPLAY_MS)
-            }
+        val success = refreshResult == RefreshResult.SUCCESS
+        completionIconAnim.snapTo(if (reducedMotion) 1f else 0f)
+        state.status = if (success) RefreshStatus.COMPLETING_SUCCESS else RefreshStatus.COMPLETING_ERROR
+        performHaptic(view, if (success) HapticType.SUCCESS else HapticType.ERROR)
+        if (!reducedMotion) {
+            launch { completionIconAnim.animateTo(1f, MotionTokens.effects()) }
         }
+        delay(if (success) PullToRefreshState.SUCCESS_DISPLAY_MS else PullToRefreshState.ERROR_DISPLAY_MS)
 
         // Dismiss
         state.lastRefreshTimeMs = System.currentTimeMillis()
         if (!reducedMotion) {
-            val j1 = launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
-            val j2 = launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
-            val j3 = launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
+            val j1 = launch { indicatorScaleAnim.animateTo(0f, MotionTokens.PanelSpring) }
+            val j2 = launch { indicatorAlphaAnim.animateTo(0f, MotionTokens.quickEffects()) }
+            val j3 = launch { contentOffsetAnim.animateTo(0f, MotionTokens.PanelSpring) }
             joinAll(j1, j2, j3)
         } else {
             indicatorScaleAnim.snapTo(0f)
@@ -303,7 +232,7 @@ fun M3ExpressivePullToRefresh(
         state.rawDragOffset = 0f
         state.indicatorOffset = 0f
         state.contentOffset = 0f
-        completionIconProgress = 0f
+        completionIconAnim.snapTo(0f)
         onRefreshResultConsumed()
     }
 
@@ -318,9 +247,9 @@ fun M3ExpressivePullToRefresh(
                 state.lastRefreshTimeMs = System.currentTimeMillis()
 
                 if (!reducedMotion) {
-                    val j1 = launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
-                    val j2 = launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
-                    val j3 = launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
+                    val j1 = launch { indicatorScaleAnim.animateTo(0f, MotionTokens.PanelSpring) }
+                    val j2 = launch { indicatorAlphaAnim.animateTo(0f, MotionTokens.quickEffects()) }
+                    val j3 = launch { contentOffsetAnim.animateTo(0f, MotionTokens.PanelSpring) }
                     joinAll(j1, j2, j3)
                 } else {
                     indicatorScaleAnim.snapTo(0f)
@@ -339,7 +268,7 @@ fun M3ExpressivePullToRefresh(
     }
 
     // ── Nested scroll connection ──
-    val nestedScrollConnection = remember(enabled, thresholdPx, maxDragPx, contentRestOffsetPx, reducedMotion) {
+    val nestedScrollConnection = remember(state, view, enabled, thresholdPx, maxDragPx, contentRestOffsetPx, reducedMotion) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 if (!enabled) return Offset.Zero
@@ -429,7 +358,7 @@ fun M3ExpressivePullToRefresh(
 
                 if (state.status == RefreshStatus.REFRESHING) {
                     if (available.y < 0 && contentOffsetAnim.value > 0f) {
-                        scope.launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
+                        scope.launch { contentOffsetAnim.animateTo(0f, MotionTokens.PanelSpring) }
                         return androidx.compose.ui.unit.Velocity.Zero
                     }
                     return androidx.compose.ui.unit.Velocity.Zero
@@ -446,15 +375,15 @@ fun M3ExpressivePullToRefresh(
                     if (!reducedMotion) {
                         scope.launch {
                             contentOffsetAnim.snapTo(startOffset)
-                            contentOffsetAnim.animateTo(contentRestOffsetPx, SettleSpring)
+                            contentOffsetAnim.animateTo(contentRestOffsetPx, MotionTokens.PanelSpring)
                         }
                         scope.launch {
                             indicatorScaleAnim.snapTo(1f)
-                            indicatorScaleAnim.animateTo(1f, SettleSpring)
+                            indicatorScaleAnim.animateTo(1f, MotionTokens.PanelSpring)
                         }
                         scope.launch {
                             indicatorAlphaAnim.snapTo(1f)
-                            indicatorAlphaAnim.animateTo(1f, tween(150))
+                            indicatorAlphaAnim.animateTo(1f, MotionTokens.quickEffects())
                         }
                     } else {
                         contentOffsetAnim.snapTo(contentRestOffsetPx)
@@ -462,7 +391,7 @@ fun M3ExpressivePullToRefresh(
                         indicatorAlphaAnim.snapTo(1f)
                     }
 
-                    onRefresh()
+                    requestRefresh()
                     lastHapticMilestone = 0
                     return androidx.compose.ui.unit.Velocity(0f, available.y)
                 } else if (state.status == RefreshStatus.PULLING) {
@@ -478,9 +407,9 @@ fun M3ExpressivePullToRefresh(
                             contentOffsetAnim.snapTo(startOffset)
                             indicatorScaleAnim.snapTo(startScale)
                             indicatorAlphaAnim.snapTo(startAlpha)
-                            val j1 = launch { contentOffsetAnim.animateTo(0f, DismissSpring) }
-                            val j2 = launch { indicatorScaleAnim.animateTo(0f, DismissSpring) }
-                            val j3 = launch { indicatorAlphaAnim.animateTo(0f, tween(150)) }
+                            val j1 = launch { contentOffsetAnim.animateTo(0f, MotionTokens.PanelSpring) }
+                            val j2 = launch { indicatorScaleAnim.animateTo(0f, MotionTokens.PanelSpring) }
+                            val j3 = launch { indicatorAlphaAnim.animateTo(0f, MotionTokens.quickEffects()) }
                             joinAll(j1, j2, j3)
 
                             state.status = RefreshStatus.IDLE
@@ -526,40 +455,44 @@ fun M3ExpressivePullToRefresh(
         else -> primary
     }
 
-    val currentContentOffset = (when {
-        isAnimatingBack -> contentOffsetAnim.value
-        state.status == RefreshStatus.REFRESHING || state.isCompleting() -> contentOffsetAnim.value
-        state.isPulling() || state.isArmed() -> state.contentOffset
-        else -> contentOffsetAnim.value
-    }).coerceAtLeast(0f)
-
-    val availableTrench = (currentContentOffset - topPaddingPx).coerceAtLeast(0f)
+    val currentContentOffset = remember(state) {
+        derivedStateOf {
+            val offset = if (!isAnimatingBack && (state.isPulling() || state.isArmed())) {
+                state.contentOffset
+            } else {
+                contentOffsetAnim.value
+            }
+            offset.coerceAtLeast(0f)
+        }
+    }
     val trenchOpenThresholdPx = with(density) { 10.dp.toPx() }
     val fullRevealDistancePx = contentRestOffsetPx - topPaddingPx - trenchOpenThresholdPx
 
-    val trenchProgress = if (fullRevealDistancePx > 0f) {
-        ((availableTrench - trenchOpenThresholdPx) / fullRevealDistancePx).coerceIn(0f, 1f)
-    } else {
-        0f
+    fun availableTrench() = (currentContentOffset.value - topPaddingPx).coerceAtLeast(0f)
+
+    fun trenchProgress(): Float {
+        if (fullRevealDistancePx <= 0f) return 0f
+        return ((availableTrench() - trenchOpenThresholdPx) / fullRevealDistancePx).coerceIn(0f, 1f)
     }
 
-    val currentIndicatorScale = (when {
-        isAnimatingBack -> indicatorScaleAnim.value
-        state.status == RefreshStatus.REFRESHING || state.isCompleting() -> indicatorScaleAnim.value
-        state.isPulling() || state.isArmed() -> (0.35f + 0.65f * trenchProgress).coerceIn(0f, 1f)
+    fun indicatorScale(): Float = (when {
+        isAnimatingBack || state.status == RefreshStatus.REFRESHING || state.isCompleting() -> indicatorScaleAnim.value
+        state.isPulling() || state.isArmed() -> 0.35f + 0.65f * trenchProgress()
         else -> 0f
     }).coerceIn(0f, 1f)
 
-    val currentIndicatorAlpha = (when {
-        isAnimatingBack -> indicatorAlphaAnim.value
-        state.status == RefreshStatus.REFRESHING || state.isCompleting() -> indicatorAlphaAnim.value
-        state.isPulling() || state.isArmed() -> trenchProgress
+    fun indicatorAlpha(): Float = (when {
+        isAnimatingBack || state.status == RefreshStatus.REFRESHING || state.isCompleting() -> indicatorAlphaAnim.value
+        state.isPulling() || state.isArmed() -> trenchProgress()
         else -> 0f
     }).coerceIn(0f, 1f)
 
-    val cornerProgress = (currentContentOffset / cornerMaxOffsetPx).coerceIn(0f, 1f)
-    val currentCornerRadius = sheetMaxCornerRadius * cornerProgress
-    val currentShadowElevation = sheetElevation * cornerProgress
+    val showTrench by remember(state) {
+        derivedStateOf { currentContentOffset.value > 0.5f || state.status == RefreshStatus.REFRESHING || isAnimatingBack }
+    }
+    val showIndicator by remember(state, topPaddingPx, trenchOpenThresholdPx, fullRevealDistancePx) {
+        derivedStateOf { indicatorAlpha() > 0.01f }
+    }
 
     Box(
         modifier = modifier
@@ -570,33 +503,36 @@ fun M3ExpressivePullToRefresh(
         // LAYER 0: Backdrop Reveal Trench (BEHIND the sheet)
         // Rendered only when sheet is pulled down or actively refreshing
         // ══════════════════════════════════════════════════════════════════
-        if (currentContentOffset > 0.5f || state.status == RefreshStatus.REFRESHING || isAnimatingBack) {
+        if (showTrench) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(with(density) { (currentContentOffset + topPaddingPx).toDp() })
-                    .background(backdropColor)
-            ) {
-                if (currentIndicatorAlpha > 0.01f) {
-                    val indicatorSizePx = with(density) { INDICATOR_SIZE.toPx() }
-                    val indicatorCenterY = if (state.status == RefreshStatus.REFRESHING || state.isCompleting()) {
-                        topPaddingPx + (contentRestOffsetPx - topPaddingPx - indicatorSizePx) / 2f
-                    } else {
-                        topPaddingPx + (availableTrench - indicatorSizePx) / 2f
+                    .fillMaxSize()
+                    .drawBehind {
+                        val trenchHeight = (currentContentOffset.value + topPaddingPx).coerceAtMost(size.height)
+                        drawRect(backdropColor, size = Size(size.width, trenchHeight))
                     }
+            ) {
+                if (showIndicator) {
+                    val indicatorSizePx = with(density) { INDICATOR_SIZE.toPx() }
 
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .offset {
-                                IntOffset(
-                                    x = 0,
-                                    y = indicatorCenterY.roundToInt()
-                                )
+                                val trenchHeight = if (state.status == RefreshStatus.REFRESHING || state.isCompleting()) {
+                                    contentRestOffsetPx - topPaddingPx
+                                } else {
+                                    availableTrench()
+                                }
+                                val top = topPaddingPx + (trenchHeight - indicatorSizePx) / 2f
+                                IntOffset(x = 0, y = top.roundToInt())
                             }
                             .size(INDICATOR_SIZE)
-                            .scale(currentIndicatorScale)
-                            .alpha(currentIndicatorAlpha)
+                            .graphicsLayer {
+                                scaleX = indicatorScale()
+                                scaleY = scaleX
+                                alpha = indicatorAlpha()
+                            }
                             .semantics {
                                 contentDescription = when (state.status) {
                                     RefreshStatus.PULLING -> "Pull to refresh. Swipe down to update content"
@@ -612,14 +548,14 @@ fun M3ExpressivePullToRefresh(
                         when {
                             state.status == RefreshStatus.COMPLETING_SUCCESS -> {
                                 SuccessCheckmark(
-                                    progress = completionIconProgress,
+                                    animationProgress = completionIconAnim.asState(),
                                     color = spinnerColor,
                                     modifier = Modifier.size(SPINNER_ICON_SIZE)
                                 )
                             }
                             state.status == RefreshStatus.COMPLETING_ERROR -> {
                                 ErrorCross(
-                                    progress = completionIconProgress,
+                                    animationProgress = completionIconAnim.asState(),
                                     color = spinnerColor,
                                     modifier = Modifier.size(SPINNER_ICON_SIZE)
                                 )
@@ -643,26 +579,21 @@ fun M3ExpressivePullToRefresh(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationY = currentContentOffset
-                    if (currentContentOffset > 0.5f) {
-                        val cornerPx = currentCornerRadius.toPx()
-                        shape = RoundedCornerShape(topStart = cornerPx, topEnd = cornerPx)
+                    val offset = currentContentOffset.value
+                    translationY = offset
+                    if (offset > 0.5f) {
+                        val cornerProgress = (offset / cornerMaxOffsetPx).coerceIn(0f, 1f)
+                        val radius = sheetMaxCornerRadius * cornerProgress
+                        shape = RoundedCornerShape(topStart = radius, topEnd = radius)
                         clip = true
-                        shadowElevation = currentShadowElevation.toPx()
+                        shadowElevation = (sheetElevation * cornerProgress).toPx()
                     } else {
                         shape = RectangleShape
                         clip = false
                         shadowElevation = 0f
                     }
                 }
-                .background(
-                    color = sheetBackgroundColor,
-                    shape = if (currentContentOffset > 0.5f) {
-                        RoundedCornerShape(topStart = currentCornerRadius, topEnd = currentCornerRadius)
-                    } else {
-                        RectangleShape
-                    }
-                )
+                .background(sheetBackgroundColor)
         ) {
             CompositionLocalProvider(LocalPullToRefreshOffset provides currentContentOffset) {
                 content()
@@ -815,24 +746,28 @@ private fun IndeterminateSpinner(
     strokeWidth: Float,
     modifier: Modifier = Modifier
 ) {
-    val transition = rememberInfiniteTransition(label = "spinnerTransition")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation"
-    )
+    val rotation = if (com.sonicmusic.app.theme.shouldReduceMotion()) {
+        null
+    } else {
+        rememberInfiniteTransition(label = "spinnerTransition").animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = MotionTokens.linearTween(MotionTokens.ShimmerPeriod),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "rotation"
+        )
+    }
 
     Canvas(modifier = modifier) {
+        val angle = rotation?.value ?: 0f
         val padding = strokeWidth
         // Two arcs that chase each other
-        val sweep1 = 90f + 50f * kotlin.math.sin(Math.toRadians(rotation * 2.0)).toFloat()
-        val start1 = rotation
-        val start2 = rotation + 180f
-        val sweep2 = 90f + 50f * kotlin.math.sin(Math.toRadians(rotation * 2.0 + 180.0)).toFloat()
+        val sweep1 = 90f + 50f * kotlin.math.sin(Math.toRadians(angle * 2.0)).toFloat()
+        val start1 = angle
+        val start2 = angle + 180f
+        val sweep2 = 90f + 50f * kotlin.math.sin(Math.toRadians(angle * 2.0 + 180.0)).toFloat()
 
         drawArc(
             color = color,
@@ -856,15 +791,16 @@ private fun IndeterminateSpinner(
 }
 
 /**
- * Animated checkmark — drawn on from 0→1 [progress].
+ * Animated checkmark — drawn on from 0→1.
  */
 @Composable
 private fun SuccessCheckmark(
-    progress: Float,
+    animationProgress: State<Float>,
     color: Color,
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
+        val progress = animationProgress.value
         val sw = 3.dp.toPx()
         val cx = size.width / 2f
         val cy = size.height / 2f
@@ -892,15 +828,16 @@ private fun SuccessCheckmark(
 }
 
 /**
- * Animated X cross — drawn on from 0→1 [progress].
+ * Animated X cross — drawn on from 0→1.
  */
 @Composable
 private fun ErrorCross(
-    progress: Float,
+    animationProgress: State<Float>,
     color: Color,
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
+        val progress = animationProgress.value
         val sw = 3.dp.toPx()
         val cx = size.width / 2f
         val cy = size.height / 2f

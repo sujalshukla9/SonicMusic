@@ -54,6 +54,10 @@ fun RecentlyPlayedScreen(
     val focusManager = LocalFocusManager.current
     
     val recentlyPlayed by viewModel.fullHistory.collectAsStateWithLifecycle()
+    val accountHistory by viewModel.accountHistory.collectAsStateWithLifecycle()
+    val accountTracks = remember(accountHistory.items) {
+        accountHistory.items.filter { it.playableSong != null }
+    }
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val historySearchQuery by viewModel.historySearchQuery.collectAsStateWithLifecycle()
 
@@ -163,7 +167,7 @@ fun RecentlyPlayedScreen(
                     bottom = bottomPadding + 16.dp
                 )
             )
-        } else if (recentlyPlayed.isEmpty()) {
+        } else if (recentlyPlayed.isEmpty() && accountTracks.isEmpty() && !accountHistory.hasMore) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -191,8 +195,27 @@ fun RecentlyPlayedScreen(
                     .padding(top = paddingValues.calculateTopPadding()),
                 contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
+                if (accountTracks.isNotEmpty() || accountHistory.hasMore) {
+                    item(key = "account_history_header") {
+                        Text("YouTube Music history", style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    }
+                    items(accountTracks, key = { "account_${it.key}" }, contentType = { "account_history" }) { entry ->
+                        AccountMusicRow(entry) {
+                            entry.playableSong?.let(viewModel::onSongClick)
+                            onShowFullPlayer()
+                        }
+                    }
+                    if (accountHistory.hasMore) {
+                        item(key = "more_account_history") {
+                            TextButton(onClick = { viewModel.loadMoreAccount(com.sonicmusic.app.features.library.data.MusicLibrarySection.History) }) {
+                                Text("Load more")
+                            }
+                        }
+                    }
+                }
                 groupedHistory.forEach { (header, items) ->
-                    stickyHeader(key = header) {
+                    stickyHeader(key = header, contentType = "header") {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = MaterialTheme.colorScheme.surface,
@@ -208,7 +231,7 @@ fun RecentlyPlayedScreen(
                         }
                     }
 
-                    items(items, key = { it.id }) { historyItem ->
+                    items(items, key = { it.id }, contentType = { "history_item" }) { historyItem ->
                         val dismissState = rememberSwipeToDismissBoxState(
                             confirmValueChange = { value ->
                                 if (value == SwipeToDismissBoxValue.EndToStart) {

@@ -36,10 +36,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +47,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.sonicmusic.app.domain.model.CommunityPlaylist
+import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.domain.model.HomeShelfItem
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.home.presentation.HomeViewModel
@@ -58,15 +60,20 @@ fun HomeSectionDetailScreen(
     sectionKey: String,
     onNavigateBack: () -> Unit,
     onShowFullPlayer: () -> Unit = {},
+    onOpenAlbum: (Song) -> Unit,
+    onOpenArtist: (String, String?) -> Unit,
+    onOpenPlaylist: (CommunityPlaylist) -> Unit,
     bottomPadding: Dp = 0.dp,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
-    val homeContent by viewModel.homeContent.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
+    val homeContent by viewModel.homeContent.collectAsStateWithLifecycle()
+    val history by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
 
-    val songs = remember(homeContent, sectionKey) {
-        viewModel.getSongsForSection(sectionKey)
+    val items = remember(homeContent, history, sectionKey) {
+        viewModel.getItemsForSection(sectionKey)
     }
+    val trackCount = remember(items) { items.count { it.playableSong != null } }
     val sectionTitle = remember(homeContent, sectionKey) {
         viewModel.getSectionTitle(sectionKey)
     }
@@ -92,7 +99,7 @@ fun HomeSectionDetailScreen(
         }
     ) { paddingValues ->
         when {
-            isLoading && songs.isEmpty() -> {
+            isLoading && items.isEmpty() -> {
                 SongListSkeleton(
                     contentPadding = PaddingValues(
                         top = paddingValues.calculateTopPadding(),
@@ -101,7 +108,7 @@ fun HomeSectionDetailScreen(
                 )
             }
 
-            songs.isEmpty() -> {
+            items.isEmpty() -> {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -110,7 +117,7 @@ fun HomeSectionDetailScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "No songs available",
+                            text = "Nothing is available in this section",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -133,14 +140,14 @@ fun HomeSectionDetailScreen(
                 ) {
                     item {
                         Text(
-                            text = "${songs.size} tracks",
+                            text = if (trackCount == items.size) "$trackCount tracks" else "${items.size} items",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                         )
                     }
 
-                    item {
+                    if (trackCount > 0) item {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -183,13 +190,18 @@ fun HomeSectionDetailScreen(
                         }
                     }
 
-                    itemsIndexed(songs, key = { index, song -> "${song.id}-$index" }) { index, song ->
+                    itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
                         SectionSongRow(
-                            song = song,
+                            item = item,
                             index = index + 1,
                             onClick = {
-                                if (viewModel.onSectionSongClick(sectionKey, song)) {
-                                    onShowFullPlayer()
+                                when (item) {
+                                    is HomeShelfItem.Playlist -> onOpenPlaylist(item.playlist)
+                                    is HomeShelfItem.Media -> when (item.song.contentType) {
+                                        ContentType.ALBUM -> onOpenAlbum(item.song)
+                                        ContentType.ARTIST -> onOpenArtist(item.song.title, item.song.artistId)
+                                        else -> if (viewModel.onSectionSongClick(sectionKey, item.song)) onShowFullPlayer()
+                                    }
                                 }
                             }
                         )
@@ -202,18 +214,20 @@ fun HomeSectionDetailScreen(
 
 @Composable
 private fun SectionSongRow(
-    song: Song,
+    item: HomeShelfItem,
     index: Int,
     onClick: () -> Unit
 ) {
+    val song = item.playableSong
+    val interaction = if (song != null) {
+        Modifier.songCombinedClickable(song = song, source = SongActionSource.RECOMMENDATION, onClick = onClick)
+    } else {
+        Modifier.clickable(onClick = onClick)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .songCombinedClickable(
-                song = song,
-                source = SongActionSource.RECOMMENDATION,
-                onClick = onClick
-            )
+            .then(interaction)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -225,8 +239,8 @@ private fun SectionSongRow(
         )
 
         SongThumbnail(
-            artworkUrl = song.thumbnailUrl,
-            contentDescription = song.title,
+            artworkUrl = item.artwork,
+            contentDescription = null,
             modifier = Modifier
                 .size(56.dp)
                 .clip(RoundedCornerShape(10.dp))
@@ -236,14 +250,14 @@ private fun SectionSongRow(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = song.title,
+                text = item.title,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = song.artist,
+                text = item.subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -251,7 +265,7 @@ private fun SectionSongRow(
             )
         }
 
-        if (song.duration > 0) {
+        if (song != null && song.duration > 0) {
             Text(
                 text = song.formattedDuration(),
                 style = MaterialTheme.typography.bodySmall,

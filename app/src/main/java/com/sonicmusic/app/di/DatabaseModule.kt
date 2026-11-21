@@ -41,21 +41,21 @@ object DatabaseModule {
             }
         }
 
-        val builder = Room.databaseBuilder(
+        val migration12to13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_history_playedAt ON playback_history(playedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_history_songId_playedAt ON playback_history(songId, playedAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_playback_history_artist ON playback_history(artist)")
+            }
+        }
+
+        return Room.databaseBuilder(
             context,
             SonicMusicDatabase::class.java,
             SonicMusicDatabase.DATABASE_NAME
         )
-            .addMigrations(migration9to10, migration10to11, migration11to12)
-            .fallbackToDestructiveMigrationOnDowngrade()
-
-        if (com.sonicmusic.app.BuildConfig.DEBUG) {
-            builder.setQueryCallback({ sqlQuery, bindArgs ->
-                android.util.Log.d("RoomQuery", " SQL: $sqlQuery | Args: $bindArgs")
-            }, java.util.concurrent.Executors.newSingleThreadExecutor())
-        }
-
-        return builder.build()
+            .addMigrations(migration9to10, migration10to11, migration11to12, migration12to13)
+            .build()
     }
 
     @Provides
@@ -101,7 +101,7 @@ object DatabaseModule {
         @ApplicationContext context: Context,
         databaseProvider: androidx.media3.database.DatabaseProvider
     ): androidx.media3.datasource.cache.SimpleCache {
-        val downloadDir = File(context.getExternalFilesDir(null), "MusicCache").apply { mkdirs() }
+        val downloadDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "MusicCache")
         return androidx.media3.datasource.cache.SimpleCache(
             downloadDir,
             androidx.media3.datasource.cache.NoOpCacheEvictor(),

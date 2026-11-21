@@ -25,7 +25,8 @@ data class ArtistProfile(
     val songsMoreEndpoint: String? = null,
     val albumsMoreEndpoint: String? = null,
     val singlesMoreEndpoint: String? = null,
-    val isStale: Boolean = false
+    val isStale: Boolean = false,
+    val catalogVersion: Int = 0
 )
 
 @Immutable
@@ -35,7 +36,8 @@ data class ArtistProfileSection(
     val title: String = "",
     val browseId: String? = null,
     val moreEndpoint: String? = null,
-    val items: List<Song> = emptyList()
+    val items: List<Song> = emptyList(),
+    val continuationToken: String? = null
 )
 
 @Serializable

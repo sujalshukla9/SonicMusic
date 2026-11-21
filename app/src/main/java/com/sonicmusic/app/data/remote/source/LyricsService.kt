@@ -1,9 +1,13 @@
 package com.sonicmusic.app.data.remote.source
 
 import android.util.Log
+import com.sonicmusic.app.core.network.HttpStatusException
+import com.sonicmusic.app.core.network.awaitSuccessfulBody
 import com.sonicmusic.app.domain.model.LyricLine
 import com.sonicmusic.app.domain.model.LyricsResult
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.deviceLocalSongId
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -53,6 +57,7 @@ class LyricsService @Inject constructor(
                 Log.d(TAG, "Found plain lyrics from LRCLIB")
                 return@withContext lrcResult
             }
+            if (videoId.deviceLocalSongId() != null) return@withContext lrcResult
 
             // Step 2: Fall back to YouTube Music InnerTube plain lyrics
             Log.d(TAG, "LRCLIB failed or no lyrics. Falling back to InnerTube for $videoId")
@@ -64,6 +69,8 @@ class LyricsService @Inject constructor(
 
             Log.d(TAG, "Got InnerTube lyrics browseId: $browseId")
             return@withContext fetchLyricsText(browseId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching lyrics", e)
             LyricsResult.Error(e.message ?: "Unknown error")
@@ -73,7 +80,7 @@ class LyricsService @Inject constructor(
     /**
      * Call LRCLIB API to get synchronized lyrics.
      */
-    private fun fetchLrcLibLyrics(song: Song): LyricsResult {
+    private suspend fun fetchLrcLibLyrics(song: Song): LyricsResult {
         try {
             val durationSeconds = song.duration
             
@@ -93,12 +100,7 @@ class LyricsService @Inject constructor(
                 .get()
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return LyricsResult.NotFound
-            }
-
-            val responseBody = response.body?.string() ?: return LyricsResult.NotFound
+            val responseBody = client.newCall(request).awaitSuccessfulBody() ?: return LyricsResult.NotFound
             val json = JSONObject(responseBody)
             
             // Prefer synced lyrics
@@ -125,9 +127,13 @@ class LyricsService @Inject constructor(
             }
 
             return LyricsResult.NotFound
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpStatusException) {
+            return if (e.code == 404) LyricsResult.NotFound else LyricsResult.Error("Lyrics request failed")
         } catch (e: Exception) {
             Log.e(TAG, "LRCLIB fetch failed", e)
-            return LyricsResult.NotFound
+            return LyricsResult.Error("Lyrics request failed")
         }
     }
 
@@ -180,7 +186,7 @@ class LyricsService @Inject constructor(
      * We look for the tab with title "Lyrics" and extract its
      * tabRenderer.endpoint.browseEndpoint.browseId.
      */
-    private fun fetchLyricsBrowseId(videoId: String): String? {
+    private suspend fun fetchLyricsBrowseId(videoId: String): String? {
         val body = Innertube.webRemixBody("en", "US") {
             put("videoId", videoId)
             put("isAudioOnly", true)
@@ -192,13 +198,7 @@ class LyricsService @Inject constructor(
             acceptLanguage = "en-US,en;q=0.9"
         )
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            Log.e(TAG, "/next failed: ${response.code}")
-            return null
-        }
-
-        val responseBody = response.body?.string() ?: return null
+        val responseBody = client.newCall(request).awaitSuccessfulBody() ?: return null
         return parseLyricsBrowseId(responseBody)
     }
 
@@ -245,7 +245,7 @@ class LyricsService @Inject constructor(
     /**
      * Step 2: Call /browse with the lyrics browseId to get plain lyrics text.
      */
-    private fun fetchLyricsText(browseId: String): LyricsResult {
+    private suspend fun fetchLyricsText(browseId: String): LyricsResult {
         val body = Innertube.webRemixBody("en", "US") {
             put("browseId", browseId)
         }
@@ -256,13 +256,7 @@ class LyricsService @Inject constructor(
             acceptLanguage = "en-US,en;q=0.9"
         )
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful) {
-            Log.e(TAG, "/browse failed: ${response.code}")
-            return LyricsResult.Error("Failed to fetch lyrics: ${response.code}")
-        }
-
-        val responseBody = response.body?.string()
+        val responseBody = client.newCall(request).awaitSuccessfulBody()
             ?: return LyricsResult.Error("Empty lyrics response")
 
         return parseLyricsText(responseBody)

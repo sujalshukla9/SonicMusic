@@ -1,8 +1,8 @@
 package com.sonicmusic.app.features.search.data
 
-import android.content.Context
 import android.util.Log
 import android.util.LruCache
+import com.sonicmusic.app.core.network.awaitSuccessfulBody
 import com.sonicmusic.app.core.util.ThumbnailUrlUtils
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.data.remote.source.Innertube
@@ -11,22 +11,20 @@ import com.sonicmusic.app.domain.model.SearchSuggestionItem
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.SuggestionType
 import com.sonicmusic.app.domain.repository.SearchSuggestionRepository
-import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class SearchSuggestionRepositoryImpl @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val settingsDataStore: SettingsDataStore,
     private val okHttpClient: OkHttpClient
 ) : SearchSuggestionRepository {
@@ -42,26 +40,21 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
 
     override suspend fun getSearchSuggestions(query: String): Result<Pair<List<String>, List<SearchSuggestionItem>>> =
         withContext(Dispatchers.IO) {
-            val normalizedQuery = query.trim().lowercase()
-            if (normalizedQuery.length < 2) {
+            val trimmedQuery = query.trim()
+            if (trimmedQuery.length < 2) {
                 return@withContext Result.success(Pair(emptyList(), emptyList()))
-            }
-
-            // Check cache
-            cache.get(normalizedQuery)?.let { entry ->
-                if (entry.isValid()) {
-                    return@withContext Result.success(entry.data)
-                } else {
-                    cache.remove(normalizedQuery)
-                }
             }
 
             try {
                 val region = getRequestRegion()
                 val language = getLanguageForRegion(region)
+                val cacheKey = "$region:${trimmedQuery.lowercase(Locale.ROOT)}"
+                cache.get(cacheKey)?.takeIf { it.isValid() }?.let { entry ->
+                    return@withContext Result.success(entry.data)
+                }
 
                 val requestBody = Innertube.webRemixBody(language, region) {
-                    put("input", query.trim())
+                    put("input", trimmedQuery)
                 }
 
                 val request = Innertube.musicPost(
@@ -70,13 +63,7 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                     acceptLanguage = getAcceptLanguageHeader(language, region)
                 )
 
-                val response = client.newCall(request).execute()
-                if (!response.isSuccessful) {
-                    // Fail silently but gracefully
-                    return@withContext Result.success(Pair(emptyList(), emptyList()))
-                }
-
-                val body = response.body?.string()
+                val body = client.newCall(request).awaitSuccessfulBody()
                 if (body.isNullOrEmpty()) {
                     return@withContext Result.success(Pair(emptyList(), emptyList()))
                 }
@@ -84,13 +71,14 @@ class SearchSuggestionRepositoryImpl @Inject constructor(
                 val parsed = parseSuggestionsResponse(body)
                 
                 // Cache the successful result
-                cache.put(normalizedQuery, CacheEntry(parsed))
+                cache.put(cacheKey, CacheEntry(parsed))
                 
                 Result.success(parsed)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("SearchSuggestionRepo", " Error fetching search suggestions", e)
-                // Return empty list instead of failure to fail silently as requested
-                Result.success(Pair(emptyList(), emptyList()))
+                Result.failure(e)
             }
         }
 

@@ -118,38 +118,29 @@ class NewPipeService @Inject constructor(
 
             val candidates = audioStreams.mapNotNull { stream ->
                 val streamUrl = stream.content.orEmpty().ifBlank { return@mapNotNull null }
+                if (!stream.isUrl) return@mapNotNull null
                 val itagItem = stream.itagItem
-                val rawCodec = stream.codec
-                    ?: itagItem?.codec
-                    ?: stream.format?.mimeType
-                    ?: stream.format?.name.orEmpty()
-                val codec = AudioStreamInfo.codecFromMimeType(rawCodec)
-                val container = stream.format?.name?.let { AudioStreamInfo.containerFromMimeType(it) }
-                    ?: AudioStreamInfo.containerFromMimeType(rawCodec)
-                val itag = stream.format?.id?.takeIf { it > 0 } ?: itagItem?.id?.takeIf { it > 0 }
-                val parsedBitrate = stream.averageBitrate.takeIf { it > 0 }
-                    ?: itagItem?.bitrate?.takeIf { it > 0 }
-                    ?: AudioStreamInfo.nominalBitrateForItag(itag)
-                    ?: 0
-                val bitrateKbps = when {
-                    parsedBitrate > 1000 -> Math.round(parsedBitrate / 1000.0).toInt()
-                    parsedBitrate > 0 -> parsedBitrate
-                    else -> 0
-                }
-                val rawBitrate = (bitrateKbps.toLong() * 1000L).takeIf { it > 0 } ?: 0L
-                val sampleRate = itagItem?.sampleRate?.takeIf { it > 0 }
-                    ?: AudioStreamInfo.nominalSampleRateForItag(itag)
-                    ?: 0
-                val channelCount = itagItem?.audioChannels?.takeIf { it > 0 } ?: 2
+                val rawCodec = stream.codec ?: itagItem?.codec
+                val mimeType = stream.format?.mimeType.orEmpty()
+                val codec = AudioStreamInfo.codecFromMimeType(rawCodec ?: mimeType)
+                val container = AudioStreamInfo.containerFromMimeType(mimeType)
+                val itag = stream.itag.takeIf { it > 0 } ?: itagItem?.id?.takeIf { it > 0 }
                 val contentLength = itagItem?.contentLength?.takeIf { it > 0 }
+                val durationMs = itagItem?.approxDurationMs?.takeIf { it > 0 }
+                val rawBitrate = audioBitrateBps(contentLength, durationMs)
+                    ?: stream.bitrate.takeIf { it > 0 }?.toLong()
+                    ?: 0L
+                val bitrateKbps = Math.round(rawBitrate / 1000.0).toInt()
+                val sampleRate = itagItem?.sampleRate?.takeIf { it > 0 } ?: 0
+                val channelCount = itagItem?.audioChannels?.takeIf { it > 0 } ?: 0
                 val expiresAtMs = AudioStreamCandidate.extractExpiryFromUrl(streamUrl)
 
                 AudioStreamCandidate(
                     url = streamUrl,
-                    mimeType = stream.format?.mimeType ?: "audio/${container.lowercase()}",
+                    mimeType = mimeType,
                     itag = itag,
                     codec = codec,
-                    codecProfile = itagItem?.codec,
+                    codecProfile = rawCodec,
                     container = container,
                     bitrate = rawBitrate,
                     bitrateKbps = bitrateKbps,
@@ -157,8 +148,11 @@ class NewPipeService @Inject constructor(
                     channelCount = channelCount,
                     isAudioOnly = true,
                     contentLength = contentLength,
+                    durationMs = durationMs,
                     sourceName = "NewPipe",
-                    expiresAtMs = expiresAtMs
+                    expiresAtMs = expiresAtMs,
+                    originalTitle = streamInfo.name,
+                    originalArtist = streamInfo.uploaderName
                 )
             }
 

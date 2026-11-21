@@ -1,12 +1,11 @@
 package com.sonicmusic.app.shared.components
 
-import androidx.compose.animation.core.LinearEasing
+import androidx.compose.runtime.getValue
+import com.sonicmusic.app.theme.MotionTokens
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,66 +26,79 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.State
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.unit.dp
 
 // ═══════════════════════════════════════════════════════════════════
 // SHIMMER EFFECT — M3 Expressive
 // ═══════════════════════════════════════════════════════════════════
 
-/**
- * Creates a shimmer brush for skeleton loading.
- * Uses Material3 surface tones for a subtle, modern look.
- */
-@Composable
-fun shimmerBrush(): Brush {
-    val shimmerColors = listOf(
-        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-        MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
-        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)
-    )
+private val LocalShimmerProgress = compositionLocalOf<State<Float>?> { null }
 
-    val transition = rememberInfiniteTransition(label = "shimmer")
-    val translateAnim by transition.animateFloat(
+@Composable
+private fun rememberShimmerProgress(): State<Float> {
+    if (com.sonicmusic.app.theme.shouldReduceMotion()) {
+        return remember { mutableFloatStateOf(-1f) }
+    }
+    return rememberInfiniteTransition(label = "shimmer").animateFloat(
         initialValue = 0f,
-        targetValue = 1200f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            animation = MotionTokens.linearTween(MotionTokens.ShimmerPeriod),
             repeatMode = RepeatMode.Restart
         ),
-        label = "shimmerTranslate"
+        label = "shimmerProgress"
     )
+}
 
-    return Brush.linearGradient(
-        colors = shimmerColors,
-        start = Offset(translateAnim - 400f, translateAnim - 400f),
-        end = Offset(translateAnim, translateAnim)
-    )
+@Composable
+private fun SkeletonShimmer(content: @Composable () -> Unit) {
+    val progress = LocalShimmerProgress.current ?: rememberShimmerProgress()
+    CompositionLocalProvider(LocalShimmerProgress provides progress, content = content)
 }
 
 /**
  * A single shimmer placeholder box with M3 expressive shapes.
  */
 @Composable
-fun ShimmerBox(
+private fun ShimmerBox(
     modifier: Modifier = Modifier,
     shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(12.dp)
 ) {
-    val brush = shimmerBrush()
-    Box(
-        modifier = modifier
-            .clip(shape)
-            .background(brush)
-    )
+    val progress = LocalShimmerProgress.current ?: rememberShimmerProgress()
+    val base = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)
+    val highlight = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f)
+    Box(modifier.clip(shape).drawWithCache {
+        val bandWidth = 120.dp.toPx()
+        val brush = Brush.linearGradient(
+            colors = listOf(Color.Transparent, highlight, Color.Transparent),
+            start = Offset.Zero,
+            end = Offset(bandWidth, bandWidth)
+        )
+        onDrawBehind {
+            drawRect(base)
+            val fraction = progress.value
+            if (fraction >= 0f) {
+                val x = fraction * (size.width + size.height + 2 * bandWidth) - size.height - 2 * bandWidth
+                translate(left = x) {
+                    drawRect(brush, topLeft = Offset(-x, 0f), size = size)
+                }
+            }
+        }
+    })
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -102,7 +114,7 @@ fun SongListSkeleton(
     modifier: Modifier = Modifier,
     itemCount: Int = 8,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -118,7 +130,7 @@ fun SongListSkeleton(
  * Single song row skeleton — thumbnail + title line + artist line
  */
 @Composable
-fun SongRowSkeleton(modifier: Modifier = Modifier) {
+fun SongRowSkeleton(modifier: Modifier = Modifier) = SkeletonShimmer {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -171,7 +183,7 @@ fun ArtistListSkeleton(
     modifier: Modifier = Modifier,
     itemCount: Int = 10,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -184,7 +196,7 @@ fun ArtistListSkeleton(
 }
 
 @Composable
-fun ArtistRowSkeleton(modifier: Modifier = Modifier) {
+fun ArtistRowSkeleton(modifier: Modifier = Modifier) = SkeletonShimmer {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -224,7 +236,7 @@ fun ArtistRowSkeleton(modifier: Modifier = Modifier) {
 fun HomeScreenSkeleton(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -313,7 +325,7 @@ fun HomeScreenSkeleton(
 fun ArtistProfileSkeleton(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -427,7 +439,7 @@ fun ArtistProfileSkeleton(
 fun LibraryScreenSkeleton(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -489,7 +501,7 @@ fun LibraryScreenSkeleton(
 fun SearchResultsSkeleton(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(0.dp)
-) {
+) = SkeletonShimmer {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,

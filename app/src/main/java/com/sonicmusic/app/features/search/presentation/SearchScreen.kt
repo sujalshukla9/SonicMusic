@@ -1,18 +1,22 @@
 package com.sonicmusic.app.features.search.presentation
 
+import androidx.compose.ui.res.stringResource
+import com.sonicmusic.app.R
+
+import com.sonicmusic.app.shared.components.animatedSection
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.heading
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.animation.slideInVertically
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,7 +45,11 @@ import androidx.compose.material.icons.rounded.MicExternalOn
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.*
+import com.sonicmusic.app.shared.components.ScreenSearchField
 import androidx.compose.runtime.Composable
+import com.sonicmusic.app.shared.components.SearchResultsSkeleton
+import com.sonicmusic.app.theme.MotionTokens
+import com.sonicmusic.app.theme.shouldReduceMotion
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -49,7 +57,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -115,8 +122,8 @@ fun SearchScreen(
     }
 
     // Auto-dismiss keyboard when user scrolls through results
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.filter { it }.collect {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
         }
@@ -147,7 +154,7 @@ fun SearchScreen(
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = Color.Transparent,
+        containerColor = MaterialTheme.colorScheme.surface,
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -175,12 +182,19 @@ fun SearchScreen(
                         .fillMaxSize()
                 ) {
                     com.sonicmusic.app.shared.components.NoInternetBanner(isVisible = !isOnline)
+                val reduceMotion = shouldReduceMotion()
                 AnimatedContent(
                     targetState = searchState,
                     contentKey = { it::class },
                     transitionSpec = {
-                        fadeIn(animationSpec = tween(300)) togetherWith
-                        fadeOut(animationSpec = tween(300))
+                        val transition = if (reduceMotion) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            (fadeIn(MotionTokens.effects()) +
+                                slideInVertically(MotionTokens.spatial()) { it / 32 }) togetherWith
+                                fadeOut(MotionTokens.quickEffects())
+                        }
+                        transition.using(null)
                     },
                     label = "search_state"
                 ) { state ->
@@ -224,37 +238,6 @@ fun SearchScreen(
                             )
                         }
 
-                        is SearchState.LoadingSuggestions -> {
-                            SuggestionsContent(
-                                textSuggestions = textSuggestions,
-                                contentSuggestions = contentSuggestions,
-                                recentSearches = recentSearches.filter { it.contains(state.query, ignoreCase = true) }.take(5),
-                                isLoading = true,
-                                onTextSuggestionClick = {
-                                    focusManager.clearFocus(force = true)
-                                    keyboardController?.hide()
-                                    viewModel.onAction(SearchAction.SuggestionClicked(it))
-                                },
-                                onContentSuggestionClick = { item ->
-                                    focusManager.clearFocus(force = true)
-                                    keyboardController?.hide()
-                                    handleContentSuggestionClick(item, viewModel, onNavigateToArtist, onNavigateToAlbum, onShowFullPlayer)
-                                },
-                                onRecentSearchClick = {
-                                    focusManager.clearFocus(force = true)
-                                    keyboardController?.hide()
-                                    viewModel.onAction(SearchAction.RecentSearchClicked(it))
-                                },
-                                onDeleteRecentSearch = {
-                                    viewModel.onAction(SearchAction.DeleteRecentSearch(it))
-                                },
-                                onInsertQuery = {
-                                    viewModel.onAction(SearchAction.QueryChanged(it))
-                                },
-                                bottomPadding = bottomPadding
-                            )
-                        }
-
                         is SearchState.Suggestions -> {
                             val matchingRecent = if (state.recentSearches.isNotEmpty()) {
                                 state.recentSearches
@@ -292,7 +275,7 @@ fun SearchScreen(
                         }
 
                         is SearchState.LoadingResults -> {
-                            ShimmerLoadingState()
+                            SearchResultsSkeleton(contentPadding = PaddingValues(bottom = bottomPadding))
                         }
 
                         is SearchState.Results -> {
@@ -388,71 +371,28 @@ private fun SearchBarSection(
     onSearch: () -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Surface(
+        Column(
             modifier = Modifier
                 .widthIn(max = Dimens.maxContentWidth)
                 .fillMaxWidth()
                 .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            tonalElevation = 3.dp,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Search,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp),
+            Text(
+                text = "Search",
+                style = MaterialTheme.typography.displaySmall,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.semantics { heading() }
             )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            TextField(
-                value = query,
-                onValueChange = onQueryChange,
-                placeholder = {
-                    Text(
-                        "Search songs, artists...",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    cursorColor = MaterialTheme.colorScheme.primary,
-                ),
-                textStyle = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f),
+            ScreenSearchField(
+                query = query,
+                placeholder = "Songs, artists, and albums",
+                onQueryChange = onQueryChange,
+                onClear = onClear,
+                onSearch = onSearch
             )
-
-            AnimatedVisibility(
-                visible = query.isNotEmpty(),
-                enter = fadeIn() + slideInVertically(),
-                exit = fadeOut() + slideOutVertically(),
-            ) {
-                IconButton(onClick = onClear) {
-                    Icon(
-                        imageVector = Icons.Rounded.Close,
-                        contentDescription = "Clear",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
         }
     }
-}
 }
 
 @Composable
@@ -473,7 +413,7 @@ private fun InitialContent(
     ) {
         // Recent searches (displayed at the top for immediate access)
         if (recentSearches.isNotEmpty()) {
-            item(key = "header_recent") {
+            animatedSection(key = "header_recent") {
                 RecentSearchesHeader(onClearAll = onClearAll)
             }
 
@@ -488,13 +428,13 @@ private fun InitialContent(
                 )
             }
 
-            item(key = "spacer_recent") {
+            animatedSection(key = "spacer_recent") {
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
 
         // Trending searches
-        item(key = "trending_section") {
+        animatedSection(key = "trending_section") {
             TrendingSearchesSection(
                 trendingSearches = trendingSearches,
                 onSuggestionClick = onQuickSuggestionClick
@@ -502,7 +442,7 @@ private fun InitialContent(
         }
 
         // Browse categories
-        item(key = "browse_section") { 
+        animatedSection(key = "browse_section") {
             BrowseCategoriesSection(
                 onNavigateToTopSongs = onNavigateToTopSongs,
                 onNavigateToTopArtists = onNavigateToTopArtists,
@@ -724,6 +664,15 @@ private fun SearchResultsContent(
                             }
                         }
                     }
+                    if (videoPaginationState == PaginationState.LoadMore || videoPaginationState is PaginationState.Error) {
+                        item(key = "more_videos") {
+                            Box(Modifier.width(132.dp).height(112.dp), contentAlignment = Alignment.Center) {
+                                TextButton(onClick = onLoadMoreVideos) {
+                                    Text(if (videoPaginationState is PaginationState.Error) "Retry videos" else "More videos")
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -736,7 +685,7 @@ private fun SearchResultsContent(
         }
 
         // ── Songs Section ──────────────────────────────────
-        item {
+        animatedSection(key = "result_header", contentType = "header") {
             ResultsHeader(query = query, count = songs.size, totalCount = totalCount)
         }
 
@@ -747,6 +696,7 @@ private fun SearchResultsContent(
         ) { _, song ->
             SearchResultCard(
                 song = song,
+                modifier = animatedSection(),
                 onClick = {
                     if (song.contentType == com.sonicmusic.app.domain.model.ContentType.ARTIST) {
                         onArtistClick(song.title, song.id.takeIf { it.startsWith("UC") })
@@ -780,6 +730,11 @@ private fun SearchResultsContent(
                 }
             }
             PaginationState.Idle -> Unit
+            PaginationState.LoadMore -> item(key = "load_more_songs") {
+                Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                    TextButton(onClick = onLoadMore) { Text("Load more songs") }
+                }
+            }
             PaginationState.NoMoreData -> {
                 item {
                     EndOfResultsItem()
@@ -1039,11 +994,12 @@ private fun EndOfResultsItem() {
 private fun SearchResultCard(
     song: com.sonicmusic.app.domain.model.Song,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val isSongOrVideo = song.contentType == com.sonicmusic.app.domain.model.ContentType.SONG ||
             song.contentType == com.sonicmusic.app.domain.model.ContentType.VIDEO
 
-    val baseModifier = Modifier
+    val baseModifier = modifier
         .fillMaxWidth()
         .padding(horizontal = Dimens.screenPadding, vertical = 4.dp)
 
@@ -1306,91 +1262,6 @@ private fun LoadingState(message: String) {
 }
 
 @Composable
-private fun ShimmerLoadingState() {
-    // Simple shimmer placeholder
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = Dimens.screenPadding, vertical = 12.dp)
-    ) {
-        // Header shimmer
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.5f)
-                .height(24.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceContainerHighest,
-                    RoundedCornerShape(12.dp)
-                )
-        )
-        
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        // Item shimmers
-        repeat(6) {
-            ShimmerSearchResultItem()
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-    }
-}
-
-@Composable
-private fun ShimmerSearchResultItem() {
-    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
-    val shimmerAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.7f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(800),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "shimmer_alpha"
-    )
-    
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .background(
-                    MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                    RoundedCornerShape(16.dp)
-                )
-        )
-        
-        Spacer(modifier = Modifier.width(12.dp))
-        
-        Column(modifier = Modifier.weight(1f)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.7f)
-                    .height(16.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                        RoundedCornerShape(12.dp)
-                    )
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.4f)
-                    .height(12.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = shimmerAlpha),
-                        RoundedCornerShape(12.dp)
-                    )
-            )
-        }
-    }
-}
-
-@Composable
 private fun TrendingSearchesSection(
     trendingSearches: List<String>,
     onSuggestionClick: (String) -> Unit
@@ -1496,43 +1367,45 @@ private fun BrowseCategoriesSection(
     onNavigateToTopArtists: () -> Unit,
     onNavigateToTopAlbums: () -> Unit
 ) {
-    val isOnline = com.sonicmusic.app.shared.components.LocalIsOnline.current
-    Column(modifier = Modifier.padding(vertical = 16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimens.screenPadding, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Text(
-            text = "Browse",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+            text = stringResource(R.string.chart_section_title),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+        )
+        BrowseCategoryCard(
+            title = stringResource(R.string.chart_top_songs),
+            icon = Icons.Rounded.MusicNote,
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            onClick = onNavigateToTopSongs,
+            featured = true,
+            modifier = Modifier.fillMaxWidth()
         )
 
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Dimens.screenPadding),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             BrowseCategoryCard(
-                title = "Songs",
-                icon = Icons.Rounded.MusicNote,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                onClick = onNavigateToTopSongs,
-                enabled = isOnline,
-                modifier = Modifier.weight(1f),
-            )
-            BrowseCategoryCard(
-                title = "Artists",
+                title = stringResource(R.string.chart_top_artists),
                 icon = Icons.Rounded.MicExternalOn,
                 color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                 onClick = onNavigateToTopArtists,
-                enabled = isOnline,
                 modifier = Modifier.weight(1f),
             )
             BrowseCategoryCard(
-                title = "Albums",
+                title = stringResource(R.string.chart_top_albums),
                 icon = Icons.Rounded.Album,
                 color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                 onClick = onNavigateToTopAlbums,
-                enabled = isOnline,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1544,51 +1417,36 @@ private fun BrowseCategoryCard(
     title: String,
     icon: ImageVector,
     color: Color,
+    contentColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true,
+    featured: Boolean = false,
 ) {
-    val alpha = if (enabled) 1f else 0.4f
-    val gradient = Brush.linearGradient(
-        colors = listOf(
-            color.copy(alpha = 0.9f * alpha),
-            color.copy(alpha = 0.5f * alpha)
-        ),
-        start = Offset.Zero,
-        end = Offset(150f, 150f)
-    )
-    
+    val interaction = remember { MutableInteractionSource() }
     Surface(
-        modifier = modifier.height(100.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = Color.Transparent,
-        onClick = { if (enabled) onClick() }
+        onClick = onClick,
+        modifier = modifier.pressScale(interaction, targetScale = 0.97f),
+        interactionSource = interaction,
+        shape = MaterialTheme.shapes.extraLarge,
+        color = color,
+        contentColor = contentColor
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(gradient)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
+        if (featured) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(horizontal = 18.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                )
+                Icon(icon, contentDescription = null, modifier = Modifier.size(28.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 92.dp).padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically)
+            ) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp))
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
         }
     }

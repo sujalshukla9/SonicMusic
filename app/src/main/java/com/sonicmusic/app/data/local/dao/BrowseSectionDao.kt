@@ -39,6 +39,15 @@ interface BrowseSectionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrReplace(entity: BrowseSectionEntity)
 
+    @Query("""
+        DELETE FROM browse_section_cache
+        WHERE sectionKey GLOB 'home_feed_v2:*' AND sectionKey NOT IN (
+            SELECT sectionKey FROM browse_section_cache
+            WHERE sectionKey GLOB 'home_feed_v2:*' ORDER BY cachedAt DESC LIMIT 8
+        )
+    """)
+    suspend fun trimHomeFeedCache()
+
     /**
      * Clear all expired cache entries.
      *

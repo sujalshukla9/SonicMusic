@@ -58,6 +58,7 @@ fun AddToPlaylistSheet(
 ) {
     if (!isVisible) return
 
+    val editablePlaylists = playlists.filterNot { it.isYouTubeAccountPlaylist }
     val scope = rememberCoroutineScope()
     var showCreateDialog by remember { mutableStateOf(false) }
     var playlistName by remember { mutableStateOf("") }
@@ -160,7 +161,7 @@ fun AddToPlaylistSheet(
             HorizontalDivider(color = colorScheme.outlineVariant.copy(alpha = 0.45f))
             Spacer(modifier = Modifier.height(10.dp))
 
-            if (playlists.isEmpty()) {
+            if (editablePlaylists.isEmpty()) {
                 Text(
                     text = "No playlists yet",
                     style = MaterialTheme.typography.bodyMedium,
@@ -168,7 +169,7 @@ fun AddToPlaylistSheet(
                     modifier = Modifier.padding(vertical = 12.dp)
                 )
             } else {
-                playlists.forEach { playlist ->
+                editablePlaylists.forEach { playlist ->
                     val artworkUrl = playlist.coverArtUrl?.takeIf { it.isNotBlank() }
                         ?: fallbackArtworkUrl?.takeIf { it.isNotBlank() }
                     val playlistInteractionSource = remember { MutableInteractionSource() }

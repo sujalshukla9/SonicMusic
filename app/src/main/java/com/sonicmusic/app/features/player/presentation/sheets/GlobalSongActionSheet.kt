@@ -57,7 +57,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.features.downloads.data.DownloadProgress
 import com.sonicmusic.app.shared.components.SongThumbnail
@@ -295,10 +294,8 @@ fun GlobalSongActionSheet(
                 )
             }
 
-            // ── Download / Pre-cache ─────────────────────────────────────
-            val isDownloading = downloadProgress != null &&
-                    (downloadProgress.status == DownloadStatus.DOWNLOADING ||
-                            downloadProgress.status == DownloadStatus.PENDING)
+            // ── Download ─────────────────────────────────────
+            val isDownloading = !isDownloaded && downloadProgress?.isTransferring == true
 
             if (isDownloading && downloadProgress != null) {
                 Column(
@@ -315,7 +312,7 @@ fun GlobalSongActionSheet(
                         )
                         Spacer(modifier = Modifier.width(16.dp))
                         Text(
-                            text = "Caching… ${downloadProgress.progress}%",
+                            text = "Downloading… ${downloadProgress.progress}%",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = colorScheme.primary
@@ -336,14 +333,14 @@ fun GlobalSongActionSheet(
             } else if (isDownloaded) {
                 GlobalActionRow(
                     icon = Icons.Rounded.DownloadDone,
-                    label = "Pre-cached (Remove)",
+                    label = "Remove download",
                     onClick = { showDeleteConfirmation = true },
                     tint = colorScheme.primary
                 )
             } else {
                 GlobalActionRow(
                     icon = Icons.Rounded.Download,
-                    label = "Pre-cache offline",
+                    label = "Download",
                     onClick = onDownloadOffline
                 )
             }

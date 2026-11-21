@@ -2,6 +2,8 @@ package com.sonicmusic.app.domain.model
 
 import androidx.compose.runtime.Immutable
 
+internal const val YOUTUBE_ACCOUNT_PLAYLIST_PREFIX = "youtube-account:"
+
 @Immutable
 data class Playlist(
     val id: Long = 0,
@@ -14,4 +16,7 @@ data class Playlist(
     val songs: List<Song> = emptyList(),
     val isLocal: Boolean = true,
     val remoteId: String? = null
-)
+) {
+    val isYouTubeAccountPlaylist: Boolean
+        get() = remoteId?.startsWith(YOUTUBE_ACCOUNT_PLAYLIST_PREFIX) == true
+}

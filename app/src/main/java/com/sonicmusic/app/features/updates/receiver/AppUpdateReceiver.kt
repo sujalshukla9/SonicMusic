@@ -4,118 +4,73 @@ import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.util.Log
-import androidx.core.content.FileProvider
+import android.content.pm.PackageInstaller
+import android.os.Build
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.sonicmusic.app.BuildConfig
 import com.sonicmusic.app.core.updater.UpdateDownloader
-import java.io.File
 
 class AppUpdateReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val downloader = UpdateDownloader(context)
+        val pending = downloader.pending() ?: return
+        when (intent.action) {
+            DownloadManager.ACTION_DOWNLOAD_COMPLETE -> {
+                if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) == pending.id) {
+                    downloader.scheduleVerification(pending.id)
+                }
+            }
+            Intent.ACTION_MY_PACKAGE_REPLACED -> {
+                if (BuildConfig.VERSION_CODE >= pending.update.versionCode) {
+                    downloader.finish(pending.id, "SonicMusic was updated successfully.")
+                    UpdateNotifications.clear(context)
+                }
+            }
+            INSTALL_RESULT -> handleInstallResult(context, intent, downloader, pending)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handleInstallResult(context: Context, intent: Intent, downloader: UpdateDownloader, pending: UpdateDownloader.Pending) {
+        val sessionId = intent.getIntExtra(EXPECTED_SESSION, -1)
+        if (sessionId < 0 || sessionId != pending.sessionId) return
+        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            val confirmation = if (Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+            } else {
+                intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            }
+            if (confirmation != null) {
+                val message = "Update verified. Confirm installation to continue."
+                downloader.message(message)
+                confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                UpdateNotifications.requestConfirmation(context, message, confirmation)
+                if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                    UpdateNotifications.openConfirmation(context)
+                }
+                return
+            }
+        }
+
+        val message = when (status) {
+            PackageInstaller.STATUS_SUCCESS -> "SonicMusic was updated successfully."
+            PackageInstaller.STATUS_FAILURE_ABORTED -> "Update cancelled. Your installed version is ready to use."
+            PackageInstaller.STATUS_FAILURE_BLOCKED -> "Android blocked the update. Check your install permissions."
+            PackageInstaller.STATUS_FAILURE_CONFLICT -> "This update conflicts with the installed application."
+            PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> "This update is incompatible with your Android version or device."
+            PackageInstaller.STATUS_FAILURE_INVALID -> "Android rejected the update APK. Download it again."
+            PackageInstaller.STATUS_FAILURE_STORAGE -> "There isn’t enough storage to install the update."
+            else -> "Installation failed. Your installed version is ready to use."
+        }
+        downloader.finish(pending.id, message)
+        UpdateNotifications.clear(context)
+        if (status != PackageInstaller.STATUS_SUCCESS) UpdateNotifications.show(context, message)
+    }
 
     companion object {
-        private const val TAG = "AppUpdateReceiver"
-    }
-
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
-
-        val downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-        if (downloadId == -1L) return
-        val trackedId = UpdateDownloader.getTrackedDownloadId(context)
-        if (trackedId != downloadId) {
-            Log.d(TAG, "Ignoring unrelated download completion (id=$downloadId, tracked=$trackedId)")
-            return
-        }
-
-        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val query = DownloadManager.Query().setFilterById(downloadId)
-
-        downloadManager.query(query).use { cursor ->
-            if (!cursor.moveToFirst()) return
-
-            val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-            if (statusIndex < 0 || cursor.getInt(statusIndex) != DownloadManager.STATUS_SUCCESSFUL) {
-                Log.e(TAG, "Download failed or still in progress")
-                UpdateDownloader.clearTrackedDownloadId(context)
-                return
-            }
-
-            val uriIndex = cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI)
-            if (uriIndex < 0) return
-
-            val localUri = cursor.getString(uriIndex) ?: return
-            Log.d(TAG, "Download complete: $localUri")
-
-            // Only handle APK downloads
-            if (!localUri.endsWith(".apk")) {
-                Log.d(TAG, "Downloaded file is not an APK, ignoring.")
-                return
-            }
-
-            val file = uriToFile(context, localUri)
-            if (file == null || !file.exists()) {
-                Log.e(TAG, "APK file not found for URI: $localUri")
-                UpdateDownloader.clearTrackedDownloadId(context)
-                return
-            }
-
-            installApk(context, file)
-            UpdateDownloader.clearTrackedDownloadId(context)
-        }
-    }
-
-    /**
-     * Converts a DownloadManager local URI to a File object.
-     * Handles both file:// URIs and content:// URIs.
-     */
-    private fun uriToFile(context: Context, uriString: String): File? {
-        return try {
-            val uri = Uri.parse(uriString)
-            when (uri.scheme) {
-                "file" -> File(uri.path!!)
-                "content" -> {
-                    // For content:// URIs, query the actual file path via ContentResolver
-                    context.contentResolver.query(uri, arrayOf(android.provider.MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
-                        if (cursor.moveToFirst()) {
-                            val pathIndex = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA)
-                            if (pathIndex >= 0) {
-                                cursor.getString(pathIndex)?.let { File(it) }
-                            } else null
-                        } else null
-                    } ?: uri.path?.let { File(it) } // Fallback
-                }
-                else -> {
-                    uri.path?.let { File(it) }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to resolve file from URI: $uriString", e)
-            null
-        }
-    }
-
-    /**
-     * Launches the Android package installer for the given APK file.
-     * Uses FileProvider on Android N+ for secure URI sharing.
-     */
-    private fun installApk(context: Context, file: File) {
-        try {
-            // minSdk 26 (> N/24) — FileProvider is always required
-            val contentUri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                file
-            )
-
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(contentUri, "application/vnd.android.package-archive")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
-            }
-
-            context.startActivity(installIntent)
-            Log.d(TAG, "APK installer launched for: ${file.name}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch APK installer", e)
-        }
+        const val INSTALL_RESULT = "com.sonicmusic.app.UPDATE_INSTALL_RESULT"
+        const val EXPECTED_SESSION = "sonicmusicUpdateSession"
     }
 }

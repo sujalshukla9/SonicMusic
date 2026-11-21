@@ -2,108 +2,154 @@ package com.sonicmusic.app.core.updater
 
 import android.app.DownloadManager
 import android.content.Context
-import android.database.Cursor
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Environment
-import android.util.Log
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.sonicmusic.app.BuildConfig
+import com.sonicmusic.app.features.updates.receiver.UpdateNotifications
+import com.sonicmusic.app.features.updates.worker.VerifyUpdateWorker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import java.util.UUID
 
 class UpdateDownloader(private val context: Context) {
+    internal data class Pending(val id: Long, val update: UpdatePackage, val sessionId: Int)
 
-    companion object {
-        private const val TAG = "UpdateDownloader"
-        private const val PREFS_NAME = "app_update_prefs"
-        private const val KEY_PENDING_DOWNLOAD_ID = "pending_update_download_id"
-
-        fun getTrackedDownloadId(context: Context): Long {
-            return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getLong(KEY_PENDING_DOWNLOAD_ID, -1L)
-        }
-
-        fun clearTrackedDownloadId(context: Context) {
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit()
-                .remove(KEY_PENDING_DOWNLOAD_ID)
-                .apply()
-        }
+    private val preferences by lazy {
+        context.getSharedPreferences("app_update_prefs", Context.MODE_PRIVATE)
     }
+    internal val manager get() = requireNotNull(context.getSystemService(DownloadManager::class.java))
 
-    /**
-     * Downloads the APK to the app-private external files directory.
-     * This path is served by our FileProvider so AppUpdateReceiver
-     * can hand a content:// URI to the package installer.
-     */
-    fun downloadApk(url: String, fileName: String = "SonicMusic-Update.apk"): Long {
-        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-
-        // Clean up old APK files to prevent accumulation
-        val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-        dir?.listFiles()?.forEach { file ->
-            if (file.name.startsWith("SonicMusic") && file.name.endsWith(".apk")) {
-                file.delete()
-                Log.d(TAG, "Cleaned up old APK: ${file.name}")
-            }
+    fun downloadApk(update: UpdatePackage, startMessage: String? = null): Long = synchronized(lock) {
+        require(update.versionCode > BuildConfig.VERSION_CODE) { "This update is already installed or is older than SonicMusic." }
+        val existing = pending()
+        if (existing != null) {
+            require(existing.update == update) { "Finish the pending SonicMusic update before starting a different one." }
+            scheduleVerification(existing.id)
+            return@synchronized existing.id
         }
 
-        val request = DownloadManager.Request(Uri.parse(url))
+        val previousId = preferences.getLong(KEY_ID, -1)
+        if (previousId >= 0) manager.remove(previousId)
+        message(null)
+        val fileName = "SonicMusic-" + update.versionCode + "-" + UUID.randomUUID() + ".apk"
+        val request = DownloadManager.Request(Uri.parse(update.downloadUrl))
             .setTitle("Downloading SonicMusic Update")
-            .setDescription("Please wait while the update downloads...")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDescription("Please wait while the update downloads…")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
             .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, fileName)
             .setMimeType("application/vnd.android.package-archive")
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
 
-        val downloadId = downloadManager.enqueue(request)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putLong(KEY_PENDING_DOWNLOAD_ID, downloadId)
-            .apply()
-        Log.d(TAG, "Download enqueued (id=$downloadId) for $fileName")
-        return downloadId
+        val id = manager.enqueue(request)
+        val stored = preferences.edit()
+            .putLong(KEY_ID, id)
+            .putString("url", update.downloadUrl)
+            .putInt("version", update.versionCode)
+            .putString("sha256", update.sha256)
+            .putString("certificate", update.certificateSha256)
+            .remove(KEY_SESSION)
+            .commit()
+        if (!stored) {
+            manager.remove(id)
+            error("Could not save the update verification information.")
+        }
+        if (startMessage != null) UpdateNotifications.show(context, startMessage)
+        scheduleVerification(id)
+        id
     }
 
-    fun observeDownloadProgress(downloadId: Long): Flow<Int> = flow {
-        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    internal fun pending(): Pending? {
+        val id = preferences.getLong(KEY_ID, -1)
+        if (id < 0) return null
+        val update = runCatching {
+            UpdatePackage(
+                preferences.getString("url", "").orEmpty(),
+                preferences.getInt("version", 0),
+                preferences.getString("sha256", "").orEmpty(),
+                preferences.getString("certificate", "").orEmpty()
+            )
+        }.getOrNull() ?: return null
+        return Pending(id, update, preferences.getInt(KEY_SESSION, -1))
+    }
+
+    internal fun trackSession(downloadId: Long, sessionId: Int): Boolean = synchronized(lock) {
+        if (pending()?.id != downloadId) return@synchronized false
+        preferences.edit().putInt(KEY_SESSION, sessionId).commit()
+    }
+
+    internal fun finish(downloadId: Long, status: String) = synchronized(lock) {
+        if (pending()?.id != downloadId) return@synchronized
+        preferences.edit().remove(KEY_ID).remove(KEY_SESSION)
+            .remove("url").remove("version").remove("sha256").remove("certificate")
+            .putString(KEY_STATUS, status).commit()
+        runCatching { manager.remove(downloadId) }
+    }
+
+    internal fun message(status: String?) {
+        preferences.edit().putString(KEY_STATUS, status).apply()
+    }
+
+    fun observeStatus() = callbackFlow<String?> {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+            if (key == KEY_STATUS) trySend(prefs.getString(KEY_STATUS, null))
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        trySend(preferences.getString(KEY_STATUS, null))
+        awaitClose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    fun resumePending() {
+        pending()?.let { scheduleVerification(it.id) }
+    }
+
+    internal fun scheduleVerification(downloadId: Long) {
+        if (pending()?.id != downloadId) return
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "verify-sonicmusic-apk-$downloadId",
+            ExistingWorkPolicy.APPEND_OR_REPLACE,
+            OneTimeWorkRequestBuilder<VerifyUpdateWorker>()
+                .setInputData(workDataOf("downloadId" to downloadId))
+                .build()
+        )
+    }
+
+    fun observeDownloadProgress(downloadId: Long) = flow {
         val query = DownloadManager.Query().setFilterById(downloadId)
-        var isDownloading = true
-
-        while (isDownloading) {
-            val cursor: Cursor = downloadManager.query(query)
-            if (cursor.moveToFirst()) {
-                val bytesDownloadedIndex = cursor.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
-                val bytesTotalIndex = cursor.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
-                val statusIndex = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
-
-                if (bytesDownloadedIndex >= 0 && bytesTotalIndex >= 0 && statusIndex >= 0) {
-                    val bytesDownloaded = cursor.getInt(bytesDownloadedIndex)
-                    val bytesTotal = cursor.getInt(bytesTotalIndex)
-                    val status = cursor.getInt(statusIndex)
-
-                    val progress = if (bytesTotal > 0) {
-                        (bytesDownloaded * 100L / bytesTotal).toInt()
-                    } else {
-                        0
-                    }
-
-                    emit(progress)
-
-                    if (status == DownloadManager.STATUS_SUCCESSFUL || status == DownloadManager.STATUS_FAILED) {
-                        isDownloading = false
-                        if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                            emit(100)
-                        }
+        while (true) {
+            val progress = manager.query(query)?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                when (cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))) {
+                    DownloadManager.STATUS_SUCCESSFUL -> 100
+                    DownloadManager.STATUS_FAILED -> null
+                    else -> {
+                        val bytes = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                        val total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                        if (total > 0) (bytes.toDouble() * 100 / total).toInt().coerceIn(0, 99) else 0
                     }
                 }
-            } else {
-                isDownloading = false
             }
-            cursor.close()
-            if (isDownloading) {
-                delay(500)
+            if (progress == null || progress == 100) {
+                scheduleVerification(downloadId)
+                break
             }
+            emit(progress)
+            delay(350)
         }
+    }.distinctUntilChanged().flowOn(Dispatchers.IO)
+
+    private companion object {
+        val lock = Any()
+        const val KEY_ID = "pending_update_download_id"
+        const val KEY_SESSION = "pending_update_session"
+        const val KEY_STATUS = "update_status"
     }
 }

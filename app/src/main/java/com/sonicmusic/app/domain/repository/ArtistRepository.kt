@@ -36,6 +36,8 @@ interface ArtistRepository {
         sectionType: ArtistProfileSectionType,
         moreEndpoint: String? = null,
         limit: Int = 120,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        continuationToken: String? = null,
+        dedicatedBrowse: Boolean = false
     ): Result<List<Song>>
 }

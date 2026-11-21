@@ -5,47 +5,72 @@ import kotlinx.serialization.Serializable
 
 @Immutable
 @Serializable
-data class ContinuationShelf(
-    val id: String,
-    val title: String,
-    val subtitle: String? = null,
-    val songs: List<Song>
+data class HomeContent(
+    val shelves: List<HomeShelf> = emptyList(),
+    val continuation: HomeContinuation? = null
+)
+
+@Serializable
+data class CachedHomeFeed(
+    val firstPage: HomeContent,
+    val loadedPages: List<CachedHomePage> = emptyList(),
+    val schemaVersion: Int = 0
+) {
+    companion object {
+        const val CURRENT_VERSION = 2
+    }
+}
+
+@Serializable
+data class CachedHomePage(val requestToken: String, val content: HomeContent)
+
+@Immutable
+@Serializable
+data class HomeContinuation(
+    val token: String,
+    val useQueryParameters: Boolean,
+    val visitorData: String? = null
 )
 
 @Immutable
 @Serializable
-data class HomeContent(
-    val listenAgain: List<Song> = emptyList(),
-    val quickPicks: List<Song> = emptyList(),
-    val forgottenFavorites: List<Song> = emptyList(),
-    val englishHits: List<Song> = emptyList(),
-    val artists: List<ArtistSection> = emptyList(),
-    // YTMusic Browse-powered sections
-    val trendingAlbums: List<Song> = emptyList(),
-    val charts: ChartSection? = null,
-    val recentlyPlayed: List<Song> = emptyList(),
-    val mixedForYou: List<Song> = emptyList(),
-    val communityPlaylists: List<CommunityPlaylist> = emptyList(),
-    val continuationShelves: List<ContinuationShelf> = emptyList(),
-    val continuationToken: String? = null
+data class HomeShelf(
+    val id: String,
+    val title: String,
+    val subtitle: String? = null,
+    val layout: Layout = Layout.Carousel,
+    val items: List<HomeShelfItem>,
+    val kind: Kind = Kind.Other
 ) {
-    fun hasAnyContent(): Boolean =
-        listenAgain.isNotEmpty() ||
-        quickPicks.isNotEmpty() ||
-        forgottenFavorites.isNotEmpty() ||
-        englishHits.isNotEmpty() ||
-        artists.isNotEmpty() ||
-        trendingAlbums.isNotEmpty() ||
-        charts?.songs?.isNotEmpty() == true ||
-        recentlyPlayed.isNotEmpty() ||
-        mixedForYou.isNotEmpty() ||
-        communityPlaylists.isNotEmpty() ||
-        continuationShelves.isNotEmpty()
+    enum class Layout { Carousel, Grid, List }
+    enum class Kind { Other, ListenAgain, QuickPicks }
+
+    fun songs(): List<Song> = items.mapNotNull(HomeShelfItem::playableSong).distinctBy(Song::id)
 }
 
 @Immutable
 @Serializable
-data class ArtistSection(
-    val artist: Artist,
-    val songs: List<Song>
-)
+sealed interface HomeShelfItem {
+    val key: String
+    val title: String
+    val subtitle: String
+    val artwork: String
+    val playableSong: Song? get() = null
+
+    @Serializable
+    data class Media(val song: Song) : HomeShelfItem {
+        override val key get() = "${song.contentType}:${song.id}"
+        override val title get() = song.title
+        override val subtitle get() = song.artist
+        override val artwork get() = song.thumbnailUrl
+        override val playableSong get() = song.takeIf { it.contentType == ContentType.SONG }
+    }
+
+    @Serializable
+    data class Playlist(val playlist: CommunityPlaylist) : HomeShelfItem {
+        override val key get() = "playlist:${playlist.id}"
+        override val title get() = playlist.title
+        override val subtitle get() = playlist.creator
+        override val artwork get() = playlist.thumbnailUrl
+    }
+}

@@ -1,24 +1,22 @@
 package com.sonicmusic.app.features.player.audio
 
-import android.media.MediaCodecList
+import android.os.Build
+import androidx.media3.common.Format
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import android.util.Log
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
+import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.domain.model.LicenseType
+import com.sonicmusic.app.domain.model.SourceType
 import com.sonicmusic.app.domain.model.StreamQuality
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Validates, filters, and ranks audio stream candidates based on genuine acoustic fidelity,
- * device decoder capability, stream completeness, and user preferences.
- *
- * Evaluation Principles:
- * 1. Discover and validate candidate streams (reject empty, malformed, or expired streams).
- * 2. Verify device decoder compatibility before selection.
- * 3. Fair codec evaluation: Evaluates AAC, Opus, and lossless sources based on actual reported
- *    bitrate, sample rate, channels, and codec efficiency — never blindly forces a single codec.
- * 4. Audio-only streams are strongly preferred over muxed video streams to conserve bandwidth
- *    and prevent playback stalls.
- * 5. Provides fallback candidate ranking for error recovery.
+ * Ranks playable streams by the requested quality using the metadata reported by each source.
+ * Compatible audio-only tracks take priority over muxed tracks that also carry video.
  */
 @Singleton
 class AudioQualitySelector @Inject constructor() {
@@ -26,21 +24,7 @@ class AudioQualitySelector @Inject constructor() {
     companion object {
         private const val TAG = "AudioQualitySelector"
 
-        // Standard Android supported audio MIME types
-        private val STANDARD_SUPPORTED_AUDIO_MIMES = setOf(
-            "audio/opus",
-            "audio/webm",
-            "audio/mp4a-latm",
-            "audio/mp4",
-            "audio/aac",
-            "audio/mpeg",
-            "audio/flac",
-            "audio/ogg",
-            "audio/vorbis",
-            "audio/x-matroska",
-            "audio/wav",
-            "audio/x-wav"
-        )
+        private val AAC_PROFILE = Regex("(?i)mp4a\\.40\\.[0-9]+")
     }
 
     /**
@@ -80,29 +64,36 @@ class AudioQualitySelector @Inject constructor() {
             return null
         }
 
-        // 2. Rank candidates using objective acoustic fidelity scoring
+        val preferBitrateTarget = requestedQuality == StreamQuality.LOW || requestedQuality == StreamQuality.MEDIUM
         val ranked = validCandidates.sortedWith(
-            compareByDescending<AudioStreamCandidate> { computeCandidateScore(it, requestedQuality) }
-                .thenByDescending { it.isAudioOnly }
-                .thenByDescending { it.bitrateKbps }
-                .thenByDescending { it.sampleRate }
+            compareByDescending<AudioStreamCandidate> { it.isAudioOnly }
+                .thenByDescending { !preferBitrateTarget && it.isLossless() }
+                .thenByDescending { !preferBitrateTarget && it.isExtendedQualityAudio() }
+                .thenByDescending { preferBitrateTarget && it.bitrateBps > 0 }
+                .thenByDescending { computeCandidateScore(it, requestedQuality) }
+                .thenByDescending { it.bitrateBps }
+                .thenByDescending { it.sampleRateHz }
                 .thenByDescending { it.channelCount }
         )
-
-        val best = ranked.firstOrNull() ?: return null
+        val best = ranked.first()
 
         val rationale = buildString {
-            append("Selected itag=${best.itag ?: "N/A"} (${best.codec} ")
+            append("Selected itag=${best.itag ?: "N/A"} (${best.audioCodec} ")
             if (best.bitrateKbps > 0) append("${best.bitrateKbps}kbps, ")
             if (best.sampleRate > 0) append("${best.sampleRate}Hz, ")
             if (best.channelCount > 0) append("${best.channelCount}ch, ")
             append(if (best.isAudioOnly) "audio-only" else "muxed")
-            append(") from ${best.sourceName} among ${validCandidates.size} candidates for tier ${requestedQuality.displayName}.")
+            append("), profile=${best.codecProfile ?: "unknown"}, source=${best.sourceName}. ")
+            append("Ranked first of ${ranked.size} playable formats for ${requestedQuality.displayName}.")
         }
 
         Log.d(TAG, rationale)
         return SelectionResult(best, rationale, ranked)
     }
+
+    private fun AudioStreamCandidate.isExtendedQualityAudio(): Boolean =
+        isAudioOnly && (isAac() || isOpus()) &&
+            (bitrateBps >= 224_000 || AudioStreamInfo.nominalBitrateForItag(itag) == 256)
 
     /**
      * Select the next best fallback candidate when the primary candidate fails.
@@ -127,7 +118,7 @@ class AudioQualitySelector @Inject constructor() {
 
         // Discard expired URLs
         if (candidate.isExpired()) {
-            Log.d(TAG, "Discarding expired stream candidate: itag=${candidate.itag}, url=${candidate.url.take(40)}...")
+            Log.d(TAG, "Discarding expired stream candidate: itag=${candidate.itag}")
             return false
         }
 
@@ -137,65 +128,74 @@ class AudioQualitySelector @Inject constructor() {
             return false
         }
 
+        // Discard candidate with RESTRICTED license
+        if (candidate.licenseType == LicenseType.RESTRICTED) {
+            Log.w(TAG, "Discarding candidate with RESTRICTED license:")
+            return false
+        }
+
+        // Discard external candidate if identity confidence is below threshold (< 0.75)
+        if (candidate.sourceType != SourceType.INNERTUBE && candidate.sourceType != SourceType.LOCAL_FILE) {
+            if (candidate.identityConfidence < 0.75f) {
+                Log.d(TAG, "Discarding candidate with low identity confidence: ${candidate.identityConfidence} for '${candidate.originalTitle}'")
+                return false
+            }
+        }
+
         return true
     }
 
     /**
      * Checks if the device has a compatible decoder for the given candidate stream.
      */
+    @androidx.annotation.OptIn(UnstableApi::class)
     fun isCodecSupported(candidate: AudioStreamCandidate): Boolean {
-        val mime = candidate.mimeType.substringBefore(";").trim().lowercase()
-        val codecName = candidate.codec.uppercase()
-
-        // Standard modern Android supported formats (Android 8.0+)
-        if (codecName in setOf("OPUS", "AAC", "AAC-LC", "AAC-HE", "MP3", "FLAC", "ALAC", "VORBIS", "WAV")) {
-            return true
-        }
-
-        if (STANDARD_SUPPORTED_AUDIO_MIMES.contains(mime)) {
-            return true
-        }
-
-        // Query Android system MediaCodecList if available
-        return try {
-            val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-            val supported = codecList.codecInfos.any { info ->
-                !info.isEncoder && info.supportedTypes.any { type ->
-                    type.equals(mime, ignoreCase = true)
-                }
+        val mime = MimeTypes.getAudioMediaMimeType(candidate.codecProfile ?: candidate.mimeType)
+            ?: when (candidate.audioCodec.uppercase()) {
+                "AAC", "AAC-LC", "AAC-HE", "AAC-HEV2" -> MimeTypes.AUDIO_AAC
+                "OPUS" -> MimeTypes.AUDIO_OPUS
+                "MP3" -> MimeTypes.AUDIO_MPEG
+                "FLAC" -> MimeTypes.AUDIO_FLAC
+                "VORBIS" -> MimeTypes.AUDIO_VORBIS
+                "ALAC" -> MimeTypes.AUDIO_ALAC
+                "WAV" -> return true
+                else -> return false
             }
-            supported
-        } catch (_: Throwable) {
-            // In unit tests or restricted environments where MediaCodecList isn't mocked,
-            // default to true if it matches an audio/ MIME prefix.
-            mime.startsWith("audio/")
+        // Plain JVM tests have no platform codec registry.
+        if (Build.VERSION.SDK_INT == 0) return true
+
+        val profile = candidate.codecProfile?.let { if (it.startsWith("40.")) "mp4a.$it" else it }
+            ?: if (candidate.isAac()) AAC_PROFILE.find(candidate.mimeType)?.value else null
+        val format = Format.Builder()
+            .setSampleMimeType(mime)
+            .setCodecs(profile)
+            .setSampleRate(candidate.sampleRateHz.takeIf { it > 0 } ?: Format.NO_VALUE)
+            .setChannelCount(candidate.channelCount.takeIf { it > 0 } ?: Format.NO_VALUE)
+            .build()
+        return try {
+            MediaCodecUtil.getDecoderInfos(mime, false, false).any { it.isFormatSupported(format) }
+        } catch (e: MediaCodecUtil.DecoderQueryException) {
+            Log.w(TAG, "Unable to query decoders for $mime", e)
+            false
         }
     }
 
     /**
-     * Computes an objective perceptual acoustic fidelity score for a candidate.
-     *
-     * Principles:
-     * - Opus achieves fullband 20kHz transparent audio at 48kHz sample rate at ~128–160 kbps,
-     *   demonstrably outperforming standard 128 kbps AAC which applies a 15.5kHz lowpass filter.
-     * - AAC at ≥256 kbps (e.g. itag 141) achieves top-tier acoustic fidelity.
-     * - Both codecs are fairly compared by genuine technical capability rather than arbitrary bias.
-     * - Audio-only streams receive priority over muxed video to avoid unnecessary bandwidth & buffering.
-     * - User quality tiers (LOW for Data Saver, MEDIUM for cellular balance, HIGH/BEST for maximum fidelity)
-     *   are strictly respected.
+     * Scores formats by bitrate target or estimated fidelity, depending on the quality setting.
      */
     fun computeCandidateScore(candidate: AudioStreamCandidate, requestedQuality: StreamQuality): Long {
-        val isOpus = candidate.isOpus()
+        val isOpus = candidate.audioCodec.equals("OPUS", ignoreCase = true)
         val isAac = candidate.isAac()
-        val isAacHe = candidate.codec.equals("AAC-HE", true)
-        val bitrate = candidate.bitrateKbps
+        val isAacHe = candidate.isAacHe()
+        val isLossless = candidate.isLossless()
+        val bitrate = candidate.bitrateBps / 1_000L
         val isAudioOnly = candidate.isAudioOnly
 
-        return when (requestedQuality) {
+        val baseScore = when (requestedQuality) {
             StreamQuality.LOW -> {
                 // Data Saver: prefer low bitrate streams (~50-70 kbps)
                 val distance = kotlin.math.abs(bitrate - requestedQuality.bitrate)
-                val base = (10_000L - distance * 100L).coerceAtLeast(0L)
+                val base = 10_000L - distance * 100L
                 val codecBonus = if (isOpus) 500L else if (isAacHe) 300L else 0L
                 val audioBonus = if (isAudioOnly) 5_000L else 0L
                 base + codecBonus + audioBonus
@@ -203,33 +203,45 @@ class AudioQualitySelector @Inject constructor() {
             StreamQuality.MEDIUM -> {
                 // Balanced: prefer streams closest to 128 kbps
                 val distance = kotlin.math.abs(bitrate - requestedQuality.bitrate)
-                val base = (10_000L - distance * 100L).coerceAtLeast(0L)
+                val base = 10_000L - distance * 100L
                 val codecBonus = if (isOpus) 500L else 0L
                 val audioBonus = if (isAudioOnly) 5_000L else 0L
                 base + codecBonus + audioBonus
             }
             StreamQuality.HIGH, StreamQuality.BEST -> {
-                // Highest available acoustic fidelity
-                // Weighting model based on psychoacoustic bit-rate efficiency:
-                // - AAC at ≥256 kbps: Top tier (256 * 1250 = 320,000)
-                // - Opus at 160 kbps: (160 * 1400 = 224,000) -> Higher than 128k AAC (128 * 1000 = 128,000)
-                // - Opus at 128 kbps: (128 * 1400 = 179,200) -> Higher than 128k AAC
-                // - AAC at 128 kbps: (128 * 1000 = 128,000)
+                // Heuristic weights for comparing formats with different codec efficiencies.
                 val effectiveBitrate = when {
-                    isAac && bitrate >= 256 -> (bitrate.toLong() * 1_250L)
-                    isOpus && bitrate >= 120 -> (bitrate.toLong() * 1_400L)
-                    isOpus -> (bitrate.toLong() * 1_300L)
-                    isAac && !isAacHe -> (bitrate.toLong() * 1_000L)
-                    isAacHe -> (bitrate.toLong() * 850L)
-                    else -> (bitrate.toLong() * 900L)
+                    isLossless -> 320_000L + bitrate.coerceIn(500L, 1_500L) * 50L
+                    isOpus -> bitrate * 1_300L
+                    isAacHe -> bitrate * 850L
+                    isAac -> bitrate * 1_100L
+                    else -> bitrate * 900L
                 }
 
-                val sampleRateBonus = candidate.sampleRate.toLong().coerceAtLeast(0L)
+                val sampleRateBonus = candidate.sampleRate.coerceIn(0, 48_000) / 100L
                 val channelBonus = if (candidate.channelCount >= 2) 1_000L else 0L
                 val audioOnlyBonus = if (isAudioOnly) 50_000L else 0L
 
                 effectiveBitrate + sampleRateBonus + channelBonus + audioOnlyBonus
             }
         }
+
+        // Multi-source adjustments:
+        // Local files get highest reliability bonus (offline, zero latency)
+        // Innertube gets strong reliability bonus (official release, licensed CDN)
+        val identityBonus = (candidate.identityConfidence * 10_000L).toLong()
+        val sourceReliabilityBonus = when (candidate.sourceType) {
+            SourceType.LOCAL_FILE -> 30_000L
+            SourceType.INNERTUBE -> 20_000L
+        }
+        val licenseBonus = when (candidate.licenseType) {
+            LicenseType.RESTRICTED -> -500_000L
+            LicenseType.PUBLIC_DOMAIN -> 3_000L
+            LicenseType.CREATIVE_COMMONS -> 2_000L
+            else -> 0L
+        }
+        val verifiedBonus = if (candidate.isVerifiedSource) 5_000L else 0L
+
+        return baseScore + identityBonus + sourceReliabilityBonus + licenseBonus + verifiedBonus
     }
 }

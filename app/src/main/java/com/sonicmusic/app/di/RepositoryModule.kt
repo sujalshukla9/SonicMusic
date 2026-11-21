@@ -4,12 +4,10 @@ import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.data.remote.source.NewPipeService
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.features.library.data.HistoryRepositoryImpl
-import com.sonicmusic.app.features.recommendations.data.ListenAgainRepositoryImpl
 import com.sonicmusic.app.features.library.data.LocalMusicRepositoryImpl
 import com.sonicmusic.app.features.library.data.PlaylistRepositoryImpl
 import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
 import com.sonicmusic.app.features.search.data.RecentSearchRepositoryImpl
-import com.sonicmusic.app.features.recommendations.data.RecommendationRepositoryImpl
 import com.sonicmusic.app.features.search.data.SearchRepositoryImpl
 import com.sonicmusic.app.features.search.data.SearchSuggestionRepositoryImpl
 import com.sonicmusic.app.data.repository.SongRepositoryImpl
@@ -18,12 +16,10 @@ import com.sonicmusic.app.features.albums.data.AlbumRepositoryImpl
 import com.sonicmusic.app.domain.repository.AlbumRepository
 import com.sonicmusic.app.features.library.data.LyricsRepositoryImpl
 import com.sonicmusic.app.domain.repository.HistoryRepository
-import com.sonicmusic.app.domain.repository.ListenAgainRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.QueueRepository
 import com.sonicmusic.app.domain.repository.RecentSearchRepository
-import com.sonicmusic.app.domain.repository.RecommendationRepository
 import com.sonicmusic.app.domain.repository.SearchRepository
 import com.sonicmusic.app.domain.repository.SearchSuggestionRepository
 import com.sonicmusic.app.domain.repository.SongRepository
@@ -88,12 +84,6 @@ abstract class RepositoryModule {
 
     @Binds
     @Singleton
-    abstract fun bindRecommendationRepository(
-        impl: RecommendationRepositoryImpl
-    ): RecommendationRepository
-
-    @Binds
-    @Singleton
     abstract fun bindQueueRepository(
         impl: QueueRepositoryImpl
     ): QueueRepository
@@ -109,18 +99,6 @@ abstract class RepositoryModule {
     abstract fun bindArtistRepository(
         impl: ArtistRepositoryImpl
     ): ArtistRepository
-
-    @Binds
-    @Singleton
-    abstract fun bindListenAgainRepository(
-        impl: ListenAgainRepositoryImpl
-    ): ListenAgainRepository
-
-    @Binds
-    @Singleton
-    abstract fun bindQuickPicksRepository(
-        impl: com.sonicmusic.app.features.recommendations.data.QuickPicksRepositoryImpl
-    ): com.sonicmusic.app.domain.repository.QuickPicksRepository
 
     @Binds
     @Singleton
@@ -173,9 +151,10 @@ abstract class RepositoryModule {
         fun provideAudioStreamExtractor(
             newPipeService: NewPipeService,
             okHttpClient: okhttp3.OkHttpClient,
-            audioQualitySelector: com.sonicmusic.app.features.player.audio.AudioQualitySelector
+            audioQualitySelector: com.sonicmusic.app.features.player.audio.AudioQualitySelector,
+            accountClient: com.sonicmusic.app.data.remote.source.YouTubeMusicAccountClient
         ): AudioStreamExtractor {
-            return AudioStreamExtractor(newPipeService, okHttpClient, audioQualitySelector)
+            return AudioStreamExtractor(newPipeService, okHttpClient, audioQualitySelector, accountClient)
         }
     }
 }

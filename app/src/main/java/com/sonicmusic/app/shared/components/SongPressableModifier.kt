@@ -1,11 +1,6 @@
 package com.sonicmusic.app.shared.components
 
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -47,10 +42,6 @@ fun Modifier.songPressable(
     )
 }
 
-/**
- * Standard combinedClickable modifier without spring scale, suitable for rows/items.
- */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Modifier.songCombinedClickable(
     song: Song,
@@ -59,24 +50,4 @@ fun Modifier.songCombinedClickable(
     queueIndex: Int? = null,
     playlistId: Long? = null,
     onClick: () -> Unit
-): Modifier {
-    val actionSheetController = LocalSongActionSheetController.current
-    val haptic = LocalHapticFeedback.current
-    val interactionSource = remember { MutableInteractionSource() }
-
-    return this.combinedClickable(
-        interactionSource = interactionSource,
-        indication = ripple(),
-        enabled = enabled,
-        onClick = onClick,
-        onLongClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            actionSheetController.show(
-                song = song,
-                source = source,
-                queueIndex = queueIndex,
-                playlistId = playlistId
-            )
-        }
-    )
-}
+): Modifier = songPressable(song, source, enabled, queueIndex, playlistId, targetScale = 0.985f, onClick = onClick)

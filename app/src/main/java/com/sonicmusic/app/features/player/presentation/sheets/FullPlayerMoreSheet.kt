@@ -58,7 +58,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.sonicmusic.app.features.downloads.data.DownloadProgress
-import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.features.player.audio.AudioCapabilityDetector
@@ -297,9 +296,7 @@ fun FullPlayerMoreSheet(
             // ═══════════════════════════════════════════════════
             // DOWNLOAD ROW — three states: downloading, downloaded, not downloaded
             // ═══════════════════════════════════════════════════
-            val isDownloading = downloadProgress != null &&
-                    (downloadProgress.status == DownloadStatus.DOWNLOADING ||
-                    downloadProgress.status == DownloadStatus.PENDING)
+            val isDownloading = !isDownloaded && downloadProgress?.isTransferring == true
 
             if (isDownloading && downloadProgress != null) {
                 // Show progress with percentage

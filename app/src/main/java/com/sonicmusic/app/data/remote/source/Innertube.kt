@@ -180,6 +180,7 @@ object Innertube {
             defaultHost = MUSIC_HOST,
             key = API_KEY
         )
+        require(cookies.isNullOrBlank() || (url.isHttps && url.host == MUSIC_HOST))
 
         // Extract visitorData from the body context for the HTTP header.
         // Innertube cross-references X-Goog-Visitor-Id header against
@@ -193,9 +194,9 @@ object Innertube {
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .header("Content-Type", "application/json")
             .header("User-Agent", WEB_USER_AGENT)
-            .header("X-Goog-Api-Key", API_KEY)
             .header("Accept-Language", acceptLanguage)
             .apply {
+                url.queryParameter("key")?.let { header("X-Goog-Api-Key", it) }
                 applyOriginHeaders(this, url, includeReferer = true)
                 // Set X-Goog-Visitor-Id header to match body's visitorData
                 if (!visitorData.isNullOrBlank()) {
@@ -218,7 +219,7 @@ object Innertube {
     private fun extractSapisidCookie(cookies: String): String? {
         val parts = cookies.split(";")
         for (part in parts) {
-            val keyVal = part.trim().split("=")
+            val keyVal = part.trim().split("=", limit = 2)
             if (keyVal.size >= 2 && keyVal[0].trim() == "SAPISID") {
                 return keyVal[1].trim()
             }
@@ -274,7 +275,7 @@ object Innertube {
         if (parsed.queryParameter("prettyPrint") == null) {
             builder.addQueryParameter("prettyPrint", "false")
         }
-        if (parsed.queryParameter("key") == null) {
+        if (parsed.queryParameter("key") == null && key.isNotBlank() && key != "YOUR_API_KEY_HERE") {
             builder.addQueryParameter("key", key)
         }
         return builder.build()

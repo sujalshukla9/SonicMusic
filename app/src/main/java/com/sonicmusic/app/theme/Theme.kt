@@ -12,19 +12,15 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.ReadOnlyComposable
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.animation.core.SpringSpec
-import androidx.compose.animation.core.spring
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -32,9 +28,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.features.settings.presentation.ThemeViewModel
-import com.sonicmusic.app.domain.model.ThumbnailShape
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // Material 3 Expressive shapes morphing
 data class ExpressiveShapes(
@@ -86,29 +84,6 @@ val LocalExpressiveTypography = staticCompositionLocalOf {
     )
 }
 
-// Expressive motion springs
-data class ExpressiveMotion(
-    val playerSheetSpring: SpringSpec<Float> = spring(
-        dampingRatio = 0.75f,
-        stiffness = 350f
-    ),
-    val colorSpring: SpringSpec<Color> = spring(
-        dampingRatio = 0.85f,
-        stiffness = 300f
-    ),
-    val scaleSpring: SpringSpec<Float> = spring(
-        dampingRatio = 0.70f,
-        stiffness = 400f
-    )
-)
-
-val LocalExpressiveMotion = staticCompositionLocalOf { ExpressiveMotion() }
-
-// CompositionLocal for PlayerColorScheme
-val LocalPlayerColorScheme = compositionLocalOf {
-    ColorExtractor.fallbackColorScheme(isDarkTheme = true)
-}
-
 val MaterialTheme.expressiveShapes: ExpressiveShapes
     @Composable
     @ReadOnlyComposable
@@ -118,19 +93,6 @@ val MaterialTheme.expressiveTypography: ExpressiveTypography
     @Composable
     @ReadOnlyComposable
     get() = LocalExpressiveTypography.current
-
-val MaterialTheme.expressiveMotion: ExpressiveMotion
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalExpressiveMotion.current
-
-@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
-val LocalMotionScheme = staticCompositionLocalOf { MotionTokens.expressiveMotionScheme }
-
-val MaterialTheme.playerColorScheme: PlayerColorScheme
-    @Composable
-    @ReadOnlyComposable
-    get() = LocalPlayerColorScheme.current
 
 private val DarkColorScheme = darkColorScheme(
     primary = SonicDarkPrimary,
@@ -218,7 +180,6 @@ private const val DEFAULT_DYNAMIC_SEED = 0xFF4A7DFF.toInt()
 // animated color frame during playback; re-creating these objects there
 // caused needless allocations and CompositionLocal equality churn.
 private val DefaultExpressiveShapes = ExpressiveShapes()
-private val DefaultExpressiveMotion = ExpressiveMotion()
 private val EmphasizedExpressiveTypography = ExpressiveTypography(
     displayLargeEmphasized = Typography.displayLarge.copy(fontWeight = FontWeight.ExtraBold),
     displayMediumEmphasized = Typography.displayMedium.copy(fontWeight = FontWeight.ExtraBold),
@@ -241,26 +202,19 @@ private val EmphasizedExpressiveTypography = ExpressiveTypography(
 @Composable
 fun SonicMusicTheme(
     themeViewModel: ThemeViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
-    artworkUrl: String? = null,
     content: @Composable () -> Unit
 ) {
     val themeMode by themeViewModel.themeMode.collectAsStateWithLifecycle()
     val darkMode by themeViewModel.darkMode.collectAsStateWithLifecycle()
-    val seedColor by themeViewModel.seedColor.collectAsStateWithLifecycle()
+    val artworkColors by themeViewModel.artworkColors.collectAsStateWithLifecycle()
+    val seedColor = artworkColors?.primary
     val paletteStyle by themeViewModel.paletteStyle.collectAsStateWithLifecycle()
     val isPureBlack by themeViewModel.pureBlack.collectAsStateWithLifecycle()
     val dynamicColorsEnabled by themeViewModel.dynamicColorsEnabled.collectAsStateWithLifecycle()
     val dynamicColorIntensity by themeViewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
-    val playerColorScheme by themeViewModel.playerColorScheme.collectAsStateWithLifecycle()
     val thumbnailShape by themeViewModel.thumbnailShape.collectAsStateWithLifecycle()
     
     val context = LocalContext.current
-
-    if (artworkUrl != null) {
-        androidx.compose.runtime.LaunchedEffect(artworkUrl) {
-            themeViewModel.onAlbumArtChanged(artworkUrl)
-        }
-    }
 
     val isDark = when (darkMode) {
         com.sonicmusic.app.domain.model.DarkMode.LIGHT -> false
@@ -270,110 +224,28 @@ fun SonicMusicTheme(
 
     val dynamicStrength = (dynamicColorIntensity.coerceIn(0, 100) / 100f)
 
-    val targetColorScheme = androidx.compose.runtime.remember(
-        themeMode,
-        seedColor,
-        isDark,
-        paletteStyle,
-        isPureBlack,
-        dynamicColorsEnabled,
-        dynamicStrength
-    ) {
-        val baseScheme = if (isDark) DarkColorScheme else LightColorScheme
-        fun applyDynamicStrength(dynamicScheme: ColorScheme): ColorScheme {
-            if (!dynamicColorsEnabled) return baseScheme
-            if (dynamicStrength <= 0.001f) return baseScheme
-            if (dynamicStrength >= 0.999f) return dynamicScheme
-            return blendColorScheme(baseScheme, dynamicScheme, dynamicStrength)
-        }
-
-        // Fast in-memory M3 Content Dynamic Scheme (using SchemeContent with chroma fidelity and contrast control)
-        fun resolveContentDynamicScheme(seed: Int): ColorScheme {
-            val contrastLevel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                try {
-                    val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
-                    uiModeManager?.contrast?.toDouble() ?: 0.0
-                } catch (e: Throwable) {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-
-            return DynamicColorSchemeFactory.generateColorScheme(seed, isDark, paletteStyle, contrastLevel)
-        }
-
-        when (themeMode) {
-            ThemeMode.DEFAULT -> {
-                baseScheme
-            }
-            ThemeMode.DYNAMIC -> {
-                val seed = if (dynamicColorsEnabled) {
-                    seedColor ?: DEFAULT_DYNAMIC_SEED
-                } else {
-                    DEFAULT_DYNAMIC_SEED
-                }
-
-                val dynamicScheme = resolveContentDynamicScheme(seed).harmonized()
-
-                if (isPureBlack) {
-                    dynamicScheme.copy(
-                        background = Color.Black,
-                        surface = Color.Black,
-                        surfaceDim = Color.Black,
-                        surfaceContainerLowest = Color.Black,
-                        surfaceContainerLow = Color(0xFF0A0A0A),
-                        surfaceContainer = Color(0xFF111111),
-                        surfaceContainerHigh = Color(0xFF1A1A1A),
-                        surfaceContainerHighest = Color(0xFF222222),
-                    )
-                } else {
-                    applyDynamicStrength(dynamicScheme)
-                }
-            }
-            ThemeMode.MATERIAL_YOU -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val systemScheme = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-                    val harmonizedSystem = systemScheme.harmonized()
-                    if (isPureBlack) {
-                        harmonizedSystem.copy(
-                            background = androidx.compose.ui.graphics.Color.Black,
-                            surface = androidx.compose.ui.graphics.Color.Black,
-                            surfaceDim = androidx.compose.ui.graphics.Color.Black,
-                            surfaceContainerLowest = androidx.compose.ui.graphics.Color.Black,
-                            surfaceContainerLow = androidx.compose.ui.graphics.Color(0xFF0A0A0A),
-                            surfaceContainer = androidx.compose.ui.graphics.Color(0xFF111111),
-                            surfaceContainerHigh = androidx.compose.ui.graphics.Color(0xFF1A1A1A),
-                            surfaceContainerHighest = androidx.compose.ui.graphics.Color(0xFF222222),
-                        )
-                    } else {
-                        harmonizedSystem
-                    }
-                } else {
-                    baseScheme
-                }
-            }
-            ThemeMode.PURE_BLACK -> {
-                val seed = if (dynamicColorsEnabled) {
-                    seedColor ?: DEFAULT_DYNAMIC_SEED
-                } else {
-                    DEFAULT_DYNAMIC_SEED
-                }
-                val dynamicScheme = resolveContentDynamicScheme(seed).harmonized()
-                dynamicScheme.copy(
-                    background = Color.Black,
-                    surface = Color.Black,
-                    surfaceDim = Color.Black,
-                    surfaceContainerLowest = Color.Black,
-                    surfaceContainerLow = Color(0xFF0A0A0A),
-                    surfaceContainer = Color(0xFF111111),
-                    surfaceContainerHigh = Color(0xFF1A1A1A),
-                    surfaceContainerHighest = Color(0xFF222222),
+    val baseScheme = if (isDark) DarkColorScheme else LightColorScheme
+    val initialScheme = if (isDark && (themeMode == ThemeMode.PURE_BLACK || isPureBlack)) {
+        baseScheme.withPureBlackSurfaces()
+    } else {
+        baseScheme
+    }
+    // Seed-to-palette generation can do dozens of tone calculations on a cold cache.
+    val calculatedScheme by androidx.compose.runtime.key(isDark, themeMode, isPureBlack) {
+        produceState(
+            initialValue = initialScheme,
+            themeMode, artworkColors, isDark, paletteStyle, isPureBlack, dynamicColorsEnabled, dynamicStrength, context
+        ) {
+            value = withContext(Dispatchers.Default) {
+                resolveAppColorScheme(
+                    context, themeMode, artworkColors, isDark, paletteStyle,
+                    isPureBlack, dynamicColorsEnabled, dynamicStrength
                 )
             }
         }
     }
 
+    val targetColorScheme = calculatedScheme
     val useLightSystemBars = targetColorScheme.surface.luminance() > 0.5f
 
     val view = LocalView.current
@@ -395,38 +267,141 @@ fun SonicMusicTheme(
         }
     }
 
-    val dynamicThemeState = androidx.compose.runtime.remember(seedColor, isDark, themeMode) {
+    val dynamicThemeState = androidx.compose.runtime.remember(seedColor, useLightSystemBars, themeMode, paletteStyle) {
         DynamicThemeState(
             seedColor = seedColor?.let { androidx.compose.ui.graphics.Color(it) } ?: androidx.compose.ui.graphics.Color(0xFF4A7DFF),
-            isDark = isDark,
-            themeMode = themeMode
+            isDark = !useLightSystemBars,
+            themeMode = themeMode,
+            paletteStyle = paletteStyle
         )
     }
 
     val reduceMotion = shouldReduceMotion()
-    val animatedColorScheme = if (reduceMotion) {
-        targetColorScheme
-    } else {
-        targetColorScheme.animated(durationMillis = MotionTokens.DurationTheme)
+    // Commit light/dark changes together so foreground and surface roles stay readable.
+    val displayedColorScheme = androidx.compose.runtime.key(useLightSystemBars) {
+        targetColorScheme.animated(durationMillis = if (reduceMotion) 0 else MotionTokens.DurationStandard)
     }
 
     androidx.compose.runtime.CompositionLocalProvider(
         LocalDynamicThemeState provides dynamicThemeState,
-        LocalPlayerColorScheme provides playerColorScheme,
+        LocalReducedMotion provides reduceMotion,
         LocalExpressiveShapes provides DefaultExpressiveShapes,
         LocalExpressiveTypography provides EmphasizedExpressiveTypography,
-        LocalExpressiveMotion provides DefaultExpressiveMotion,
-        LocalMotionScheme provides (if (reduceMotion) MotionTokens.standardMotionScheme else MotionTokens.expressiveMotionScheme),
         LocalThumbnailShape provides thumbnailShape
     ) {
         @OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
         MaterialTheme(
-            colorScheme = animatedColorScheme,
+            colorScheme = displayedColorScheme,
             typography = Typography,
             shapes = SonicShapes,
-            motionScheme = if (reduceMotion) MotionTokens.standardMotionScheme else MotionTokens.expressiveMotionScheme,
+            motionScheme = if (reduceMotion) MotionTokens.reducedMotionScheme else MotionTokens.expressiveMotionScheme,
             content = content
         )
+    }
+}
+
+private fun resolveAppColorScheme(
+    context: Context,
+    themeMode: ThemeMode,
+    artworkColors: ArtworkColors?,
+    isDark: Boolean,
+    paletteStyle: PaletteStyle,
+    isPureBlack: Boolean,
+    dynamicColorsEnabled: Boolean,
+    dynamicStrength: Float
+): ColorScheme {
+    val baseScheme = if (isDark) DarkColorScheme else LightColorScheme
+
+    fun applyDynamicStrength(dynamicScheme: ColorScheme): ColorScheme {
+        if (!dynamicColorsEnabled) return baseScheme
+        if (dynamicStrength <= 0.001f) return baseScheme
+        if (dynamicStrength >= 0.999f) return dynamicScheme
+        return blendColorScheme(baseScheme, dynamicScheme, dynamicStrength)
+    }
+
+    // Fast in-memory M3 Content Dynamic Scheme (using SchemeContent with chroma fidelity and contrast control)
+    fun resolveContentDynamicScheme(seed: Int, dark: Boolean = isDark): ColorScheme {
+        val contrastLevel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+                uiModeManager?.contrast?.toDouble() ?: 0.0
+            } catch (e: Throwable) {
+                0.0
+            }
+        } else {
+            0.0
+        }
+
+        val scheme = DynamicColorSchemeFactory.generateColorScheme(seed, dark, paletteStyle, contrastLevel)
+        val companion = artworkColors?.complementary ?: return scheme
+        // Keep each foreground/container pair from a single tonal palette.
+        val accent = DynamicColorSchemeFactory.generateColorScheme(companion, dark, PaletteStyle.TONAL_SPOT, contrastLevel)
+        return scheme.copy(
+            tertiary = accent.primary,
+            onTertiary = accent.onPrimary,
+            tertiaryContainer = accent.primaryContainer,
+            onTertiaryContainer = accent.onPrimaryContainer
+        )
+    }
+
+    return when (themeMode) {
+        ThemeMode.DEFAULT -> {
+            baseScheme
+        }
+        ThemeMode.DYNAMIC -> {
+            val seed = if (dynamicColorsEnabled) {
+                artworkColors?.primary ?: DEFAULT_DYNAMIC_SEED
+            } else {
+                DEFAULT_DYNAMIC_SEED
+            }
+
+            val scheme = if (dynamicColorsEnabled && dynamicStrength > 0f) {
+                applyDynamicStrength(resolveContentDynamicScheme(seed))
+            } else {
+                baseScheme
+            }
+            if (isPureBlack && isDark) scheme.withPureBlackSurfaces() else scheme
+        }
+        ThemeMode.MATERIAL_YOU -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val systemScheme = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                val harmonizedSystem = systemScheme.harmonized()
+                if (isPureBlack && isDark) {
+                    harmonizedSystem.copy(
+                        background = androidx.compose.ui.graphics.Color.Black,
+                        surface = androidx.compose.ui.graphics.Color.Black,
+                        surfaceDim = androidx.compose.ui.graphics.Color.Black,
+                        surfaceContainerLowest = androidx.compose.ui.graphics.Color.Black,
+                        surfaceContainerLow = androidx.compose.ui.graphics.Color(0xFF0A0A0A),
+                        surfaceContainer = androidx.compose.ui.graphics.Color(0xFF111111),
+                        surfaceContainerHigh = androidx.compose.ui.graphics.Color(0xFF1A1A1A),
+                        surfaceContainerHighest = androidx.compose.ui.graphics.Color(0xFF222222),
+                    )
+                } else {
+                    harmonizedSystem
+                }
+            } else {
+                baseScheme
+            }
+        }
+        ThemeMode.PURE_BLACK -> {
+            val seed = if (dynamicColorsEnabled) {
+                artworkColors?.primary ?: DEFAULT_DYNAMIC_SEED
+            } else {
+                DEFAULT_DYNAMIC_SEED
+            }
+            val artworkScheme = if (dynamicColorsEnabled && dynamicStrength > 0f) {
+                resolveContentDynamicScheme(seed, dark = true)
+            } else {
+                DarkColorScheme
+            }
+            val scheme = if (dynamicColorsEnabled && dynamicStrength < 1f) {
+                blendColorScheme(DarkColorScheme, artworkScheme, dynamicStrength)
+            } else {
+                artworkScheme
+            }
+            scheme.withPureBlackSurfaces()
+        }
     }
 }
 
@@ -435,3 +410,10 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
+
+private fun ColorScheme.withPureBlackSurfaces(): ColorScheme = copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceDim = Color.Black,
+    surfaceContainerLowest = Color.Black
+)

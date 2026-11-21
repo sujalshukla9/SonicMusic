@@ -7,10 +7,13 @@ import com.sonicmusic.app.data.local.entity.PlaybackHistoryEntity
 import com.sonicmusic.app.features.recommendations.engine.RecommendationEngine
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.toSong
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,9 +44,20 @@ class HistoryRepositoryImpl @Inject constructor(
     }
 
     override fun getSongsByArtist(artist: String): Flow<List<PlaybackHistory>> {
-        return historyDao.getSongsByArtist(artist).map { entities ->
-            entities.map { it.toPlaybackHistory() }
-        }
+        val name = artist.trim()
+        return historyDao.getRecentlyPlayed(MAX_HISTORY_ROWS)
+            .map { entries ->
+                entries.asSequence()
+                    .map { it.toPlaybackHistory() }
+                    .filter { entry ->
+                        entry.artist.equals(name, ignoreCase = true) || entry.toSong().resolvedArtists.any {
+                            it.name.equals(name, ignoreCase = true)
+                        }
+                    }
+                    .distinctBy { it.songId }
+                    .toList()
+            }
+            .flowOn(Dispatchers.Default)
     }
 
     override suspend fun recordPlayback(song: Song, playDuration: Int, completed: Boolean, totalDuration: Int) {

@@ -1,9 +1,7 @@
 package com.sonicmusic.app.features.player.presentation.sheets
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,8 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -26,23 +25,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DragHandle
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
-import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -56,39 +54,32 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.theme.LocalThumbnailShape
+import com.sonicmusic.app.theme.MotionTokens
+import com.sonicmusic.app.theme.shouldReduceMotion
 import com.sonicmusic.app.theme.toComposeShape
-import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.shared.components.songCombinedClickable
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 
-/**
- * Queue Bottom Sheet — Music App Style (ViTune / YTMusic)
- *
- * Layout:
- * 1. Header (title + song count + clear button)
- * 2. Settings card (Auto Queue Similar, Shuffle)
- * 3. "Now Playing" card
- * 4. "Up Next" numbered track list (reorderable via drag)
- * 5. "History" collapsed section (previously played, dimmed)
- *
- * DRAG FIX: We use a SEPARATE LazyColumn for the reorderable "Up Next" list
- * to avoid index offset issues with headers in the same LazyColumn.
- */
+private data class QueueItemEntry(
+    val stableId: String,
+    val song: Song
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueueSheet(
-    isVisible: Boolean,
     onDismiss: () -> Unit,
     queue: List<Song>,
     currentIndex: Int,
@@ -100,40 +91,38 @@ fun QueueSheet(
     onToggleInfiniteMode: (Boolean) -> Unit,
     shuffleEnabled: Boolean,
     onToggleShuffle: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    handleModifier: Modifier = Modifier
 ) {
-    if (!isVisible) return
 
     var showHistory by remember { mutableStateOf(false) }
-    val safeIndex = currentIndex.coerceIn(0, (queue.size - 1).coerceAtLeast(0))
+    val safeIndex = currentIndex.takeIf { it in queue.indices } ?: -1
     val nowPlayingSong = queue.getOrNull(safeIndex)
     val upNextSongs = if (queue.size > safeIndex + 1) queue.subList(safeIndex + 1, queue.size) else emptyList()
     val historySongs = if (safeIndex > 0) queue.subList(0, safeIndex) else emptyList()
-    val upNextStartIndexInLazyList = (if (nowPlayingSong != null) 2 else 0) + 1
+    val upNextEntries = remember(upNextSongs) {
+        val occurrences = mutableMapOf<String, Int>()
+        upNextSongs.map { song ->
+            val occurrence = (occurrences[song.id] ?: 0) + 1
+            occurrences[song.id] = occurrence
+            QueueItemEntry("up_${song.id}_$occurrence", song)
+        }
+    }
 
     val haptic = LocalHapticFeedback.current
 
-    // Local mutable copy of the up-next list so drag-and-drop reflects instantly
-    var localUpNext by remember { mutableStateOf(upNextSongs) }
-
-    // Track the original index when drag starts so we commit a single reorder on drop
-    var dragFromRelative by remember { mutableStateOf(-1) }
+    // Local mutable copy of the up-next list with stable IDs so drag-and-drop reflects instantly without key collisions
+    var localUpNext by remember { mutableStateOf(upNextEntries) }
+    var dragSnapshot by remember { mutableStateOf<Pair<List<Song>, Int>?>(null) }
+    val reduceMotion = shouldReduceMotion()
 
     val lazyListState = rememberLazyListState()
     val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
-        // Reorderable callbacks use absolute LazyColumn indices (including headers).
-        val fromRelative = from.index - upNextStartIndexInLazyList
-        val toRelative = to.index - upNextStartIndexInLazyList
-        if (fromRelative !in localUpNext.indices || toRelative !in localUpNext.indices) {
+        val fromRelative = localUpNext.indexOfFirst { it.stableId == from.key }
+        val toRelative = localUpNext.indexOfFirst { it.stableId == to.key }
+        if (fromRelative < 0 || toRelative < 0 || fromRelative == toRelative) {
             return@rememberReorderableLazyListState
         }
-
-        // Record the original position on first move
-        if (dragFromRelative == -1) {
-            dragFromRelative = fromRelative
-        }
-
-        // Tactile tick on every item swap (YTM style)
         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
 
         // Update local list instantly for visual feedback (no player IPC here)
@@ -142,25 +131,26 @@ fun QueueSheet(
         }
     }
 
-    // Only sync from external upNextSongs when not currently dragging
-    LaunchedEffect(upNextSongs) {
-        if (!reorderableState.isAnyItemDragging) {
-            localUpNext = upNextSongs
-        }
+    LaunchedEffect(upNextEntries) {
+        if (dragSnapshot == null) localUpNext = upNextEntries
     }
 
     val colorScheme = MaterialTheme.colorScheme
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        modifier = modifier,
-        containerColor = colorScheme.surfaceContainerHigh,
+    Surface(
+        modifier = modifier.fillMaxSize().semantics { paneTitle = "Queue" },
+        color = colorScheme.surfaceContainerLow,
         contentColor = colorScheme.onSurface,
         tonalElevation = 2.dp,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        shape = RoundedCornerShape(topStart = 36.dp, topEnd = 36.dp)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+            Box(
+                modifier = handleModifier.fillMaxWidth().height(26.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(Modifier.size(34.dp, 4.dp).clip(CircleShape).background(colorScheme.outlineVariant))
+            }
 
             // ── Header ──────────────────────────────────────────────
             Row(
@@ -171,11 +161,12 @@ fun QueueSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Surface(
-                        modifier = Modifier.size(44.dp),
+                        modifier = Modifier.size(46.dp),
                         shape = CircleShape,
                         color = colorScheme.primaryContainer
                     ) {
@@ -192,97 +183,52 @@ fun QueueSheet(
                     Column {
                         Text(
                             text = "Queue",
-                            style = MaterialTheme.typography.titleLarge,
+                            style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
-                            color = colorScheme.onSurface
+                            color = colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${queue.size} tracks",
+                            text = trackCountLabel(queue.size),
                             style = MaterialTheme.typography.bodySmall,
                             color = colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                if (queue.isNotEmpty()) {
-                    TextButton(onClick = onClearQueue) {
-                        Text(
-                            text = "Clear",
-                            color = colorScheme.error,
-                            fontWeight = FontWeight.Medium
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (queue.isNotEmpty()) {
+                        TextButton(onClick = onClearQueue) {
+                            Text("Clear", color = colorScheme.error, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                    FilledTonalIconButton(onClick = onDismiss) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Close queue")
                     }
                 }
             }
 
-            // ── Settings Card ───────────────────────────────────────
-            Spacer(modifier = Modifier.height(4.dp))
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = colorScheme.surfaceContainerHigh
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Auto Queue Similar",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Keep queue filled with recommendations",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = infiniteModeEnabled,
-                            onCheckedChange = onToggleInfiniteMode
-                        )
-                    }
-
-                    HorizontalDivider(
-                        color = colorScheme.outlineVariant.copy(alpha = 0.45f),
-                        modifier = Modifier.padding(horizontal = 14.dp)
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Shuffle",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Play queue in random order",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = shuffleEnabled,
-                            onCheckedChange = { onToggleShuffle() }
-                        )
-                    }
-                }
+                FilterChip(
+                    selected = infiniteModeEnabled,
+                    onClick = { onToggleInfiniteMode(!infiniteModeEnabled) },
+                    label = { Text("Auto queue") },
+                    leadingIcon = { Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(18.dp)) },
+                    shape = CircleShape
+                )
+                FilterChip(
+                    selected = shuffleEnabled,
+                    onClick = onToggleShuffle,
+                    label = { Text("Shuffle") },
+                    leadingIcon = { Icon(Icons.Rounded.Shuffle, null, Modifier.size(18.dp)) },
+                    shape = CircleShape
+                )
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
             if (queue.isEmpty()) {
                 // ── Empty State ─────────────────────────────────────
@@ -343,83 +289,77 @@ fun QueueSheet(
                         item(key = "up_next_header", contentType = " header") {
                             SectionHeader(
                                 title = "Up Next",
-                                subtitle = "${localUpNext.size} tracks",
+                                subtitle = trackCountLabel(localUpNext.size),
                                 color = colorScheme.onSurface
                             )
                         }
 
                         itemsIndexed(
                             items = localUpNext,
-                            key = { _, song -> song.id },
+                            key = { _, item -> item.stableId },
                             contentType = { _, _ -> "track" }
-                        ) { relativeIndex, song ->
+                        ) { relativeIndex, item ->
+                            val song = item.song
                             val absoluteIndex = safeIndex + 1 + relativeIndex
 
                             ReorderableItem(
                                 state = reorderableState,
-                                key = song.id,
+                                key = item.stableId,
                                 animateItemModifier = Modifier.animateItem(
                                     fadeInSpec = null,
                                     fadeOutSpec = null,
-                                    placementSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-                                    )
+                                    placementSpec = if (reduceMotion) null else MotionTokens.spatial()
                                 )
                             ) { isDragging ->
+                                val topCorner = if (relativeIndex == 0) 22.dp else 8.dp
+                                val bottomCorner = if (relativeIndex == localUpNext.lastIndex) 22.dp else 8.dp
+                                val rowShape = if (isDragging) RoundedCornerShape(20.dp) else RoundedCornerShape(
+                                    topStart = topCorner,
+                                    topEnd = topCorner,
+                                    bottomStart = bottomCorner,
+                                    bottomEnd = bottomCorner
+                                )
                                 val elevation by animateDpAsState(
                                     targetValue = if (isDragging) 10.dp else 0.dp,
-                                    animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
-                                    ),
+                                    animationSpec = if (reduceMotion) snap() else MotionTokens.fastTween(),
                                     label = "DragElevation"
                                 )
                                 val scale by androidx.compose.animation.core.animateFloatAsState(
-                                    targetValue = if (isDragging) 1.03f else 1f,
-                                    animationSpec = androidx.compose.animation.core.spring(
-                                        dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy,
-                                        stiffness = androidx.compose.animation.core.Spring.StiffnessMedium
-                                    ),
+                                    targetValue = if (isDragging && !reduceMotion) 1.03f else 1f,
+                                    animationSpec = if (reduceMotion) snap() else MotionTokens.InteractiveSpring,
                                     label = "DragScale"
                                 )
 
                                 Surface(
                                     modifier = Modifier
-                                        .shadow(elevation, shape = RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 16.dp, vertical = 2.dp)
+                                        .shadow(elevation, shape = rowShape)
                                         .graphicsLayer {
                                             scaleX = scale
                                             scaleY = scale
                                         },
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isDragging) colorScheme.surfaceContainerHighest else Color.Transparent
+                                    shape = rowShape,
+                                    color = if (isDragging) colorScheme.secondaryContainer else colorScheme.surfaceContainer
                                 ) {
                                     TrackItem(
                                         song = song,
-                                        trackNumber = relativeIndex + 1,
-                                        isPlaying = false,
                                         isDimmed = false,
                                         queueIndex = absoluteIndex,
-                                        onClick = { onPlay(absoluteIndex) },
-                                        onRemove = {
-                                            onRemove(absoluteIndex)
-                                            localUpNext = localUpNext.filterNot { it.id == song.id }
-                                        },
+                                        onClick = { if (dragSnapshot == null) onPlay(absoluteIndex) },
+                                        onRemove = { if (dragSnapshot == null) onRemove(absoluteIndex) },
                                         dragModifier = Modifier.draggableHandle(
                                             onDragStarted = {
+                                                dragSnapshot = queue to safeIndex
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             },
                                             onDragStopped = {
-                                                // Commit reorder to player only on drop
-                                                if (dragFromRelative != -1) {
-                                                    val finalIndex = localUpNext.indexOfFirst { it.id == song.id }
-                                                    if (finalIndex != -1 && finalIndex != dragFromRelative) {
-                                                        val absoluteFrom = safeIndex + 1 + dragFromRelative
-                                                        val absoluteTo = safeIndex + 1 + finalIndex
-                                                        onReorder(absoluteFrom, absoluteTo)
-                                                    }
-                                                    dragFromRelative = -1
-                                                }
+                                                val before = upNextEntries.indexOfFirst { it.stableId == item.stableId }
+                                                val after = localUpNext.indexOfFirst { it.stableId == item.stableId }
+                                                val canCommit = dragSnapshot == (queue to safeIndex) &&
+                                                    before >= 0 && after >= 0 && before != after
+                                                dragSnapshot = null
+                                                if (canCommit) onReorder(safeIndex + 1 + before, safeIndex + 1 + after)
+                                                else localUpNext = upNextEntries
                                             }
                                         )
                                     )
@@ -470,25 +410,28 @@ fun QueueSheet(
                         if (showHistory) {
                             itemsIndexed(
                                 items = historySongs,
-                                key = { _, song -> "hist_${song.id}" },
+                                key = { index, song -> "hist_${song.id}_$index" },
                                 contentType = { _, _ -> "history_track" }
                             ) { index, song ->
                                 TrackItem(
                                     song = song,
-                                    trackNumber = index + 1,
-                                    isPlaying = false,
                                     isDimmed = true,
                                     queueIndex = null,
                                     onClick = { onPlay(index) },
                                     onRemove = null,
-                                    dragModifier = null
+                                    dragModifier = null,
+                                    modifier = Modifier.padding(horizontal = 16.dp).animateItem(
+                                        fadeInSpec = if (reduceMotion) null else MotionTokens.fastTween(),
+                                        fadeOutSpec = if (reduceMotion) null else MotionTokens.fastTween(),
+                                        placementSpec = if (reduceMotion) null else MotionTokens.spatial()
+                                    )
                                 )
                             }
                         }
                     }
 
                     // Bottom spacer
-                    item { Spacer(modifier = Modifier.height(24.dp)) }
+                    item(key = "queue_bottom_spacer", contentType = "spacer") { Spacer(modifier = Modifier.height(24.dp)) }
                 }
             }
         }
@@ -514,7 +457,7 @@ private fun SectionHeader(
     ) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             color = color
         )
@@ -538,7 +481,6 @@ private fun NowPlayingCard(
     onClick: () -> Unit
 ) {
     val colorScheme = MaterialTheme.colorScheme
-
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -549,14 +491,15 @@ private fun NowPlayingCard(
                 queueIndex = queueIndex,
                 onClick = onClick
             ),
-        shape = RoundedCornerShape(16.dp),
-        color = colorScheme.primaryContainer.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(28.dp),
+        color = colorScheme.primaryContainer,
+        contentColor = colorScheme.onPrimaryContainer,
         tonalElevation = 1.dp
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Thumbnail with equalizer overlay
@@ -578,7 +521,7 @@ private fun NowPlayingCard(
                     Icon(
                         imageVector = Icons.Rounded.GraphicEq,
                         contentDescription = "Now Playing",
-                        tint = colorScheme.primary,
+                        tint = Color.White,
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -591,7 +534,7 @@ private fun NowPlayingCard(
                     text = song.title,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = colorScheme.primary,
+                    color = colorScheme.onPrimaryContainer,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -599,7 +542,7 @@ private fun NowPlayingCard(
                 Text(
                     text = song.artist,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = colorScheme.onSurfaceVariant,
+                    color = colorScheme.onPrimaryContainer.copy(alpha = 0.82f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -608,13 +551,13 @@ private fun NowPlayingCard(
             // Duration badge
             if (song.duration > 0) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = colorScheme.primary.copy(alpha = 0.12f)
+                    shape = CircleShape,
+                    color = colorScheme.onPrimaryContainer.copy(alpha = 0.10f)
                 ) {
                     Text(
                         text = song.formattedDuration(),
                         style = MaterialTheme.typography.labelSmall,
-                        color = colorScheme.primary,
+                        color = colorScheme.onPrimaryContainer,
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
@@ -625,13 +568,11 @@ private fun NowPlayingCard(
 }
 
 /**
- * Track item — numbered row for Up Next and History sections
+ * Track row used in Up Next and listening history.
  */
 @Composable
 private fun TrackItem(
     song: Song,
-    trackNumber: Int,
-    isPlaying: Boolean,
     isDimmed: Boolean,
     queueIndex: Int? = null,
     onClick: () -> Unit,
@@ -652,29 +593,20 @@ private fun TrackItem(
                 onClick = onClick
             )
             .alpha(contentAlpha)
-            .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 6.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Drag handle (only for reorderable items)
         if (dragModifier != null) {
-            Icon(
-                imageVector = Icons.Rounded.DragHandle,
-                contentDescription = "Drag to reorder",
-                tint = colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                modifier = dragModifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
+            Box(modifier = dragModifier.size(48.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Rounded.DragHandle,
+                    contentDescription = "Drag to reorder",
+                    tint = colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
-
-        // Track number
-        Text(
-            text = "$trackNumber",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = if (isPlaying) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier.width(28.dp),
-            maxLines = 1
-        )
 
         // Thumbnail
         Surface(
@@ -695,8 +627,8 @@ private fun TrackItem(
             Text(
                 text = song.title,
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (isPlaying) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isPlaying) colorScheme.primary else colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+                color = colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -723,15 +655,17 @@ private fun TrackItem(
         if (onRemove != null) {
             IconButton(
                 onClick = onRemove,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(48.dp)
             ) {
                 Icon(
                     imageVector = Icons.Rounded.Close,
-                    contentDescription = "Remove",
-                    tint = colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    contentDescription = "Remove ${song.title} from queue",
+                    tint = colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
                 )
             }
         }
     }
 }
+
+private fun trackCountLabel(count: Int) = if (count == 1) "1 track" else "$count tracks"

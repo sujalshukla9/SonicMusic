@@ -1,5 +1,7 @@
 package com.sonicmusic.app.features.home.presentation
 
+import com.sonicmusic.app.theme.pressable
+import com.sonicmusic.app.shared.components.animatedSection
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -52,6 +55,7 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shuffle
 import com.sonicmusic.app.shared.components.pullrefresh.M3ExpressivePullToRefresh
+import com.sonicmusic.app.shared.components.pullrefresh.LocalPullToRefreshOffset
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -82,7 +86,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -92,40 +97,55 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import com.sonicmusic.app.theme.MotionTokens
 import com.sonicmusic.app.theme.pressScale
-import com.sonicmusic.app.theme.pressable
-import com.sonicmusic.app.theme.shouldReduceMotion
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.offset
+import kotlin.math.roundToInt
 import com.sonicmusic.app.theme.Dimens
 import com.sonicmusic.app.theme.LocalThumbnailShape
 import com.sonicmusic.app.theme.toComposeShape
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import com.sonicmusic.app.R
 import com.sonicmusic.app.domain.model.CommunityPlaylist
+import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.domain.model.HomeShelf
+import com.sonicmusic.app.domain.model.HomeShelfItem
+import com.sonicmusic.app.shared.components.SongCarouselCard
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.deviceLocalSongId
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.features.home.presentation.HomeViewModel
 import com.sonicmusic.app.shared.components.SongCarousel
-import java.util.Calendar
+import java.time.LocalTime
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun HomeScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
+    settingsViewModel: com.sonicmusic.app.features.settings.presentation.SettingsViewModel,
     onNavigateToSearch: () -> Unit = {},
     onNavigateToHomeSection: (String) -> Unit = {},
     onNavigateToLikedSongs: () -> Unit = {},
@@ -134,6 +154,7 @@ fun HomeScreen(
     onNavigateToRecentlyPlayed: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onNavigateToArtist: (String, String?) -> Unit = { _, _ -> },
+    onNavigateToAlbum: (Song) -> Unit = {},
     onNavigateToPlaylist: (browseId: String, title: String?, creator: String?, thumb: String?) -> Unit = { _, _, _, _ -> },
     onShowFullPlayer: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
@@ -141,33 +162,47 @@ fun HomeScreen(
     val homeContent by viewModel.homeContent.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val manualPagination by viewModel.manualPagination.collectAsStateWithLifecycle()
+    val feedUnavailable by viewModel.feedUnavailable.collectAsStateWithLifecycle()
+    val accountNotice by viewModel.accountNotice.collectAsStateWithLifecycle()
+    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
-    val visibleKeys by remember {
-        derivedStateOf {
-            listState.layoutInfo.visibleItemsInfo.map { it.key }.toSet()
+    LaunchedEffect(lifecycle, viewModel) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.loadHomeContent()
+            viewModel.playbackCompleted.collect { viewModel.loadHomeContent() }
+        }
+    }
+    LaunchedEffect(listState, viewModel) {
+        try {
+            snapshotFlow {
+                listState.isScrollInProgress to (listState.firstVisibleItemIndex <= 1)
+            }.collect { (scrolling, atTop) ->
+                viewModel.onFeedScrollChanged(scrolling, atTop)
+            }
+        } finally {
+            viewModel.onFeedScrollChanged(false, isAtTop = false)
         }
     }
 
-    val isScrollInProgress = listState.isScrollInProgress
-    LaunchedEffect(visibleKeys, isScrollInProgress) {
-        viewModel.onVisibleSectionsChanged(visibleKeys, isScrollInProgress)
-    }
-
-    // Infinite scroll continuation trigger when scrolled near bottom
-    LaunchedEffect(listState) {
-        androidx.compose.runtime.snapshotFlow {
-            val layoutInfo = listState.layoutInfo
-            val totalItems = layoutInfo.totalItemsCount
-            val lastVisibleItemIndex = (layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) + 1
-            totalItems > 0 && lastVisibleItemIndex >= totalItems - 3
-        }.collect { shouldLoadMore ->
-            if (shouldLoadMore && !isRefreshing) {
-                viewModel.loadMoreHomeContent()
-            }
+    LaunchedEffect(listState, homeContent.continuation?.token, isRefreshing, isOnline, manualPagination, isLoadingMore) {
+        if (homeContent.continuation == null || isRefreshing || !isOnline || manualPagination || isLoadingMore) {
+            return@LaunchedEffect
+        }
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val lastVisible = layout.visibleItemsInfo.lastOrNull()?.index ?: return@snapshotFlow false
+            val scrolled = listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+            val fitsOnScreen = !listState.canScrollForward && !listState.canScrollBackward
+            (scrolled || fitsOnScreen) && lastVisible >= layout.totalItemsCount - 3
+        }.collect { nearEnd ->
+            if (nearEnd) viewModel.loadMoreHomeContent()
         }
     }
 
@@ -201,7 +236,6 @@ fun HomeScreen(
         }
     }
 
-    val settingsViewModel: com.sonicmusic.app.features.settings.presentation.SettingsViewModel = hiltViewModel()
     val appUpdateState by settingsViewModel.appUpdateState.collectAsStateWithLifecycle()
 
     Scaffold(
@@ -209,10 +243,11 @@ fun HomeScreen(
         containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
-        val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
         val downloadedSongIds by viewModel.downloadedSongIds.collectAsStateWithLifecycle()
         val savedPlaylistRemoteIds by viewModel.savedPlaylistRemoteIds.collectAsStateWithLifecycle()
-        var showUpdateDialog by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+        var showUpdateDialog by androidx.compose.runtime.saveable.rememberSaveable(appUpdateState.latestVersion) {
+            androidx.compose.runtime.mutableStateOf(true)
+        }
 
         if (appUpdateState.isUpdateAvailable && !appUpdateState.isDownloading && showUpdateDialog) {
             AlertDialog(
@@ -235,48 +270,17 @@ fun HomeScreen(
             )
         }
 
-        var hasLoadedInitially by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
-
-        val hasOnlineHomeContent = homeContent.quickPicks.isNotEmpty() || 
-            (homeContent.charts?.songs?.isNotEmpty() == true) ||
-            homeContent.listenAgain.isNotEmpty() ||
-            homeContent.englishHits.isNotEmpty() ||
-            homeContent.trendingAlbums.isNotEmpty() ||
-            homeContent.mixedForYou.isNotEmpty() ||
-            homeContent.forgottenFavorites.isNotEmpty() ||
-            homeContent.communityPlaylists.isNotEmpty() ||
-            homeContent.continuationShelves.isNotEmpty()
-
-        if (hasOnlineHomeContent) {
-            hasLoadedInitially = true
+        val hasRemoteFeed = homeContent.shelves.isNotEmpty()
+        val isInitialLoading = !isRefreshing && isOnline && isLoading && !hasRemoteFeed && recentlyPlayed.isEmpty()
+        var showInitialLoading by remember { mutableStateOf(false) }
+        LaunchedEffect(isInitialLoading) {
+            showInitialLoading = false
+            if (isInitialLoading) {
+                delay(250L)
+                showInitialLoading = true
+            }
         }
 
-        val isInitialLoading = !hasLoadedInitially && !isRefreshing && isOnline && (isLoading && !hasOnlineHomeContent) && error == null
-
-        Crossfade(
-            targetState = isInitialLoading,
-            animationSpec = MotionTokens.standardTween(),
-            label = "home_loading_crossfade"
-        ) { loading ->
-            if (loading) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    contentAlignment = Alignment.Center
-                ) {
-                    LoadingIndicator(
-                        modifier = Modifier.size(48.dp),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-            } else if (!isOnline && homeContent.listenAgain.isEmpty() && homeContent.quickPicks.isEmpty() && homeContent.englishHits.isEmpty()) {
-                // No internet and no cached content
-                com.sonicmusic.app.shared.components.NoInternetView(
-                    onRetry = { viewModel.loadHomeContent() },
-                    modifier = Modifier.padding(paddingValues)
-                )
-            } else {
                 M3ExpressivePullToRefresh(
                     isRefreshing = isRefreshing,
                     onRefresh = { viewModel.refreshHomeContent() },
@@ -289,61 +293,18 @@ fun HomeScreen(
                         .fillMaxSize()
                         .padding(paddingValues)
                 ) {
-                val listenAgainFiltered = remember(homeContent.listenAgain) {
-                    homeContent.listenAgain.filter { it.title.isNotBlank() }
-                }
-                val recentlyPlayedFiltered = remember(homeContent.recentlyPlayed) {
-                    homeContent.recentlyPlayed.filter { it.title.isNotBlank() }
-                }
-                val quickPicksFiltered = remember(homeContent.quickPicks) {
-                    homeContent.quickPicks.filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
-                }
-                val chartsFilteredSongs = remember(homeContent.charts) {
-                    homeContent.charts?.songs.orEmpty().filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
-                }
-                val trendingAlbumsFiltered = remember(homeContent.trendingAlbums) {
-                    homeContent.trendingAlbums.filter { it.title.isNotBlank() }
-                }
-                val englishHitsFiltered = remember(homeContent.englishHits) {
-                    homeContent.englishHits
-                        .filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
-                        .distinctBy { it.id }
-                }
-                val forgottenFavoritesFiltered = remember(homeContent.forgottenFavorites) {
-                    homeContent.forgottenFavorites.filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
-                }
-                val mixedForYouFiltered = remember(homeContent.mixedForYou) {
-                    homeContent.mixedForYou.filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) }
-                }
-                val artistsFiltered = remember(homeContent.artists) {
-                    homeContent.artists.map { section ->
-                        section.copy(songs = section.songs.filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) })
-                    }.filter { it.songs.isNotEmpty() }
-                }
-                val continuationShelves = remember(homeContent.continuationShelves) {
-                    homeContent.continuationShelves.map { shelf ->
-                        shelf.copy(songs = shelf.songs.filter { com.sonicmusic.app.data.remote.source.InnertubeConfig.isAuthenticSong(it.title, it.artist, it.duration) })
-                    }.filter { it.songs.isNotEmpty() }
-                }
-                val communityPlaylistsFiltered = remember(homeContent.communityPlaylists) {
-                    homeContent.communityPlaylists.filter { it.title.isNotBlank() }
-                }
-
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = bottomPadding)
                 ) {
-                    // ═══════════════════════════════════════════
-                    // 1. HEADER - Greeting + Search + Settings
-                    // ═══════════════════════════════════════════
-                    item(key = "home_header") {
+                    animatedSection(key = "home_header", contentType = "header") {
                         HomeHeader(
                             onSearchClick = onNavigateToSearch,
                             onSettingsClick = onNavigateToSettings
                         )
                     }
-                    item(key = "quick_actions") {
+                    animatedSection(key = "quick_actions", contentType = "quick_actions") {
                         HomeQuickActions(
                             onLikedSongsClick = onNavigateToLikedSongs,
                             onDownloadsClick = onNavigateToDownloads,
@@ -352,375 +313,213 @@ fun HomeScreen(
                         )
                     }
 
-
-                    // ═══════════════════════════════════════════
-                    // 2. CONTINUE LISTENING
-                    // Shows single last-played song only (ViTune style)
-                    // ═══════════════════════════════════════════
-                    if (listenAgainFiltered.isNotEmpty()) {
-                        item(key = "continue_listening") {
-                            val lastSong = listenAgainFiltered.first()
-                            val isSongEnabled = isOnline || lastSong.id in downloadedSongIds
-                            ContinueListeningSection(
-                                lastSong = lastSong,
-                                isEnabled = isSongEnabled,
-                                onSongClick = { song ->
-                                    if (isSongEnabled) {
-                                        onHomeSectionSongClick(HomeViewModel.SECTION_LISTEN_AGAIN, song)
-                                    }
-                                }
-                            )
+                    if (isInitialLoading && showInitialLoading) {
+                        animatedSection(key = "initial_feed_loader", contentType = "loader") {
+                            HomeFeedLoading()
                         }
                     }
 
-                    // ═══════════════════════════════════════════
-                    // 3. LISTEN AGAIN - 3x3 Grid
-                    // Shows history for existing users
-                    // ═══════════════════════════════════════════
-                    if (homeContent.listenAgain.isNotEmpty()) {
-                        item(key = "listen_again_grid") {
-                            ListenAgainGrid(
-                                songs = listenAgainFiltered.take(27),
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_LISTEN_AGAIN, song)
-                                },
-                                onPlayAll = { onHomeSectionPlay(HomeViewModel.SECTION_LISTEN_AGAIN, false) },
-                                onShuffle = { onHomeSectionPlay(HomeViewModel.SECTION_LISTEN_AGAIN, true) },
-                                title = "Listen Again",
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_LISTEN_AGAIN)
-                                },
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
+                    if (!isOnline && !hasRemoteFeed && recentlyPlayed.isEmpty()) {
+                        animatedSection(key = "offline_notice", contentType = "offline_notice") {
+                            com.sonicmusic.app.shared.components.NoInternetView(
+                                onRetry = { viewModel.loadHomeContent() }
                             )
                         }
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // 3.5. RECENTLY PLAYED
-                    // ═══════════════════════════════════════════
-                    if (recentlyPlayedFiltered.isNotEmpty()) {
-                        item(key = "recently_played") {
-                            SongSection(
-                                title = "Recently Played",
-                                subtitle = "Your recent listening history",
-                                songs = recentlyPlayedFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_RECENTLY_PLAYED, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_RECENTLY_PLAYED, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_RECENTLY_PLAYED, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_RECENTLY_PLAYED)
-                                },
-                                cardStyle = CardStyle.MEDIUM_CARD,
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
-                        }
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // 4. QUICK PICKS - Horizontal Cards
-                    // ═══════════════════════════════════════════
-                    if (quickPicksFiltered.isNotEmpty()) {
-                        item(key = "quick_picks") {
-                            QuickPicksSection(
-                                songs = quickPicksFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_QUICK_PICKS, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_QUICK_PICKS, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_QUICK_PICKS)
-                                },
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
-                        }
-                    }
-
-
-                    // ═══════════════════════════════════════════
-                    // 4.8. CHARTS
-                    // ═══════════════════════════════════════════
-                    homeContent.charts?.let { charts ->
-                        if (chartsFilteredSongs.isNotEmpty()) {
-                            item(key = "charts_section") {
-                                SongSection(
-                                    title = "Charts",
-                                    subtitle = charts.country?.let { "Top hits in $it" } ?: "Top hits worldwide",
-                                    songs = chartsFilteredSongs,
-                                    onSongClick = { song ->
-                                        onHomeSectionSongClick(HomeViewModel.SECTION_CHARTS, song)
-                                    },
-                                    onPlayAll = {
-                                        onHomeSectionPlay(HomeViewModel.SECTION_CHARTS, false)
-                                    },
-                                    onShuffle = {
-                                        onHomeSectionPlay(HomeViewModel.SECTION_CHARTS, true)
-                                    },
-                                    onSeeAllClick = {
-                                        onHomeSectionSeeAll(HomeViewModel.SECTION_CHARTS)
-                                    },
-                                    cardStyle = CardStyle.COMPACT_ROW,
-                                    isOnline = isOnline,
-                                    downloadedSongIds = downloadedSongIds
+                    } else if (accountNotice != null || (feedUnavailable && !hasRemoteFeed)) {
+                        item(key = "home_notice", contentType = "notice") {
+                            val notice = accountNotice
+                            val message = when {
+                                notice == null -> R.string.home_feed_unavailable
+                                notice.reconnect && notice.showingPublicFeed -> R.string.home_public_reconnect
+                                notice.showingPublicFeed -> R.string.home_public_fallback
+                                notice.reconnect -> R.string.home_account_reconnect
+                                else -> R.string.home_account_unavailable
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = stringResource(message),
+                                    modifier = Modifier.weight(1f),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                TextButton(onClick = if (notice?.reconnect == true) onNavigateToSettings else {
+                                    { viewModel.refreshHomeContent() }
+                                }) {
+                                    Text(stringResource(if (notice?.reconnect == true) R.string.home_account_settings else R.string.home_retry))
+                                }
                             }
                         }
                     }
-      
 
-
-                    // ═══════════════════════════════════════════
-                    // 6.6. TRENDING ALBUMS
-                    // ═══════════════════════════════════════════
-                    if (trendingAlbumsFiltered.isNotEmpty()) {
-                        item(key = "trending_albums") {
+                    val historySection = HomeViewModel.SECTION_RECENTLY_PLAYED
+                    val lastSong = recentlyPlayed.firstOrNull()
+                    if (lastSong != null) {
+                        animatedSection(key = "continue_listening", contentType = "continue_listening") {
+                            ContinueListeningSection(
+                                lastSong = lastSong,
+                                isEnabled = isOnline || lastSong.id.deviceLocalSongId() != null || lastSong.id in downloadedSongIds,
+                                onSongClick = { onHomeSectionSongClick(historySection, it) }
+                            )
+                        }
+                        animatedSection(key = historySection, contentType = "song_section") {
                             SongSection(
-                                title = "Trending Albums",
-                                subtitle = "Top albums right now",
-                                songs = trendingAlbumsFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_TRENDING_ALBUMS, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_TRENDING_ALBUMS, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_TRENDING_ALBUMS, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_TRENDING_ALBUMS)
-                                },
-                                cardStyle = CardStyle.MEDIUM_CARD,
+                                title = viewModel.getSectionTitle(historySection),
+                                subtitle = "Your recent listening history",
+                                songs = recentlyPlayed,
+                                onSongClick = { onHomeSectionSongClick(historySection, it) },
+                                onPlayAll = { onHomeSectionPlay(historySection, false) },
+                                onShuffle = { onHomeSectionPlay(historySection, true) },
+                                onSeeAllClick = { onHomeSectionSeeAll(historySection) },
                                 isOnline = isOnline,
                                 downloadedSongIds = downloadedSongIds
                             )
                         }
                     }
 
-
-                    // ═══════════════════════════════════════════
-                    // 7. ENGLISH HITS
-                    // ═══════════════════════════════════════════
-                    if (englishHitsFiltered.isNotEmpty()) {
-                        item(key = "english_hits") {
-                            SongSection(
-                                title = "English Hits",
-                                subtitle = "Top international tracks",
-                                songs = englishHitsFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_ENGLISH_HITS, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_ENGLISH_HITS, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_ENGLISH_HITS, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_ENGLISH_HITS)
-                                },
-                                cardStyle = CardStyle.MEDIUM_CARD,
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
-                        }
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // 7.5. FORGOTTEN FAVORITES
-                    // ═══════════════════════════════════════════
-                    if (forgottenFavoritesFiltered.isNotEmpty()) {
-                        item(key = "forgotten_favorites") {
-                            SongSection(
-                                title = "Forgotten Favorites",
-                                subtitle = "Rediscover songs you used to love",
-                                songs = forgottenFavoritesFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_FORGOTTEN_FAVORITES, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_FORGOTTEN_FAVORITES)
-                                },
-                                cardStyle = CardStyle.MEDIUM_CARD,
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
-                        }
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // 8. MIXED FOR YOU
-                    // ═══════════════════════════════════════════
-                    if (mixedForYouFiltered.isNotEmpty()) {
-                        item(key = "mixed_for_you") {
-                            SongSection(
-                                title = "Mixed For You",
-                                subtitle = "Custom playlists built for you",
-                                songs = mixedForYouFiltered,
-                                onSongClick = { song ->
-                                    onHomeSectionSongClick(HomeViewModel.SECTION_MIXED_FOR_YOU, song)
-                                },
-                                onPlayAll = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_MIXED_FOR_YOU, false)
-                                },
-                                onShuffle = {
-                                    onHomeSectionPlay(HomeViewModel.SECTION_MIXED_FOR_YOU, true)
-                                },
-                                onSeeAllClick = {
-                                    onHomeSectionSeeAll(HomeViewModel.SECTION_MIXED_FOR_YOU)
-                                },
-                                cardStyle = CardStyle.MEDIUM_CARD,
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
-                        }
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // 9. ARTIST SONG SECTIONS ("More from {Artist}")
-                    // ═══════════════════════════════════════════
                     items(
-                        items = artistsFiltered,
-                        key = { artistSection -> artistSection.artist.id },
-                        contentType = { "artist_section" }
-                    ) { artistSection ->
-                        val artistSectionKey = HomeViewModel.artistSectionKey(artistSection.artist.id)
-                        val canonicalBrowseId = artistSection.artist.id.takeIf { it.startsWith("UC") }
-                        SongSection(
-                            title = "More from ${artistSection.artist.name}",
-                            subtitle = "Because you listened",
-                            songs = artistSection.songs,
-                            onTitleClick = {
-                                onNavigateToArtist(artistSection.artist.name, canonicalBrowseId)
-                            },
-                            onSongClick = { song ->
-                                onHomeSectionSongClick(artistSectionKey, song)
-                            },
-                            onPlayAll = { onHomeSectionPlay(artistSectionKey, false) },
-                            onShuffle = { onHomeSectionPlay(artistSectionKey, true) },
-                            onSeeAllClick = {
-                                onHomeSectionSeeAll(artistSectionKey)
-                            },
-                            cardStyle = CardStyle.MEDIUM_CARD,
-                            isOnline = isOnline,
-                            downloadedSongIds = downloadedSongIds
-                        )
-                    }
-
-                    // ═══════════════════════════════════════════
-                    // CONTINUATION SHELVES (Infinite Home Feed)
-                    // ═══════════════════════════════════════════
-                    items(
-                        items = continuationShelves,
-                        key = { shelf -> "cont_shelf_${shelf.id}" },
-                        contentType = { "continuation_shelf" }
+                        items = homeContent.shelves,
+                        key = { it.id },
+                        contentType = { it.layout }
                     ) { shelf ->
-                        val shelfSectionKey = "continuation_${shelf.id}"
-                        SongSection(
-                            title = shelf.title,
-                            subtitle = shelf.subtitle ?: "Recommended for you",
-                            songs = shelf.songs,
-                            onSongClick = { song ->
-                                onHomeSectionSongClick(shelfSectionKey, song)
-                            },
-                            onPlayAll = { onHomeSectionPlay(shelfSectionKey, false) },
-                            onShuffle = { onHomeSectionPlay(shelfSectionKey, true) },
-                            onSeeAllClick = {
-                                onHomeSectionSeeAll(shelfSectionKey)
-                            },
-                            cardStyle = CardStyle.MEDIUM_CARD,
-                            isOnline = isOnline,
-                            downloadedSongIds = downloadedSongIds
-                        )
-                    }
+                        val songs = remember(shelf) { shelf.songs() }
+                        val onSongClick: (Song) -> Unit = { onHomeSectionSongClick(shelf.id, it) }
+                        val onSeeAll = { onHomeSectionSeeAll(shelf.id) }
+                        val onPlayAll: (() -> Unit)? = if (songs.isEmpty()) null else {
+                            { onHomeSectionPlay(shelf.id, false) }
+                        }
+                        val onShuffle: (() -> Unit)? = if (songs.isEmpty()) null else {
+                            { onHomeSectionPlay(shelf.id, true) }
+                        }
+                        val openPlaylist: (CommunityPlaylist) -> Unit = { playlist ->
+                            onNavigateToPlaylist(playlist.browseId, playlist.title, playlist.creator, playlist.thumbnailUrl)
+                        }
 
-                    // ═══════════════════════════════════════════
-                    // 10. TRENDING COMMUNITY PLAYLISTS
-                    // ═══════════════════════════════════════════
-                    if (communityPlaylistsFiltered.isNotEmpty()) {
-                        item(key = "trending_community_playlists") {
-                            TrendingCommunityPlaylistsSection(
-                                playlists = communityPlaylistsFiltered,
-                                savedPlaylistRemoteIds = savedPlaylistRemoteIds,
-                                onPlaylistClick = { playlist ->
-                                    onNavigateToPlaylist(
-                                        playlist.browseId,
-                                        playlist.title,
-                                        playlist.creator,
-                                        playlist.thumbnailUrl
+                        Box(animatedSection().fillMaxWidth()) {
+                            when {
+                                shelf.items.all { it is HomeShelfItem.Playlist } -> {
+                                    val playlists = remember(shelf) {
+                                        shelf.items.map { (it as HomeShelfItem.Playlist).playlist }
+                                    }
+                                    TrendingCommunityPlaylistsSection(
+                                        title = shelf.title,
+                                        subtitle = shelf.subtitle,
+                                        playlists = playlists,
+                                        savedPlaylistRemoteIds = savedPlaylistRemoteIds,
+                                        onPlaylistClick = openPlaylist,
+                                        onPlayPlaylist = { playlist, shuffle ->
+                                            viewModel.playCommunityPlaylist(playlist, shuffle = shuffle)
+                                            onShowFullPlayer()
+                                        },
+                                        onPlayPlaylistNext = viewModel::playCommunityPlaylistNext,
+                                        onAddPlaylistToQueue = viewModel::addCommunityPlaylistToQueue,
+                                        onToggleSavePlaylist = viewModel::toggleSaveCommunityPlaylist,
+                                        onTrackClick = onSongClick,
+                                        onTrackPlayNext = viewModel::playNext,
+                                        onTrackAddToQueue = viewModel::addToQueue
                                     )
-                                },
-                                onPlayPlaylist = { playlist, shuffle ->
-                                    viewModel.playCommunityPlaylist(playlist, shuffle = shuffle)
-                                    onShowFullPlayer()
-                                },
-                                onPlayPlaylistNext = { playlist ->
-                                    viewModel.playCommunityPlaylistNext(playlist)
-                                },
-                                onAddPlaylistToQueue = { playlist ->
-                                    viewModel.addCommunityPlaylistToQueue(playlist)
-                                },
-                                onToggleSavePlaylist = { playlist ->
-                                    viewModel.toggleSaveCommunityPlaylist(playlist)
-                                },
-                                onTrackClick = { song ->
-                                    viewModel.onSongClick(song)
-                                    onShowFullPlayer()
-                                },
-                                onTrackPlayNext = { song ->
-                                    viewModel.playNext(song)
-                                },
-                                onTrackAddToQueue = { song ->
-                                    viewModel.addToQueue(song)
                                 }
-                            )
+                                songs.size == shelf.items.size && shelf.layout == HomeShelf.Layout.Grid -> {
+                                    ListenAgainGrid(
+                                        songs = songs.take(27),
+                                        title = shelf.title,
+                                        onSongClick = onSongClick,
+                                        onPlayAll = { onHomeSectionPlay(shelf.id, false) },
+                                        onShuffle = { onHomeSectionPlay(shelf.id, true) },
+                                        onSeeAllClick = onSeeAll,
+                                        isOnline = isOnline,
+                                        downloadedSongIds = downloadedSongIds
+                                    )
+                                }
+                                songs.size == shelf.items.size -> {
+                                    SongSection(
+                                        title = shelf.title,
+                                        subtitle = shelf.subtitle,
+                                        songs = songs,
+                                        onSongClick = onSongClick,
+                                        onPlayAll = onPlayAll,
+                                        onShuffle = onShuffle,
+                                        onSeeAllClick = onSeeAll,
+                                        compactRows = shelf.layout == HomeShelf.Layout.List,
+                                        isOnline = isOnline,
+                                        downloadedSongIds = downloadedSongIds
+                                    )
+                                }
+                                else -> {
+                                    HomeMediaShelf(
+                                        shelf = shelf,
+                                        onClick = { item ->
+                                            when (item) {
+                                                is HomeShelfItem.Media -> when (item.song.contentType) {
+                                                    ContentType.ALBUM -> onNavigateToAlbum(item.song)
+                                                    ContentType.ARTIST -> onNavigateToArtist(item.song.title, item.song.artistId)
+                                                    else -> onSongClick(item.song)
+                                                }
+                                                is HomeShelfItem.Playlist -> openPlaylist(item.playlist)
+                                            }
+                                        },
+                                        onSeeAll = onSeeAll,
+                                        onPlayAll = onPlayAll,
+                                        onShuffle = onShuffle,
+                                        isOnline = isOnline,
+                                        downloadedSongIds = downloadedSongIds
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    // Material 3 Expressive loading indicator at bottom when loading continuation items
                     if (isLoadingMore) {
-                        item(key = "continuation_loader") {
+                        item(key = "continuation_loader", contentType = "loader") {
                             Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 24.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                LoadingIndicator(
-                                    modifier = Modifier.size(36.dp),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                                LoadingIndicator(modifier = Modifier.size(36.dp))
+                            }
+                        }
+                    } else if (isOnline && homeContent.continuation != null) {
+                        item(key = "continuation_action", contentType = "loader") {
+                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                TextButton(onClick = { viewModel.loadMoreHomeContent(userRequested = true) }) {
+                                    Text(stringResource(R.string.home_load_more))
+                                }
                             }
                         }
                     }
                 }
+        }
+    }
+}
+
+@Composable
+private fun HomeFeedLoading() {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 24.dp)
+            .semantics { contentDescription = "Loading recommendations" },
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            Modifier.width(120.dp).height(18.dp)
+                .clip(MaterialTheme.shapes.small).background(colors.surfaceContainerHighest)
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            repeat(2) {
+                Box(
+                    Modifier.weight(1f).aspectRatio(1.3f)
+                        .clip(MaterialTheme.shapes.large).background(colors.surfaceContainerHigh)
+                )
             }
         }
     }
 }
-}
 
 // ═══════════════════════════════════════════════════════════════
-// 1. HEADER COMPONENT - Greeting + Profile + Search
+// 1. DISCOVER HEADER AND SHORTCUTS
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -728,69 +527,83 @@ private fun HomeHeader(
     onSearchClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
-    val greeting = remember { getGreeting() }
-    val pullOffset = com.sonicmusic.app.shared.components.pullrefresh.LocalPullToRefreshOffset.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val statusBarTopPx = with(density) { statusBarTop.toPx() }
-    val effectiveTopInset = with(density) {
-        ((statusBarTopPx - pullOffset).coerceAtLeast(0f)).toDp()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val hour by produceState(initialValue = LocalTime.now().hour, key1 = lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                value = LocalTime.now().hour
+                delay(60_000L - System.currentTimeMillis() % 60_000L)
+            }
+        }
     }
-    
+    val greeting = stringResource(
+        when (hour) {
+            in 5..11 -> R.string.home_good_morning
+            in 12..16 -> R.string.home_good_afternoon
+            in 17..20 -> R.string.home_good_evening
+            else -> R.string.home_good_night
+        }
+    )
+    val pullOffset = LocalPullToRefreshOffset.current
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+
+    val colors = MaterialTheme.colorScheme
+    val searchInteraction = remember { MutableInteractionSource() }
+    val settingsInteraction = remember { MutableInteractionSource() }
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier
                 .widthIn(max = Dimens.maxContentWidth)
                 .fillMaxWidth()
                 .padding(horizontal = Dimens.screenPadding)
-                .padding(top = effectiveTopInset + 12.dp, bottom = 8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = greeting,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "What do you want to listen to?",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                .layout { measurable, constraints ->
+                    val top = (statusBarTop.toPx() - pullOffset.value).coerceAtLeast(0f) + 16.dp.toPx()
+                    val topPx = top.roundToInt().coerceAtMost(constraints.maxHeight)
+                    val placeable = measurable.measure(constraints.offset(vertical = -topPx))
+                    layout(placeable.width, constraints.constrainHeight(placeable.height + topPx)) {
+                        placeable.placeRelative(0, topPx)
+                    }
                 }
+                .padding(bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = greeting,
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = colors.onSurface,
+                    modifier = Modifier.weight(1f).semantics { heading() }
+                )
+                FilledTonalIconButton(
+                    onClick = onSettingsClick,
+                    interactionSource = settingsInteraction,
+                    modifier = Modifier.pressScale(settingsInteraction)
+                ) {
+                    Icon(Icons.Rounded.Settings, contentDescription = "Settings")
+                }
+            }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    IconButton(onClick = onSearchClick) {
-                        Icon(
-                            imageVector = Icons.Rounded.Search,
-                            contentDescription = "Search",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                    IconButton(onClick = onSettingsClick) {
-                        Icon(
-                            imageVector = Icons.Rounded.Settings,
-                            contentDescription = "Settings",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
+            Surface(
+                onClick = onSearchClick,
+                interactionSource = searchInteraction,
+                modifier = Modifier.fillMaxWidth().pressScale(searchInteraction, targetScale = 0.98f),
+                shape = CircleShape,
+                color = colors.surfaceContainerHigh,
+                contentColor = colors.onSurfaceVariant
+            ) {
+                Row(
+                    modifier = Modifier.heightIn(min = 54.dp).padding(horizontal = 18.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Search, contentDescription = "Search")
+                    Text("Songs, artists, and albums", style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
     }
 }
-
-private data class QuickAction(
-    val title: String,
-    val icon: ImageVector,
-    val onClick: () -> Unit
-)
 
 @Composable
 private fun HomeQuickActions(
@@ -799,63 +612,83 @@ private fun HomeQuickActions(
     onPlaylistsClick: () -> Unit,
     onRecentlyPlayedClick: () -> Unit
 ) {
-
-    val actions = remember(
-        onLikedSongsClick,
-        onDownloadsClick,
-        onPlaylistsClick,
-        onRecentlyPlayedClick
-    ) {
-        listOf(
-            QuickAction("Liked", Icons.Rounded.Favorite, onLikedSongsClick),
-            QuickAction("Downloads", Icons.Rounded.Download, onDownloadsClick),
-            QuickAction("Playlists", Icons.AutoMirrored.Rounded.PlaylistPlay, onPlaylistsClick),
-            QuickAction("Recent", Icons.Rounded.History, onRecentlyPlayedClick)
-        )
-    }
-
+    val colors = MaterialTheme.colorScheme
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        LazyRow(
-            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = Dimens.screenPadding, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        Column(
+            modifier = Modifier
+                .widthIn(max = Dimens.maxContentWidth)
+                .fillMaxWidth()
+                .padding(horizontal = Dimens.screenPadding, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            items(actions, key = { it.title }, contentType = { "action" }) { action ->
-                Surface(
-                    modifier = Modifier.pressable(onClick = action.onClick, targetScale = 0.95f),
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = action.icon,
-                            contentDescription = action.title,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = action.title,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                HomeShortcut(
+                    title = "Liked songs",
+                    icon = Icons.Rounded.Favorite,
+                    onClick = onLikedSongsClick,
+                    containerColor = colors.primaryContainer,
+                    contentColor = colors.onPrimaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+                HomeShortcut(
+                    title = "Recents",
+                    icon = Icons.Rounded.History,
+                    onClick = onRecentlyPlayedClick,
+                    containerColor = colors.secondaryContainer,
+                    contentColor = colors.onSecondaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                HomeShortcut(
+                    title = "Downloads",
+                    icon = Icons.Rounded.Download,
+                    onClick = onDownloadsClick,
+                    containerColor = colors.surfaceContainerHigh,
+                    contentColor = colors.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
+                HomeShortcut(
+                    title = "Playlists",
+                    icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                    onClick = onPlaylistsClick,
+                    containerColor = colors.surfaceContainerHigh,
+                    contentColor = colors.onSurface,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
     }
 }
 
-private fun getGreeting(): String {
-    val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-    return when (hour) {
-        in 5..11 -> "Good Morning"
-        in 12..16 -> "Good Afternoon"
-        in 17..20 -> "Good Evening"
-        else -> "Good Night"
+@Composable
+private fun HomeShortcut(
+    title: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Surface(
+        onClick = onClick,
+        modifier = modifier.pressScale(interaction),
+        interactionSource = interaction,
+        shape = MaterialTheme.shapes.extraLarge,
+        color = containerColor,
+        contentColor = contentColor
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 52.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Text(text = title, style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
@@ -891,77 +724,6 @@ private fun ContinueListeningSection(
 
             Spacer(modifier = Modifier.height(20.dp))
         }
-    }
-}
-
-@Composable
-private fun ForYouSection(
-    songs: List<Song>,
-    onSongClick: (Song) -> Unit,
-    onPlayAll: () -> Unit,
-    onShuffle: () -> Unit,
-    onSeeAllClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "For You",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
-            // Play All and Shuffle buttons
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = onSeeAllClick) {
-                    Text(
-                        text = "See all",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                IconButton(
-                    onClick = onShuffle,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-                FilledIconButton(
-                    onClick = onPlayAll,
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.PlayArrow,
-                        contentDescription = "Play All",
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-        }
-
-        SongCarousel(
-            songs = songs.take(10),
-            onSongClick = onSongClick,
-            contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
-            itemWidth = Dimens.cardWidth
-        )
-
-        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 
@@ -1064,7 +826,7 @@ private fun ListenAgainGrid(
     onSongClick: (Song) -> Unit,
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
-    title: String = "Listen Again",
+    title: String,
     onSeeAllClick: () -> Unit,
     isOnline: Boolean = true,
     downloadedSongIds: Set<String> = emptySet()
@@ -1078,7 +840,8 @@ private fun ListenAgainGrid(
         screenWidth >= 600 -> 4 // Medium (Tablet Portrait / Foldable)
         else -> 3               // Compact (Phone)
     }
-    val rowsCount = if (screenWidth >= 600) 2 else 3
+    val maxRowsPerPage = if (screenWidth >= 600) 2 else 3
+    val rowsCount = ((songs.size + columns - 1) / columns).coerceIn(1, maxRowsPerPage)
     val songsPerPage = columns * rowsCount
     val pageCount = ((songs.size + songsPerPage - 1) / songsPerPage).coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -1097,6 +860,7 @@ private fun ListenAgainGrid(
             ) {
                 Text(
                     text = title,
+                    modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground
@@ -1142,7 +906,7 @@ private fun ListenAgainGrid(
                     }
 
                     // Page indicators
-                    Row(
+                    if (pageCount > 1) Row(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         repeat(pageCount) { index ->
@@ -1185,7 +949,7 @@ private fun ListenAgainGrid(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowSongs.forEach { song ->
-                                val isSongEnabled = isOnline || song.id in downloadedSongIds
+                                val isSongEnabled = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
                                 val gridItemClick: () -> Unit = {
                                     if (isSongEnabled) {
                                         onSongClick(song)
@@ -1292,100 +1056,136 @@ private fun ListenAgainGridItem(
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
-private fun QuickPicksSection(
-    songs: List<Song>,
-    onSongClick: (Song) -> Unit,
-    onPlayAll: () -> Unit,
-    onShuffle: () -> Unit,
-    onSeeAllClick: () -> Unit,
-    isOnline: Boolean = true,
-    downloadedSongIds: Set<String> = emptySet()
+private fun HomeShelfHeader(
+    title: String,
+    subtitle: String?,
+    onPlayAll: (() -> Unit)?,
+    onShuffle: (() -> Unit)?,
+    onSeeAllClick: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    // Section Header
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Column(
-            modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
+            modifier = Modifier
+                .weight(1f)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "Quick Picks",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "Based on your listening",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
 
-                // Play All and Shuffle buttons
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = onSeeAllClick) {
-                        Text(
-                            text = "See all",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    IconButton(
-                        onClick = onShuffle,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    FilledIconButton(
-                        onClick = onPlayAll,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Play All",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
+        // Action buttons
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Shuffle button
+            if (onShuffle != null) IconButton(
+                onClick = onShuffle,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Shuffle,
+                    contentDescription = "Shuffle",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
 
-            SongCarousel(
-                songs = songs.take(15),
-                onSongClick = onSongClick,
-                isOnline = isOnline,
-                downloadedSongIds = downloadedSongIds,
-                itemWidth = Dimens.cardWidth
-            )
+            // Play All button
+            if (onPlayAll != null) IconButton(
+                onClick = onPlayAll,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.PlayArrow,
+                    contentDescription = "Play All",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            // See all button
+            TextButton(onClick = onSeeAllClick) {
+                Text(
+                    text = "See all",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }
 
-
-
-// ═══════════════════════════════════════════════════════════════
-// SONG SECTIONS WITH MULTIPLE CARD STYLES
-// ═══════════════════════════════════════════════════════════════
-
-enum class CardStyle {
-    LARGE_SQUARE,    // Big 160x160 cards for Continue Listening
-    MEDIUM_CARD,     // Medium 140x180 cards with more info
-    COMPACT_ROW      // Horizontal compact list style
+@Composable
+private fun HomeMediaShelf(
+    shelf: HomeShelf,
+    onClick: (HomeShelfItem) -> Unit,
+    onSeeAll: () -> Unit,
+    onPlayAll: (() -> Unit)?,
+    onShuffle: (() -> Unit)?,
+    isOnline: Boolean,
+    downloadedSongIds: Set<String>
+) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()) {
+            HomeShelfHeader(shelf.title, shelf.subtitle, onPlayAll, onShuffle, onSeeAll)
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(shelf.items, key = { it.key }, contentType = { it.playableSong != null }) { item ->
+                    val song = item.playableSong
+                    if (song != null) {
+                        SongCarouselCard(
+                            song = song,
+                            onClick = { onClick(item) },
+                            modifier = Modifier.width(Dimens.cardWidth),
+                            isEnabled = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
+                        )
+                    } else {
+                        Card(
+                            modifier = Modifier.width(Dimens.cardWidth).clickable { onClick(item) },
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                        ) {
+                            SongThumbnail(
+                                artworkUrl = item.artwork,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth().aspectRatio(1f)
+                            )
+                            Column(Modifier.padding(8.dp)) {
+                                Text(item.title, style = MaterialTheme.typography.labelLarge, maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis)
+                                if (item.subtitle.isNotBlank()) {
+                                    Text(item.subtitle, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
 }
+
 
 @Composable
 private fun SongSection(
@@ -1393,114 +1193,38 @@ private fun SongSection(
     subtitle: String?,
     songs: List<Song>,
     onSongClick: (Song) -> Unit,
-    onPlayAll: () -> Unit,
-    onShuffle: () -> Unit,
+    onPlayAll: (() -> Unit)? = null,
+    onShuffle: (() -> Unit)? = null,
     onSeeAllClick: () -> Unit,
-    cardStyle: CardStyle,
+    compactRows: Boolean = false,
     isOnline: Boolean = true,
-    downloadedSongIds: Set<String> = emptySet(),
-    onTitleClick: (() -> Unit)? = null
+    downloadedSongIds: Set<String> = emptySet()
 ) {
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(
             modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
         ) {
-            // Section Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            HomeShelfHeader(title, subtitle, onPlayAll, onShuffle, onSeeAllClick)
+            if (compactRows) {
                 Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .then(if (onTitleClick != null) Modifier.clickable(onClick = onTitleClick) else Modifier)
+                    modifier = Modifier.padding(horizontal = Dimens.screenPadding),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    subtitle?.let {
-                        Text(
-                            text = it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    songs.take(8).forEach { song ->
+                        val available = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
+                        CompactSongRow(song = song, onClick = { onSongClick(song) }, isEnabled = available)
                     }
                 }
-
-                // Action buttons
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Shuffle button
-                    IconButton(
-                        onClick = onShuffle,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-
-                    // Play All button
-                    IconButton(
-                        onClick = onPlayAll,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Play All",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    // See all button
-                    TextButton(onClick = onSeeAllClick) {
-                        Text(
-                            text = "See all",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
+            } else {
+                SongCarousel(
+                    songs = songs,
+                    onSongClick = onSongClick,
+                    isOnline = isOnline,
+                    downloadedSongIds = downloadedSongIds,
+                    itemWidth = Dimens.cardWidth
+                )
             }
 
-            // Song Cards based on style
-            when (cardStyle) {
-                CardStyle.LARGE_SQUARE,
-                CardStyle.MEDIUM_CARD -> {
-                    SongCarousel(
-                        songs = songs.take(15),
-                        onSongClick = onSongClick,
-                        isOnline = isOnline,
-                        downloadedSongIds = downloadedSongIds,
-                        itemWidth = Dimens.cardWidth
-                    )
-                }
-                
-                CardStyle.COMPACT_ROW -> {
-                    Column(
-                        modifier = Modifier.padding(horizontal = Dimens.screenPadding),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        songs.take(8).forEach { song ->
-                            val isSongEnabled = isOnline || song.id in downloadedSongIds
-                            CompactSongRow(song = song, onClick = { onSongClick(song) }, isEnabled = isSongEnabled)
-                        }
-                    }
-                }
-            }
-            
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
@@ -1608,6 +1332,8 @@ private fun formatDuration(seconds: Int): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TrendingCommunityPlaylistsSection(
+    title: String,
+    subtitle: String?,
     playlists: List<CommunityPlaylist>,
     savedPlaylistRemoteIds: Set<String>,
     onPlaylistClick: (CommunityPlaylist) -> Unit,
@@ -1638,17 +1364,15 @@ private fun TrendingCommunityPlaylistsSection(
             ) {
                 Column {
                     Text(
-                        text = "Trending Community Playlists",
+                        text = title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Curated collections by music lovers",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (subtitle != null) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
 
@@ -2054,7 +1778,7 @@ private fun TrackPreviewRow(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onTrackClick)
+            .pressable(onClick = onTrackClick)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

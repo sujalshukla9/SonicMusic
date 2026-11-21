@@ -1,11 +1,11 @@
 package com.sonicmusic.app.domain.repository
 
-import com.sonicmusic.app.domain.model.ChartSong
-import com.sonicmusic.app.domain.model.ChartArtist
-import com.sonicmusic.app.domain.model.ChartAlbum
+import com.sonicmusic.app.domain.model.ChartKind
+import com.sonicmusic.app.domain.model.ChartPage
 
 interface ChartsRepository {
-    suspend fun getTopSongs(region: String): List<ChartSong>
-    suspend fun getTopArtists(region: String): List<ChartArtist>
-    suspend fun getTopAlbums(region: String): List<ChartAlbum>
+    suspend fun cachedChart(kind: ChartKind, scope: HomeFeedScope): ChartPage?
+    suspend fun refreshChart(kind: ChartKind, scope: HomeFeedScope, force: Boolean): ChartPage
+    suspend fun loadMoreAlbums(scope: HomeFeedScope): ChartPage?
 }
+

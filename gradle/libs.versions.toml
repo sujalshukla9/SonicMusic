@@ -25,7 +25,6 @@ newpipe = "v0.26.3"
 rhino = "1.7.14"
 reorderable = "2.4.3"
 media = "1.7.0"
-paging = "3.3.5"
 materialColorUtilities = "1.0.0-alpha01"
 work = "2.10.0"
 hiltWork = "1.2.0"
@@ -83,6 +82,9 @@ retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", ver
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version.ref = "okhttp" }
 
+# Google account authorization
+google-play-auth = { group = "com.google.android.gms", name = "play-services-auth", version = "22.0.0" }
+
 # Image Loading
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 
@@ -105,8 +107,6 @@ reorderable = { group = "sh.calvin.reorderable", name = "reorderable", version.r
 
 # AndroidX Media (for MediaStyle notification)
 androidx-media = { group = "androidx.media", name = "media", version.ref = "media" }
-androidx-paging-runtime = { group = "androidx.paging", name = "paging-runtime", version.ref = "paging" }
-androidx-paging-compose = { group = "androidx.paging", name = "paging-compose", version.ref = "paging" }
 
 # Kotlinx Serialization
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinx-serialization" }

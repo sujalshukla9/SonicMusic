@@ -56,7 +56,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sonicmusic.app.features.downloads.data.DownloadProgress
-import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.shared.components.SongThumbnail
 
@@ -278,9 +277,7 @@ fun SongOptionsBottomSheet(
             )
 
             // ── Caching / Download (Pre cache) ────────────────────────────────────
-            val isDownloading = downloadProgress != null &&
-                    (downloadProgress.status == DownloadStatus.DOWNLOADING ||
-                    downloadProgress.status == DownloadStatus.PENDING)
+            val isDownloading = !isDownloaded && downloadProgress?.isTransferring == true
 
             if (isDownloading && downloadProgress != null) {
                 Column(

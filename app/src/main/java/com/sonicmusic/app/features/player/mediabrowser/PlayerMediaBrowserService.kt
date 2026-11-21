@@ -60,7 +60,6 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var bound = false
     private var bindRequested = false
-    private var player: androidx.media3.exoplayer.ExoPlayer? = null
     private var media3Controller: androidx.media3.session.MediaController? = null
     private var playerListener: Player.Listener? = null
     private var legacySession: MediaSession? = null
@@ -87,7 +86,6 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         playerListener = null
         media3Controller?.release()
         media3Controller = null
-        player = null
         legacySession?.release()
         if (bound || bindRequested) {
             try {
@@ -150,7 +148,6 @@ class PlayerMediaBrowserService : MediaBrowserService(), ServiceConnection {
         playerListener = null
         media3Controller?.release()
         media3Controller = null
-        player = null
         bound = false
         bindRequested = false
     }

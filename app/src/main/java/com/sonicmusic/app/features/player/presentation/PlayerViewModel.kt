@@ -23,6 +23,7 @@ import com.sonicmusic.app.features.queue.domain.SleepTimerManager
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -141,6 +142,7 @@ class PlayerViewModel @Inject constructor(
     val isBuffering: StateFlow<Boolean> = playerServiceConnection.isBuffering
     val progress: StateFlow<Float> = playerServiceConnection.progress
     val currentPosition: StateFlow<Long> = playerServiceConnection.currentPosition
+    val lyricsPosition = playerServiceConnection.observeLyricsPosition()
     val duration: StateFlow<Long> = playerServiceConnection.duration
     val queue: StateFlow<List<Song>> = playerServiceConnection.queue
     val currentQueueIndex: StateFlow<Int> = playerServiceConnection.currentQueueIndex
@@ -185,7 +187,7 @@ class PlayerViewModel @Inject constructor(
     private var downloadCheckJob: Job? = null
 
     val fullPlayerStyle: StateFlow<FullPlayerStyle> = settingsRepository.fullPlayerStyle
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FullPlayerStyle.NORMAL)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FullPlayerStyle.WAVY)
 
     val dynamicColorsEnabled: StateFlow<Boolean> = settingsRepository.dynamicColors
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
@@ -200,7 +202,7 @@ class PlayerViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThumbnailShape.ROUNDED_SQUARE)
 
     val playerControlStyle: StateFlow<PlayerControlStyle> = settingsRepository.playerControlStyle
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlayerControlStyle.CLASSIC)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlayerControlStyle.MODERN)
 
     // Seek preview position flow to support live dragging
     private val _seekPreviewPosition = MutableStateFlow<Long?>(null)
@@ -209,7 +211,6 @@ class PlayerViewModel @Inject constructor(
     val playerUiState: StateFlow<PlayerUiState> = combine(
         currentSong,
         isPlaying,
-        currentPosition,
         duration,
         queue,
         currentQueueIndex,
@@ -219,14 +220,13 @@ class PlayerViewModel @Inject constructor(
     ) { array ->
         val song = array[0] as? Song
         val playing = array[1] as Boolean
-        val position = array[2] as Long
-        val dur = array[3] as Long
+        val dur = array[2] as Long
         @Suppress("UNCHECKED_CAST")
-        val q = array[4] as List<Song>
-        val idx = array[5] as Int
-        val buffering = array[6] as Boolean
-        val repeat = array[7] as Int
-        val infinite = array[8] as Boolean
+        val q = array[3] as List<Song>
+        val idx = array[4] as Int
+        val buffering = array[5] as Boolean
+        val repeat = array[6] as Int
+        val infinite = array[7] as Boolean
 
         val canPrev = idx > 0 || repeat == Player.REPEAT_MODE_ALL || repeat == Player.REPEAT_MODE_ONE
         val canNext = idx < q.size - 1 || repeat == Player.REPEAT_MODE_ALL || repeat == Player.REPEAT_MODE_ONE || infinite
@@ -236,7 +236,7 @@ class PlayerViewModel @Inject constructor(
             artist = song?.artist.orEmpty(),
             albumArtUrl = song?.thumbnailUrl.orEmpty(),
             isPlaying = playing,
-            currentPositionMs = position,
+            currentPositionMs = 0L,
             durationMs = dur,
             canSkipNext = canNext,
             canSkipPrevious = canPrev,
@@ -287,6 +287,7 @@ class PlayerViewModel @Inject constructor(
     val showOriginalScript: StateFlow<Boolean> = _showOriginalScript.asStateFlow()
 
     private var lyricsFetchJob: Job? = null
+    private var lyricsSongId: String? = null
 
     private val _albumLinkState = MutableStateFlow<AlbumLinkState>(AlbumLinkState.Unavailable)
     val albumLinkState: StateFlow<AlbumLinkState> = _albumLinkState.asStateFlow()
@@ -300,10 +301,11 @@ class PlayerViewModel @Inject constructor(
     // INITIALIZATION - ViTune Style
     // ═══════════════════════════════════════════════════════════════
     
-    init {
-        // Connect to PlaybackService
+    fun connectToPlayback() {
         playerServiceConnection.connect()
+    }
 
+    init {
         // Forward download manager error events (e.g. storage full) to the UI error state.
         viewModelScope.launch {
             songDownloadManager.downloadErrors.collect { message ->
@@ -331,6 +333,10 @@ class PlayerViewModel @Inject constructor(
         var likeObserverJob: Job? = null
         viewModelScope.launch {
             currentSong.collect { song ->
+                if (lyricsSongId != song?.id) clearLyricsState()
+                downloadCheckJob?.cancel()
+                _isCurrentSongDownloaded.value = false
+                _downloadedFileSizeBytes.value = null
                 if (song != null) {
                     try {
                         // History tracking moved to PlaybackService AnalyticsListener
@@ -344,14 +350,11 @@ class PlayerViewModel @Inject constructor(
                             }
                         }
 
-                        // Check download state and size for current song
-                        downloadCheckJob?.cancel()
                         downloadCheckJob = launch {
-                            val isDownloaded = songDownloadManager.isDownloaded(song.id)
-                            _isCurrentSongDownloaded.value = isDownloaded
-                            _downloadedFileSizeBytes.value = if (isDownloaded) {
-                                songDownloadManager.getDownloadedFileSize(song.id)
-                            } else null
+                            songDownloadManager.observeDownloadedFileSize(song.id).collect { size ->
+                                _downloadedFileSizeBytes.value = size
+                                _isCurrentSongDownloaded.value = size != null
+                            }
                         }
 
                         // Resolve album info
@@ -381,8 +384,6 @@ class PlayerViewModel @Inject constructor(
                     }
                 } else {
                     // Song cleared — reset lyrics and album link state
-                    _lyricsState.value = LyricsUiState.Idle
-                    lyricsFetchJob?.cancel()
                     _albumLinkState.value = AlbumLinkState.Unavailable
                     albumResolutionJob?.cancel()
                 }
@@ -427,7 +428,14 @@ class PlayerViewModel @Inject constructor(
                     try {
                         Log.d(TAG, "URL refresh attempt ${attempt + 1}/$MAX_URL_RETRY_ATTEMPTS")
 
-                        val result = songRepository.getStreamUrl(song.id, StreamQuality.BEST, forceRefresh = true)
+                        val result = songRepository.getStreamUrl(
+                            songId = song.id,
+                            quality = StreamQuality.BEST,
+                            forceRefresh = true,
+                            title = song.title,
+                            artist = song.artist,
+                            durationSec = song.duration
+                        )
 
                         result.onSuccess { streamUrl ->
                             Log.d(TAG, "Got fresh stream URL, resuming/updating playback")
@@ -904,6 +912,8 @@ class PlayerViewModel @Inject constructor(
     /**
      * Force refresh recommendations (useful for manual trigger)
      */
+    fun startRadio() = playerServiceConnection.startRadioFromCurrentSong()
+
     fun refreshRecommendations() {
         playerServiceConnection.forcePrefetchRecommendations()
     }
@@ -927,24 +937,23 @@ class PlayerViewModel @Inject constructor(
      * Fetch lyrics for the currently playing song.
      */
     fun fetchLyrics() {
-        // Toggle off if already fetching or done
-        if (_lyricsState.value is LyricsUiState.Loading ||
-            _lyricsState.value is LyricsUiState.LoadedPlain ||
-            _lyricsState.value is LyricsUiState.LoadedSynced
-        ) return
-
         val song = currentSong.value
         if (song == null) {
             _lyricsState.value = LyricsUiState.Unavailable
             return
         }
 
-        _lyricsState.value = LyricsUiState.Loading
-
+        if (lyricsSongId == song.id && (_lyricsState.value is LyricsUiState.Loading ||
+                _lyricsState.value is LyricsUiState.LoadedPlain || _lyricsState.value is LyricsUiState.LoadedSynced)
+        ) return
+        if (lyricsSongId != song.id) _showOriginalScript.value = false
+        lyricsSongId = song.id
         lyricsFetchJob?.cancel()
+        _lyricsState.value = LyricsUiState.Loading
         lyricsFetchJob = viewModelScope.launch {
             try {
                 val result = lyricsRepository.getLyrics(song)
+                if (!isActive || currentSong.value?.id != song.id) return@launch
                 
                 _lyricsState.value = when (result) {
                     is LyricsResult.FoundSynced -> LyricsUiState.LoadedSynced(result.lines, result.source)
@@ -952,7 +961,10 @@ class PlayerViewModel @Inject constructor(
                     is LyricsResult.NotFound -> LyricsUiState.Unavailable
                     is LyricsResult.Error -> LyricsUiState.Error(result.message)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                if (currentSong.value?.id != song.id) return@launch
                 Log.e(TAG, "Error fetching lyrics", e)
                 _lyricsState.value = LyricsUiState.Error("An error occurred")
             }
@@ -963,9 +975,10 @@ class PlayerViewModel @Inject constructor(
      * Reset lyrics state (e.g. when hiding overlay or song changes).
      */
     fun clearLyricsState() {
+        lyricsFetchJob?.cancel()
+        lyricsSongId = null
         _lyricsState.value = LyricsUiState.Idle
         _showOriginalScript.value = false
-        lyricsFetchJob?.cancel()
     }
 
     /**
@@ -983,15 +996,13 @@ class PlayerViewModel @Inject constructor(
 
                 if (songDownloadManager.isDownloaded(song.id)) {
                     _error.value = "Already downloaded"
-                    return@runCatching
+                    return@launch
                 }
 
                 val downloadQuality = settingsRepository.downloadQuality.first()
                 songDownloadManager.downloadSong(song, downloadQuality)
             }.onSuccess {
-                _isCurrentSongDownloaded.value = true
-                _error.value = "Downloaded for offline"
-                Log.d(TAG, "Downloaded for offline: ${song.title}")
+                _error.value = "Download started"
             }.onFailure { exception ->
                 _error.value = "Download failed: ${exception.message}"
                 Log.e(TAG, "Failed downloading song for offline", exception)

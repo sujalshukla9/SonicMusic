@@ -8,6 +8,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.TransferListener
+import com.sonicmusic.app.data.remote.source.YtmScopeConfig
 
 /**
  * A custom [HttpDataSource] wrapper that dynamically sets the HTTP User-Agent header
@@ -25,30 +26,40 @@ class DynamicUserAgentHttpDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val uriString = dataSpec.uri.toString()
+        val host = dataSpec.uri.host.orEmpty()
+        if (host != "googlevideo.com" && !host.endsWith(".googlevideo.com")) return delegate.open(dataSpec)
+        val client = dataSpec.uri.getQueryParameter("c")
         val userAgent: String
         val isWebClient: Boolean
 
-        when {
-            uriString.contains("c=VISIONOS") -> {
+        when (client) {
+            "VISIONOS" -> {
                 Log.d(TAG, "Using VisionOS User-Agent for streaming URL")
                 userAgent = "com.google.ios.youtube/21.22.04 (Apple Vision Pro; U; CPU visionOS 2_4 like Mac OS X; en_US)"
                 isWebClient = false
             }
-            uriString.contains("c=IOS") -> {
+            "IOS" -> {
                 Log.d(TAG, "Using iOS User-Agent for streaming URL")
                 userAgent = "com.google.ios.youtube/21.22.04 (iPhone16,2; U; CPU iOS 18_5 like Mac OS X; en_US)"
                 isWebClient = false
             }
-            uriString.contains("c=ANDROID_MUSIC") -> {
+            "ANDROID_MUSIC" -> {
                 Log.d(TAG, "Using Android Music User-Agent for streaming URL")
                 userAgent = "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14; en_US) gzip"
                 isWebClient = false
             }
-            uriString.contains("c=ANDROID") -> {
+            "ANDROID_VR" -> {
+                userAgent = "Mozilla/5.0 (Linux; Android 12; Quest 3) AppleWebKit/537.36"
+                isWebClient = false
+            }
+            "ANDROID" -> {
                 Log.d(TAG, "Using Android User-Agent for streaming URL")
                 userAgent = "com.google.android.youtube/21.23.483 (Linux; U; Android 14; en_US) gzip"
                 isWebClient = false
+            }
+            "WEB_REMIX" -> {
+                userAgent = YtmScopeConfig.ClientContext.USER_AGENT
+                isWebClient = true
             }
             else -> {
                 // WEB, WEB_REMIX, MWEB, and other clients use desktop/web UA
@@ -63,7 +74,7 @@ class DynamicUserAgentHttpDataSource(
         // YouTube CDN validates Origin/Referer for WEB-sourced stream URLs.
         // Without these, stream downloads return HTTP 403.
         if (isWebClient) {
-            if (uriString.contains("c=WEB_REMIX")) {
+            if (client == "WEB_REMIX") {
                 delegate.setRequestProperty("Origin", "https://music.youtube.com")
                 delegate.setRequestProperty("Referer", "https://music.youtube.com/")
             } else {

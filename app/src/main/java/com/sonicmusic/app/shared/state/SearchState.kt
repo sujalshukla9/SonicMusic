@@ -16,13 +16,6 @@ sealed interface SearchState {
     data object Initial : SearchState
     
     /**
-     * Loading suggestions while typing
-     */
-    data class LoadingSuggestions(
-        val query: String
-    ) : SearchState
-    
-    /**
      * Showing autocomplete suggestions
      */
     data class Suggestions(
@@ -50,7 +43,8 @@ sealed interface SearchState {
         val totalCount: Int = songs.size,
         val filters: SearchFilters = SearchFilters(),
         val continuationToken: String? = null,
-        val videoContinuationToken: String? = null
+        val videoContinuationToken: String? = null,
+        val nextOffset: Int? = null,
     ) : SearchState
     
     /**
@@ -102,6 +96,7 @@ sealed interface SearchState {
 @Immutable
 sealed interface PaginationState {
     data object Idle : PaginationState
+    data object LoadMore : PaginationState
     data object Loading : PaginationState
     data class Error(val message: String) : PaginationState
     data object NoMoreData : PaginationState

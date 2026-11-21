@@ -1,10 +1,16 @@
 package com.sonicmusic.app.features.settings.presentation
 
+import com.sonicmusic.app.theme.pressScale
+import com.sonicmusic.app.theme.pressable
+import com.sonicmusic.app.features.player.audio.SpatialAudioMode
 import android.content.Context
 import android.content.Intent
 import android.media.audiofx.AudioEffect
-import android.net.Uri
+import android.text.format.DateUtils
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import com.sonicmusic.app.shared.components.ScreenTitle
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.material.icons.Icons
@@ -29,11 +36,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.ThemeMode
+import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
@@ -45,11 +57,14 @@ import com.sonicmusic.app.shared.components.AlbumArtThumbnail
 import com.sonicmusic.app.features.player.presentation.PlayerViewModel
 import com.sonicmusic.app.features.settings.presentation.SettingsViewModel
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.saveable.rememberSaveable
 
 private enum class SettingsSheet {
-    None, Theme, DarkMode, SeekBarStyle, AlbumArtShape
+    None, Theme, DarkMode, ArtworkPalette, SeekBarStyle, AlbumArtShape, RegionSelection
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,78 +78,30 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-
-    val backupLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
-        onResult = { uri ->
-            if (uri != null) {
-                viewModel.backupDatabase(
-                    uri = uri,
-                    onSuccess = {
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Database backup created successfully")
-                        }
-                    },
-                    onError = { error ->
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Backup failed: $error")
-                        }
-                    }
-                )
-            }
-        }
-    )
-
-    var showRestoreConfirmation by remember { mutableStateOf<Uri?>(null) }
-
-    val restoreLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri ->
-            if (uri != null) {
-                showRestoreConfirmation = uri
-            }
-        }
-    )
-
-    if (showRestoreConfirmation != null) {
-        val restoreUri = showRestoreConfirmation!!
-        AlertDialog(
-            onDismissRequest = { showRestoreConfirmation = null },
-            title = { Text("Restore Database?") },
-            text = { Text("Restoring will overwrite your current playlists, library history, and local settings. The app will close to complete the process safely. Are you sure you want to continue?") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showRestoreConfirmation = null
-                        viewModel.restoreDatabase(
-                            uri = restoreUri,
-                            onSuccess = {
-                                android.os.Process.killProcess(android.os.Process.myPid())
-                            },
-                            onError = { error ->
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("Restore failed: $error")
-                                }
-                            }
-                        )
-                    }
-                ) {
-                    Text("Restore")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRestoreConfirmation = null }) {
-                    Text("Cancel")
-                }
-            }
-        )
+    val youtubeAccountViewModel: YouTubeAccountViewModel = hiltViewModel()
+    val authorizationResolution by youtubeAccountViewModel.resolution.collectAsStateWithLifecycle()
+    val youtubeAuthorizationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        youtubeAccountViewModel.authorizationResult(result.resultCode, result.data)
     }
-    
+    LaunchedEffect(authorizationResolution) {
+        val pendingIntent = authorizationResolution ?: return@LaunchedEffect
+        youtubeAccountViewModel.resolutionLaunched()
+        try {
+            youtubeAuthorizationLauncher.launch(IntentSenderRequest.Builder(pendingIntent).build())
+        } catch (e: IllegalStateException) {
+            youtubeAccountViewModel.authorizationLaunchFailed()
+        }
+    }
+
     // Appearance States
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
     val dynamicColors by viewModel.dynamicColors.collectAsStateWithLifecycle()
     val dynamicColorIntensity by viewModel.dynamicColorIntensity.collectAsStateWithLifecycle()
+    val paletteStyle by viewModel.paletteStyle.collectAsStateWithLifecycle()
+    val usesArtworkColors = themeMode == ThemeMode.DYNAMIC || themeMode == ThemeMode.PURE_BLACK
     val fullPlayerStyle by viewModel.fullPlayerStyle.collectAsStateWithLifecycle()
     val thumbnailShape by viewModel.thumbnailShape.collectAsStateWithLifecycle()
     val playerControlStyle by viewModel.playerControlStyle.collectAsStateWithLifecycle()
@@ -143,16 +110,15 @@ fun SettingsScreen(
     
     // Playback States
     val normalizeVolume by viewModel.normalizeVolume.collectAsStateWithLifecycle()
+    val balancedEqEnabled by viewModel.balancedEqEnabled.collectAsStateWithLifecycle()
+    val equalizerAvailable by viewModel.equalizerAvailable.collectAsStateWithLifecycle()
     val gaplessPlayback by viewModel.gaplessPlayback.collectAsStateWithLifecycle()
     val crossfadeDuration by viewModel.crossfadeDuration.collectAsStateWithLifecycle()
     val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
     val autoQueueSimilar by viewModel.autoQueueSimilar.collectAsStateWithLifecycle()
     val spatialAudioEnabled by viewModel.spatialAudioEnabled.collectAsStateWithLifecycle()
+    val spatialAudioMode by viewModel.spatialAudioMode.collectAsStateWithLifecycle()
     val audioCapability by viewModel.audioCapability.collectAsStateWithLifecycle()
-    
-    
-    // Cache States
-    val cacheSize by viewModel.cacheSize.collectAsStateWithLifecycle()
     
     // Region States
     val countryName by viewModel.countryName.collectAsStateWithLifecycle()
@@ -162,22 +128,17 @@ fun SettingsScreen(
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
     
     var activeSheet by remember { mutableStateOf(SettingsSheet.None) }
-    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     val colorScheme = MaterialTheme.colorScheme
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0),
-        containerColor = Color.Transparent,
+        containerColor = colorScheme.surface,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            TopAppBar(
-                title = { 
-                    Text(
-                        "Settings",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                    ) 
-                },
+            MediumTopAppBar(
+                title = { ScreenTitle("Settings") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
@@ -190,22 +151,14 @@ fun SettingsScreen(
                 windowInsets = WindowInsets.statusBars,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f)
+                    scrolledContainerColor = colorScheme.surfaceContainer
                 )
             )
         }
     ) { paddingValues ->
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            colorScheme.surface,
-                            colorScheme.surfaceContainerLow
-                        )
-                    )
-                ),
+                .fillMaxSize(),
             contentAlignment = Alignment.TopCenter
         ) {
             LazyColumn(
@@ -230,7 +183,7 @@ fun SettingsScreen(
                         title = "Select Theme",
                         subtitle = when(themeMode) {
                             ThemeMode.DEFAULT -> "Default"
-                            ThemeMode.DYNAMIC -> "Dynamic"
+                            ThemeMode.DYNAMIC -> "Content-based colors"
                             ThemeMode.MATERIAL_YOU -> "Material You"
                             ThemeMode.PURE_BLACK -> "Pure Black"
                         },
@@ -248,23 +201,32 @@ fun SettingsScreen(
                         icon = Icons.Rounded.DarkMode,
                         onClick = { activeSheet = SettingsSheet.DarkMode }
                     )
-                    SettingsDivider()
-                    SettingsSwitchItem(
-                        title = "Dynamic Colors",
-                        subtitle = "Extract primary colors from current song artwork",
-                        checked = dynamicColors,
-                        onCheckedChange = { viewModel.setDynamicColors(it) }
-                    )
-                    if (dynamicColors) {
+                    if (usesArtworkColors) {
                         SettingsDivider()
-                        SettingsSliderItem(
-                            title = "Theme Color Intensity",
-                            value = dynamicColorIntensity.toFloat(),
-                            onValueChange = { viewModel.setDynamicColorIntensity(it.toInt()) },
-                            valueRange = 0f..100f,
-                            steps = 100,
-                            valueText = "$dynamicColorIntensity%"
+                        SettingsSwitchItem(
+                            title = "Artwork colors",
+                            subtitle = "Use colors from the current song’s cover art",
+                            checked = dynamicColors,
+                            onCheckedChange = { viewModel.setDynamicColors(it) }
                         )
+                        if (dynamicColors) {
+                            SettingsDivider()
+                            SettingsActionItem(
+                                title = "Artwork palette",
+                                subtitle = paletteStyle.settingsLabel(),
+                                icon = Icons.Rounded.Palette,
+                                onClick = { activeSheet = SettingsSheet.ArtworkPalette }
+                            )
+                            SettingsDivider()
+                            SettingsSliderItem(
+                                title = "Theme Color Intensity",
+                                value = dynamicColorIntensity.toFloat(),
+                                onValueChange = { viewModel.setDynamicColorIntensity(it.roundToInt()) },
+                                valueRange = 0f..100f,
+                                steps = 99,
+                                valueText = "$dynamicColorIntensity%"
+                            )
+                        }
                     }
                     SettingsDivider()
                     SettingsActionItem(
@@ -335,7 +297,7 @@ fun SettingsScreen(
                     ) {
                         NavbarStyleCard(
                             title = "Modern",
-                            subtitle = "Floating pill with circular player",
+                            subtitle = "Floating bar with circular player",
                             style = NavbarStyle.MODERN,
                             isSelected = navbarStyle == NavbarStyle.MODERN,
                             onClick = { viewModel.setNavbarStyle(NavbarStyle.MODERN) },
@@ -364,9 +326,18 @@ fun SettingsScreen(
                 ) {
                     SettingsSwitchItem(
                         title = "Normalize Volume",
-                        subtitle = "Reduce peak loudness levels to protect hearing",
+                        subtitle = "Use streaming loudness data or ReplayGain tags for more consistent volume",
                         checked = normalizeVolume,
                         onCheckedChange = { viewModel.setNormalizeVolume(it) }
+                    )
+                    SettingsDivider()
+                    SettingsSwitchItem(
+                        title = "Balanced EQ",
+                        subtitle = if (equalizerAvailable) "Gentle bass and vocal presence with clipping headroom"
+                            else "Device equalizer is unavailable",
+                        checked = balancedEqEnabled,
+                        enabled = equalizerAvailable,
+                        onCheckedChange = viewModel::setBalancedEq
                     )
                     SettingsDivider()
                     SettingsSwitchItem(
@@ -403,13 +374,12 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setSkipSilence(it) }
                     )
                     SettingsDivider()
-                    val spatialSubtitle = when {
-                        !spatialAudioEnabled -> null
-                        audioCapability.osSpatialProcessingActive ->
-                            "System Spatializer active on ${audioCapability.currentOutputRouteName}"
-                        audioCapability.hasSpatializer && audioCapability.headTrackingAvailable ->
-                            "Spatial Audio active with head tracking support"
-                        else -> null
+                    val spatialSubtitle = when (spatialAudioMode) {
+                        SpatialAudioMode.OFF -> null
+                        SpatialAudioMode.WAITING -> "Available when a supported track starts"
+                        SpatialAudioMode.SYSTEM -> "System Spatializer on ${audioCapability.currentOutputRouteName}"
+                        SpatialAudioMode.VIRTUALIZER -> "Device virtualization on ${audioCapability.currentOutputRouteName}"
+                        SpatialAudioMode.UNAVAILABLE -> "Unavailable for the current track or output"
                     }
                     SettingsSwitchItem(
                         title = "Spatial Audio",
@@ -445,6 +415,8 @@ fun SettingsScreen(
             // STORAGE & DOWNLOADS SECTION
             // ═══════════════════════════════════════════
             item {
+                val cacheSize by viewModel.cacheSize.collectAsStateWithLifecycle()
+                LaunchedEffect(viewModel) { viewModel.refreshCacheSize() }
                 SettingsGroup(
                     title = "Storage & Downloads",
                     modifier = Modifier.padding(horizontal = Dimens.screenPadding)
@@ -454,9 +426,13 @@ fun SettingsScreen(
                         subtitle = "Cached songs size: $cacheSize",
                         icon = Icons.Rounded.DeleteForever,
                         onClick = {
-                            viewModel.clearCache()
                             scope.launch {
-                                snackbarHostState.showSnackbar("Cache cleared successfully")
+                                val message = if (viewModel.clearCache()) {
+                                    "Cache cleared"
+                                } else {
+                                    "Couldn't clear the cache"
+                                }
+                                snackbarHostState.showSnackbar(message)
                             }
                         }
                     )
@@ -483,43 +459,26 @@ fun SettingsScreen(
                     title = "Content Regional Settings",
                     modifier = Modifier.padding(horizontal = Dimens.screenPadding)
                 ) {
+                    val isRegionManual by viewModel.isRegionManual.collectAsStateWithLifecycle()
+                    val regionSubtitle = when {
+                        countryName != null && countryCode != null -> {
+                            val flag = com.sonicmusic.app.domain.model.CountryUtils.countryCodeToEmoji(countryCode ?: "")
+                            val modeLabel = if (isRegionManual) "Manual" else "Auto-detected"
+                            "$flag $countryName ($countryCode) • $modeLabel"
+                        }
+                        countryCode != null -> {
+                            val flag = com.sonicmusic.app.domain.model.CountryUtils.countryCodeToEmoji(countryCode ?: "")
+                            val modeLabel = if (isRegionManual) "Manual" else "Auto-detected"
+                            "$flag $countryCode • $modeLabel"
+                        }
+                        else -> "Detecting region..."
+                    }
                     SettingsActionItem(
                         title = "Content Country",
-                        subtitle = countryName ?: countryCode ?: "Detecting region...",
+                        subtitle = regionSubtitle,
                         icon = Icons.Rounded.Public,
                         onClick = {
-                            viewModel.refreshRegion()
-                            scope.launch {
-                                snackbarHostState.showSnackbar("Region refresh requested")
-                            }
-                        }
-                    )
-                }
-            }
-
-            // ═══════════════════════════════════════════
-            // DATA & BACKUP SECTION
-            // ═══════════════════════════════════════════
-            item {
-                SettingsGroup(
-                    title = "Data & Backup",
-                    modifier = Modifier.padding(horizontal = Dimens.screenPadding)
-                ) {
-                    SettingsActionItem(
-                        title = "Backup Database",
-                        subtitle = "Export playlists and history to storage",
-                        icon = Icons.Rounded.Backup,
-                        onClick = {
-                            backupLauncher.launch("sonic_music_backup.db")
-                        }
-                    )
-                    SettingsDivider()
-                    SettingsActionItem(
-                        title = "Restore Database",
-                        subtitle = "Import playlists and history from a backup file",
-                        icon = Icons.Rounded.Restore,
-                        onClick = {
-                            restoreLauncher.launch(arrayOf("application/octet-stream", "*/*"))
+                            activeSheet = SettingsSheet.RegionSelection
                         }
                     )
                 }
@@ -576,6 +535,14 @@ fun SettingsScreen(
                 }
             }
             
+            item(key = "youtube-account-sync") {
+                YouTubeAccountSettings(youtubeAccountViewModel)
+            }
+
+            item(key = "youtube-premium-playback") {
+                YouTubePlaybackSettings()
+            }
+
             item {
                 Spacer(modifier = Modifier.height(16.dp))
             }
@@ -601,8 +568,10 @@ fun SettingsScreen(
                     text = when (activeSheet) {
                         SettingsSheet.Theme -> "Select Theme"
                         SettingsSheet.DarkMode -> "Dark Mode"
+                        SettingsSheet.ArtworkPalette -> "Artwork palette"
                         SettingsSheet.SeekBarStyle -> "Seek Bar Style"
                         SettingsSheet.AlbumArtShape -> "Album Art Shape"
+                        SettingsSheet.RegionSelection -> "Content Region"
                         else -> ""
                     },
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
@@ -615,7 +584,7 @@ fun SettingsScreen(
                             OptionItem(
                                 text = when(mode) {
                                     ThemeMode.DEFAULT -> "Default"
-                                    ThemeMode.DYNAMIC -> "Dynamic"
+                                    ThemeMode.DYNAMIC -> "Content-based colors"
                                     ThemeMode.MATERIAL_YOU -> "Material You"
                                     ThemeMode.PURE_BLACK -> "Pure Black"
                                 },
@@ -638,6 +607,18 @@ fun SettingsScreen(
                                 selected = darkMode == mode,
                                 onClick = {
                                     viewModel.setDarkMode(mode)
+                                    activeSheet = SettingsSheet.None
+                                }
+                            )
+                        }
+                    }
+                    SettingsSheet.ArtworkPalette -> {
+                        PaletteStyle.entries.forEach { style ->
+                            OptionItem(
+                                text = style.settingsLabel(),
+                                selected = paletteStyle == style,
+                                onClick = {
+                                    viewModel.setPaletteStyle(style)
                                     activeSheet = SettingsSheet.None
                                 }
                             )
@@ -780,10 +761,234 @@ fun SettingsScreen(
                             }
                         }
                     }
+                    SettingsSheet.RegionSelection -> {
+                        var searchQuery by remember { mutableStateOf("") }
+                        val allCountries = remember { com.sonicmusic.app.domain.model.CountryUtils.getAllCountries() }
+                        val filteredCountries = remember(searchQuery) {
+                            if (searchQuery.isBlank()) {
+                                allCountries
+                            } else {
+                                val q = searchQuery.trim().lowercase()
+                                allCountries.filter {
+                                    it.name.lowercase().contains(q) || it.code.lowercase().contains(q)
+                                }
+                            }
+                        }
+                        val isRegionManual by viewModel.isRegionManual.collectAsStateWithLifecycle()
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp),
+                                placeholder = { Text("Search countries...") },
+                                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(Icons.Rounded.Close, contentDescription = "Clear")
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 420.dp)
+                            ) {
+                                item {
+                                    OptionItem(
+                                        text = "🌐  Auto-detect (Network & Session)",
+                                        selected = !isRegionManual,
+                                        onClick = {
+                                            viewModel.setAutoDetectRegion()
+                                            activeSheet = SettingsSheet.None
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Region set to Auto-detect")
+                                            }
+                                        }
+                                    )
+                                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                }
+
+                                items(filteredCountries, key = { it.code }) { country ->
+                                    val isSelected = isRegionManual && countryCode.equals(country.code, ignoreCase = true)
+                                    OptionItem(
+                                        text = "${country.flagEmoji}  ${country.name} (${country.code})",
+                                        selected = isSelected,
+                                        onClick = {
+                                            viewModel.setManualCountry(country.code)
+                                            activeSheet = SettingsSheet.None
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Region set to ${country.name}")
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                     else -> {}
                 }
             }
         }
+    }
+}
+
+private fun PaletteStyle.settingsLabel(): String = when (this) {
+    PaletteStyle.CONTENT -> "Material 3 Content"
+    PaletteStyle.TONAL_SPOT -> "Tonal Spot"
+    PaletteStyle.VIBRANT -> "Vibrant"
+    PaletteStyle.EXPRESSIVE -> "Expressive"
+    PaletteStyle.FIDELITY -> "Fidelity"
+}
+
+@Composable
+private fun YouTubeAccountSettings(viewModel: YouTubeAccountViewModel) {
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
+    val operation by viewModel.operation.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    val isBusy = operation != YouTubeAccountViewModel.Operation.Idle
+    var showDisconnect by rememberSaveable { mutableStateOf(false) }
+    val status = when (operation) {
+        YouTubeAccountViewModel.Operation.Syncing -> "Connecting to YouTube and syncing music…"
+        YouTubeAccountViewModel.Operation.Disconnecting -> "Disconnecting…"
+        YouTubeAccountViewModel.Operation.Idle -> message ?: connection?.let {
+            val lastSync = DateUtils.getRelativeTimeSpanString(it.lastSyncedAt)
+            "Last synced $lastSync"
+        } ?: "Copy playlists you created and liked music into SonicMusic."
+    }
+
+    SettingsGroup(
+        title = "YouTube Music account sync",
+        modifier = Modifier.padding(horizontal = Dimens.screenPadding)
+    ) {
+        SettingsActionItem(
+            title = if (connection == null) "Connect Google Account" else "Sync now",
+            subtitle = status,
+            icon = Icons.Rounded.Sync,
+            enabled = !isBusy,
+            onClick = viewModel::sync,
+            trailingContent = if (isBusy) {
+                { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
+            } else null
+        )
+        if (connection != null) {
+            SettingsDivider()
+            SettingsActionItem(
+                title = "Disconnect",
+                icon = Icons.Rounded.LinkOff,
+                enabled = !isBusy,
+                onClick = { showDisconnect = true }
+            )
+        }
+    }
+
+    if (showDisconnect) {
+        AlertDialog(
+            onDismissRequest = { showDisconnect = false },
+            title = { Text("Disconnect YouTube Music?") },
+            text = { Text("This removes the synced playlists from SonicMusic.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDisconnect = false
+                    viewModel.disconnect()
+                }) { Text("Disconnect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDisconnect = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun YouTubePlaybackSettings(viewModel: YouTubePlaybackViewModel = hiltViewModel()) {
+    val connected by viewModel.connected.collectAsStateWithLifecycle()
+    val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val message by viewModel.message.collectAsStateWithLifecycle()
+    var showImport by remember { mutableStateOf(false) }
+
+    SettingsGroup(
+        title = "YouTube Music Premium playback",
+        modifier = Modifier.padding(horizontal = Dimens.screenPadding)
+    ) {
+        SettingsActionItem(
+            title = if (connected) "Replace playback session" else "Connect playback session",
+            subtitle = message ?: if (busy) "Checking playback session…"
+                else if (connected) "Session saved for personalized Home and high-quality streaming"
+                else "Connect your YouTube Music account for personalized Home and high-quality streaming.",
+            icon = Icons.Rounded.Headphones,
+            enabled = !busy,
+            onClick = { showImport = true },
+            trailingContent = if (busy) {
+                { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) }
+            } else null
+        )
+        if (connected) {
+            SettingsDivider()
+            SettingsActionItem(
+                title = "Disconnect playback session",
+                icon = Icons.Rounded.LinkOff,
+                enabled = !busy,
+                onClick = viewModel::disconnect,
+            )
+        }
+    }
+
+    if (showImport) {
+        var cookie by remember { mutableStateOf("") }
+        var index by remember { mutableStateOf("0") }
+        AlertDialog(
+            onDismissRequest = { showImport = false },
+            title = { Text("Connect playback session") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Paste the Cookie header from your own signed-in YouTube Music session. SonicMusic encrypts it on this device.")
+                    OutlinedTextField(
+                        value = cookie,
+                        onValueChange = { if (it.length <= 16_384) cookie = it },
+                        label = { Text("YouTube Music Cookie header") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = index,
+                        onValueChange = { if (it.length <= 9 && it.all(Char::isDigit)) index = it },
+                        label = { Text("Google account index") },
+                        supportingText = { Text("Use 0 for the first account.") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = cookie.isNotBlank() && index.isNotBlank(),
+                    onClick = {
+                        viewModel.connect(cookie, index)
+                        cookie = ""
+                        showImport = false
+                    },
+                ) { Text("Connect") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImport = false }) { Text("Cancel") }
+            },
+            properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn)
+        )
     }
 }
 
@@ -796,13 +1001,13 @@ private fun SettingsGroup(
     Column(modifier = modifier) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(start = 8.dp, bottom = 8.dp)
         )
         Surface(
             shape = RoundedCornerShape(24.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -819,8 +1024,10 @@ private fun SettingsSwitchItem(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     icon: ImageVector? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
+    val presses = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     ListItem(
         leadingContent = icon?.let {
             {
@@ -836,7 +1043,8 @@ private fun SettingsSwitchItem(
         trailingContent = {
             Switch(
                 checked = checked,
-                onCheckedChange = onCheckedChange,
+                enabled = enabled,
+                onCheckedChange = null,
                 thumbContent = if (checked) {
                     {
                         Icon(
@@ -849,7 +1057,14 @@ private fun SettingsSwitchItem(
             )
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = modifier.clickable { onCheckedChange(!checked) }
+        modifier = modifier.pressScale(presses, targetScale = 0.985f, enabled = enabled).toggleable(
+            value = checked,
+            enabled = enabled,
+            role = Role.Switch,
+            interactionSource = presses,
+            indication = androidx.compose.material3.ripple(),
+            onValueChange = onCheckedChange
+        )
     )
 }
 
@@ -860,7 +1075,8 @@ private fun SettingsActionItem(
     icon: ImageVector? = null,
     onClick: () -> Unit,
     trailingContent: @Composable (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     ListItem(
         headlineContent = { Text(title, fontWeight = FontWeight.Medium) },
@@ -883,7 +1099,7 @@ private fun SettingsActionItem(
             )
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = modifier.clickable(onClick = onClick)
+        modifier = modifier.pressable(enabled = enabled, onClick = onClick)
     )
 }
 
@@ -957,10 +1173,10 @@ private fun OptionItem(
             }
         },
         colors = ListItemDefaults.colors(
-            containerColor = Color.Transparent,
-            headlineColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+            containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+            headlineColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
         ),
-        modifier = Modifier.clickable(onClick = onClick)
+        modifier = Modifier.pressable(onClick = onClick)
     )
 }
 
@@ -1054,96 +1270,82 @@ private fun PlayerControlStyleCard(
                 contentAlignment = Alignment.Center
             ) {
                 if (style == PlayerControlStyle.CLASSIC) {
+                    val accent = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth(0.9f),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth(0.9f)
+                                .fillMaxWidth()
                                 .height(3.dp)
                                 .clip(CircleShape)
-                                .background(colorScheme.onSurface.copy(alpha = 0.12f))
+                                .background(colorScheme.outlineVariant)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .fillMaxHeight()
                                     .fillMaxWidth(0.4f)
-                                    .background(if (isSelected) colorScheme.primary else colorScheme.onSurface.copy(alpha = 0.4f))
+                                    .fillMaxHeight()
+                                    .background(accent)
                             )
                         }
-                        
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            repeat(5) { index ->
-                                val isPlayPause = index == 2
-                                val size = if (isPlayPause) 20.dp else 12.dp
-                                val color = if (isPlayPause) {
-                                    if (isSelected) colorScheme.primary else colorScheme.onSurface.copy(alpha = 0.4f)
-                                } else {
-                                    colorScheme.onSurface.copy(alpha = 0.2f)
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .size(size)
-                                        .clip(CircleShape)
-                                        .background(color)
-                                )
-                            }
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(colorScheme.onSurfaceVariant))
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 4.dp, bottomEnd = 4.dp))
+                                    .background(colorScheme.secondaryContainer)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .width(36.dp)
+                                    .height(20.dp)
+                                    .clip(CircleShape)
+                                    .background(accent)
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp, topEnd = 8.dp, bottomEnd = 8.dp))
+                                    .background(colorScheme.secondaryContainer)
+                            )
+                            Box(Modifier.size(6.dp).clip(CircleShape).background(colorScheme.onSurfaceVariant))
                         }
                     }
                 } else {
+                    val accent = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant
                     Column(
                         modifier = Modifier.fillMaxWidth(0.9f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Box(
-                                modifier = Modifier
-                                    .weight(0.7f)
-                                    .height(18.dp)
-                                    .clip(RoundedCornerShape(percent = 50))
-                                    .background(if (isSelected) colorScheme.primary else colorScheme.onSurface.copy(alpha = 0.4f))
+                                Modifier.weight(1f).height(18.dp).clip(CircleShape).background(accent)
                             )
                             Box(
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(colorScheme.onSurface.copy(alpha = 0.15f))
+                                Modifier.size(18.dp).clip(RoundedCornerShape(6.dp))
+                                    .background(colorScheme.secondaryContainer)
                             )
                         }
-                        
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(colorScheme.onSurface.copy(alpha = 0.15f))
+                                Modifier.size(18.dp).clip(RoundedCornerShape(6.dp))
+                                    .background(colorScheme.secondaryContainer)
                             )
-                            Row(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(3.dp)
-                                    .clip(CircleShape)
-                                    .background(colorScheme.onSurface.copy(alpha = 0.12f)),
-                                verticalAlignment = Alignment.CenterVertically
+                            Box(
+                                Modifier.weight(1f).height(3.dp).clip(CircleShape)
+                                    .background(colorScheme.outlineVariant)
                             ) {
                                 Box(
-                                    modifier = Modifier
-                                        .fillMaxHeight()
-                                        .fillMaxWidth(0.4f)
-                                        .background(if (isSelected) colorScheme.primary else colorScheme.onSurface.copy(alpha = 0.4f))
+                                    Modifier.fillMaxWidth(0.4f).fillMaxHeight().background(accent)
                                 )
                             }
                         }
@@ -1222,60 +1424,32 @@ private fun NavbarStyleCard(
                 contentAlignment = Alignment.Center
             ) {
                 if (style == NavbarStyle.MODERN) {
-                    // Visual preview of Floating Toolbar with separate Circular Player
+                    val accent = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Floating navbar pill
-                        Box(
+                        Row(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(28.dp)
+                                .height(18.dp)
                                 .clip(CircleShape)
-                                .background(if (isSelected) colorScheme.secondaryContainer else colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-                            contentAlignment = Alignment.Center
+                                .background(colorScheme.surfaceContainer)
+                                .padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(
-                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .height(16.dp)
-                                        .weight(1.2f)
-                                        .clip(CircleShape)
-                                        .background(if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                repeat(3) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                                    )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                }
+                            Box(Modifier.width(16.dp).height(8.dp).clip(CircleShape).background(accent))
+                            repeat(3) {
+                                Box(Modifier.size(5.dp).clip(CircleShape).background(accent.copy(alpha = 0.5f)))
                             }
                         }
-
-                        // Circular mini player companion
                         Box(
-                            modifier = Modifier
-                                .size(28.dp)
-                                .clip(CircleShape)
-                                .background(if (isSelected) colorScheme.primaryContainer else colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                            modifier = Modifier.size(18.dp).clip(CircleShape).background(accent),
                             contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
-                            )
+                            Box(Modifier.size(13.dp).clip(CircleShape).background(colorScheme.secondaryContainer))
                         }
                     }
                 } else {

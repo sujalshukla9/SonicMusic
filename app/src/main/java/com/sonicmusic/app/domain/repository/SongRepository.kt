@@ -1,5 +1,6 @@
 package com.sonicmusic.app.domain.repository
 
+import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
@@ -9,16 +10,46 @@ interface SongRepository {
     suspend fun searchSongs(query: String, limit: Int = 50): Result<List<Song>>
     suspend fun getSearchSuggestions(query: String): Result<List<String>>
     suspend fun getSongById(id: String): Result<Song>
-    suspend fun getStreamUrl(songId: String, quality: StreamQuality, forceRefresh: Boolean = false): Result<String>
-    suspend fun getStreamWithInfo(songId: String, quality: StreamQuality, forceRefresh: Boolean = false): Result<Pair<String, AudioStreamInfo>>
+    suspend fun getStreamUrl(
+        songId: String,
+        quality: StreamQuality,
+        forceRefresh: Boolean = false,
+        title: String? = null,
+        artist: String? = null,
+        durationSec: Int? = null,
+    ): Result<String>
+
+    suspend fun getStreamWithInfo(
+        songId: String,
+        quality: StreamQuality,
+        forceRefresh: Boolean = false,
+        title: String? = null,
+        artist: String? = null,
+        durationSec: Int? = null,
+        excludeUrls: Set<String> = emptySet(),
+        onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
+    ): Result<Pair<String, AudioStreamInfo>>
+
     suspend fun getArtistSongs(artistName: String, limit: Int = 30): Result<List<Song>>
     suspend fun getNewReleases(limit: Int = 25): Result<List<Song>>
     suspend fun getTrending(limit: Int = 30): Result<List<Song>>
-    suspend fun getEnglishHits(limit: Int = 25): Result<List<Song>>
     
     // URL cache management
     suspend fun clearCachedStreamUrl(songId: String)
-    suspend fun getSongStreamSource(videoId: String): com.sonicmusic.app.data.repository.SongSource
+    fun updateStreamCache(songId: String, candidate: AudioStreamCandidate, info: AudioStreamInfo)
+
+    suspend fun getSongStreamSource(
+        videoId: String,
+        title: String? = null,
+        artist: String? = null,
+        durationSec: Int? = null,
+        onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
+    ): com.sonicmusic.app.data.repository.SongSource
+
+    suspend fun getSongStreamSource(
+        song: Song,
+        onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
+    ): com.sonicmusic.app.data.repository.SongSource
     
     suspend fun cacheSong(song: Song)
     suspend fun likeSong(song: Song)

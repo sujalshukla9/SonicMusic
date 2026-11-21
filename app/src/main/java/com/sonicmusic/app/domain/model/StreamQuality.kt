@@ -4,12 +4,12 @@ package com.sonicmusic.app.domain.model
  * Audio Quality Tiers
  *
  * The audio pipeline selects the highest fidelity compatible stream
- * available from the source (e.g. OPUS ~160 kbps 48 kHz or AAC 256 kbps):
+ * available from the source in High Quality and Best Available modes:
  *
  * - LOW:    Data-saver mode — ~50–64 kbps (Opus/AAC data saver)
  * - MEDIUM: Balanced — ~128 kbps (optimized for cellular)
- * - HIGH:   High Quality — ~160–256 kbps
- * - BEST:   Best Available — Original source stream quality (OPUS 160 / AAC 256)
+ * - HIGH:   High Quality — highest compatible quality
+ * - BEST:   Best Available — highest compatible quality
  */
 enum class StreamQuality(
     val bitrate: Int,
@@ -21,19 +21,19 @@ enum class StreamQuality(
     LOW(
         bitrate = 64,
         displayName = "Data Saver",
-        description = "Lower bitrate · Saves mobile data",
+        description = "Prefer lower-bitrate audio to save data",
         preferredCodec = "any",
     ),
     MEDIUM(
         bitrate = 128,
         displayName = "High Efficiency",
-        description = "128 kbps · Optimized for cellular",
+        description = "Prefer audio around 128 kbps",
         preferredCodec = "any",
     ),
     HIGH(
         bitrate = 160,
         displayName = "High Quality",
-        description = "160–256 kbps · CD-comparable fidelity",
+        description = "Highest compatible quality available",
         preferredCodec = "best",
     ),
     BEST(

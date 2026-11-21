@@ -1,5 +1,6 @@
 package com.sonicmusic.app.features.library.presentation
 
+import com.sonicmusic.app.theme.pressable
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -52,17 +54,20 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.MediumTopAppBar
+import androidx.compose.material3.FilledTonalIconButton
+import com.sonicmusic.app.shared.components.ScreenTitle
+import com.sonicmusic.app.shared.components.ScreenSearchField
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
@@ -90,6 +95,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
+import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.domain.model.HomeShelfItem
+import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.features.library.data.MusicLibrarySection
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.library.presentation.LibraryViewModel
 
@@ -104,6 +113,9 @@ fun LibraryScreen(
     onNavigateToLocalSongs: () -> Unit = {},
     onNavigateToPlaylistDetail: (Long) -> Unit = {},
     onNavigateToArtistDetail: (String) -> Unit = {},
+    onNavigateToAccountArtist: (String, String?) -> Unit = { _, _ -> },
+    onNavigateToAccountAlbum: (Song) -> Unit = {},
+    onNavigateToAccountPlaylist: (String, String, String, String) -> Unit = { _, _, _, _ -> },
     onNavigateToArtists: () -> Unit = {},
     onShowFullPlayer: () -> Unit = {},
     viewModel: LibraryViewModel = hiltViewModel()
@@ -111,6 +123,11 @@ fun LibraryScreen(
     val likedSongs by viewModel.likedSongs.collectAsStateWithLifecycle()
     val playlists by viewModel.filteredPlaylists.collectAsStateWithLifecycle()
     val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val accountHistory by viewModel.accountHistory.collectAsStateWithLifecycle()
+    val accountPlaylists by viewModel.accountPlaylists.collectAsStateWithLifecycle()
+    val accountSongs by viewModel.accountSongs.collectAsStateWithLifecycle()
+    val accountAlbums by viewModel.accountAlbums.collectAsStateWithLifecycle()
+    val accountArtists by viewModel.accountArtists.collectAsStateWithLifecycle()
     val localSongs by viewModel.localSongs.collectAsStateWithLifecycle()
     val artists by viewModel.artists.collectAsStateWithLifecycle()
     val downloadedSongs by viewModel.downloadedSongs.collectAsStateWithLifecycle()
@@ -145,31 +162,26 @@ fun LibraryScreen(
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0),
-        containerColor = Color.Transparent,
+        containerColor = MaterialTheme.colorScheme.surface,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             Column {
-                TopAppBar(
-                    title = { 
-                        Text(
-                            "Library",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        ) 
-                    },
+                MediumTopAppBar(
+                    title = { ScreenTitle("Library") },
                     scrollBehavior = scrollBehavior,
                     windowInsets = WindowInsets.statusBars,
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = Color.Transparent,
-                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.92f)
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
                     ),
                     actions = {
                         IconButton(onClick = { viewModel.toggleSearch() }) {
                             Icon(
                                 imageVector = if (isSearchActive) Icons.Rounded.Close else Icons.Rounded.Search,
-                                contentDescription = if (isSearchActive) "Close Search" else " Search Library"
+                                contentDescription = if (isSearchActive) "Close search" else "Search library"
                             )
                         }
-                        IconButton(onClick = { showCreatePlaylistDialog = true }) {
+                        FilledTonalIconButton(onClick = { showCreatePlaylistDialog = true }) {
                             Icon(Icons.Rounded.Add, contentDescription = "Create Playlist")
                         }
                     }
@@ -181,23 +193,16 @@ fun LibraryScreen(
                     exit = shrinkVertically()
                 ) {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { viewModel.updateSearchQuery(it) },
+                        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+                        ScreenSearchField(
+                            query = searchQuery,
+                            placeholder = "Search playlists",
+                            onQueryChange = viewModel::updateSearchQuery,
+                            onClear = { viewModel.updateSearchQuery("") },
+                            onSearch = { focusManager.clearFocus() },
                             modifier = Modifier
                                 .widthIn(max = Dimens.maxContentWidth)
-                                .fillMaxWidth()
-                                .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
-                            placeholder = { Text("Search playlists, songs...") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(28.dp),
-                            trailingIcon = {
-                                if (searchQuery.isNotEmpty()) {
-                                    IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                                        Icon(Icons.Rounded.Close, contentDescription = "Clear")
-                                    }
-                                }
-                            }
+                                .padding(horizontal = Dimens.screenPadding, vertical = 8.dp)
                         )
                     }
                 }
@@ -249,10 +254,10 @@ fun LibraryScreen(
                         HeroCard(
                             modifier = Modifier.weight(1f),
                             title = "Recent",
-                            subtitle = "${recentlyPlayed.size} played",
+                            subtitle = "${recentlyPlayed.size + accountHistory.items.size} played",
                             icon = Icons.Rounded.History,
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                             onClick = onNavigateToRecentlyPlayed
                         )
                     }
@@ -302,7 +307,8 @@ fun LibraryScreen(
                             .fillMaxWidth()
                             .padding(horizontal = Dimens.screenPadding)
                             .clip(RoundedCornerShape(24.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .background(MaterialTheme.colorScheme.surface),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         LibraryListItem(
                             icon = Icons.Rounded.PhoneAndroid,
@@ -353,7 +359,7 @@ fun LibraryScreen(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             // Create New Playlist Card
-                            item {
+                            item(key = "add_playlist", contentType = "action") {
                                 AddPlaylistCard(onClick = { showCreatePlaylistDialog = true })
                             }
                             
@@ -370,7 +376,7 @@ fun LibraryScreen(
                         }
                     }
                 } else {
-                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    if (accountPlaylists.items.isEmpty()) item(key = "empty_playlists", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "empty") {
                         Box(
                              modifier = Modifier
                                  .fillMaxWidth()
@@ -386,11 +392,23 @@ fun LibraryScreen(
                     }
                 }
 
-                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(24.dp)) }
+                items(
+                    items = accountPlaylists.items.filterIsInstance<HomeShelfItem.Playlist>().take(5),
+                    key = { "account_preview_${it.key}" },
+                    span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }
+                ) { item ->
+                    AccountMusicRow(item) {
+                        val playlist = item.playlist
+                        onNavigateToAccountPlaylist(accountPlaylists.playlistRoute(playlist.browseId),
+                            playlist.title, playlist.creator, playlist.thumbnailUrl)
+                    }
+                }
+
+                item(key = "spacer_playlists", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "spacer") { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Recently Played List
                 if (recentlyPlayed.isNotEmpty()) {
-                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    item(key = "recently_played_header", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "header") {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -423,7 +441,7 @@ fun LibraryScreen(
                     }
                 } else {
                     // Empty state for Recently Played
-                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    item(key = "empty_recent", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "empty") {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -451,11 +469,11 @@ fun LibraryScreen(
                     }
                 }
 
-                item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) { Spacer(modifier = Modifier.height(24.dp)) }
+                item(key = "spacer_recent", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "spacer") { Spacer(modifier = Modifier.height(24.dp)) }
 
                 // Artists Section
                 if (artists.isNotEmpty()) {
-                    item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                    item(key = "artists_header", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "header") {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -527,6 +545,46 @@ fun LibraryScreen(
                         }
                     }
                 }
+
+                val collections = listOf(
+                    Triple(MusicLibrarySection.SavedSongs, "YouTube Music songs", accountSongs),
+                    Triple(MusicLibrarySection.Albums, "YouTube Music albums", accountAlbums),
+                    Triple(MusicLibrarySection.Artists, "YouTube Music artists", accountArtists)
+                )
+                for ((section, title, page) in collections) {
+                    if (page.items.isEmpty() && !page.hasMore) continue
+                    item(key = "account_header_${section.name}", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                        Text(title, style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.padding(horizontal = Dimens.screenPadding, vertical = 12.dp))
+                    }
+                    items(
+                        items = page.items,
+                        key = { "account_${section.name}_${it.key}" },
+                        span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) },
+                        contentType = { "account_collection" }
+                    ) { item ->
+                        AccountMusicRow(item) {
+                            when (item) {
+                                is HomeShelfItem.Media -> when (item.song.contentType) {
+                                    ContentType.ALBUM -> onNavigateToAccountAlbum(item.song)
+                                    ContentType.ARTIST -> onNavigateToAccountArtist(item.title, item.song.artistId)
+                                    else -> item.playableSong?.let {
+                                        viewModel.onSongClick(it)
+                                        onShowFullPlayer()
+                                    }
+                                }
+                                is HomeShelfItem.Playlist -> onNavigateToAccountPlaylist(
+                                    page.playlistRoute(item.playlist.browseId), item.title, item.subtitle, item.artwork
+                                )
+                            }
+                        }
+                    }
+                    if (page.hasMore) {
+                        item(key = "more_account_${section.name}", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }) {
+                            TextButton(onClick = { viewModel.loadMoreAccount(section) }) { Text("Load more") }
+                        }
+                    }
+                }
             }
         }
     }
@@ -545,28 +603,33 @@ private fun HeroCard(
 ) {
     Card(
         onClick = onClick,
-        modifier = modifier.height(110.dp),
+        modifier = modifier.heightIn(min = 136.dp),
         colors = CardDefaults.cardColors(
             containerColor = containerColor,
             contentColor = contentColor
         ),
-        shape = RoundedCornerShape(24.dp)
+        shape = MaterialTheme.shapes.extraLarge
     ) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(28.dp)
-            )
+            Surface(
+                modifier = Modifier.size(44.dp),
+                shape = CircleShape,
+                color = contentColor.copy(alpha = 0.12f),
+                contentColor = contentColor
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp))
+                }
+            }
             Column {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
                 Text(
                     text = subtitle,
@@ -586,9 +649,9 @@ private fun LibraryListItem(
     onClick: () -> Unit
 ) {
     ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier.pressable(onClick = onClick),
         colors = ListItemDefaults.colors(
-            containerColor = Color.Transparent
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         ),
         leadingContent = {
             Surface(
@@ -624,7 +687,7 @@ private fun AddPlaylistCard(onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .width(140.dp)
-            .clickable(onClick = onClick),
+            .pressable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Surface(
@@ -666,7 +729,7 @@ private fun PlaylistGridItem(
     Column(
         modifier = Modifier
             .width(140.dp)
-            .clickable(onClick = onClick)
+            .pressable(onClick = onClick)
     ) {
         Surface(
             modifier = Modifier

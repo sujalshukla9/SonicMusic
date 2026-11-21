@@ -16,7 +16,6 @@ import com.sonicmusic.app.domain.model.PaletteStyle
 
 object DynamicColorSchemeFactory {
 
-    private val dynamicColors = MaterialDynamicColors()
     private val schemeCache = LruCache<Long, ColorScheme>(8)
 
     /**
@@ -45,25 +44,8 @@ object DynamicColorSchemeFactory {
             PaletteStyle.FIDELITY -> SchemeFidelity(sourceHct, isDark, contrastLevel)
         }
 
+        val dynamicColors = MaterialDynamicColors()
         val rawPrimary = Color(dynamicColors.primary().getArgb(scheme))
-        val rawSurface = Color(dynamicColors.surface().getArgb(scheme))
-        val rawSurfaceContainer = Color(dynamicColors.surfaceContainer().getArgb(scheme))
-        val rawSurfaceContainerHigh = Color(dynamicColors.surfaceContainerHigh().getArgb(scheme))
-        val rawSurfaceContainerHighest = Color(dynamicColors.surfaceContainerHighest().getArgb(scheme))
-        val rawSurfaceContainerLow = Color(dynamicColors.surfaceContainerLow().getArgb(scheme))
-        val rawSurfaceContainerLowest = Color(dynamicColors.surfaceContainerLowest().getArgb(scheme))
-
-        // Harmonious surface tonal tinting (subtle 8% artwork tint on elevated containers)
-        fun tintSurface(baseColor: Color, tintFraction: Float): Color {
-            val blendedArgb = androidx.core.graphics.ColorUtils.blendARGB(
-                baseColor.toArgb(),
-                seedColor,
-                tintFraction
-            )
-            return Color(blendedArgb)
-        }
-
-        val tintFactor = if (isDark) 0.09f else 0.05f
 
         return ColorScheme(
             primary = rawPrimary,
@@ -85,7 +67,7 @@ object DynamicColorSchemeFactory {
             background = Color(dynamicColors.background().getArgb(scheme)),
             onBackground = Color(dynamicColors.onBackground().getArgb(scheme)),
             
-            surface = tintSurface(rawSurface, tintFactor * 0.5f),
+            surface = Color(dynamicColors.surface().getArgb(scheme)),
             onSurface = Color(dynamicColors.onSurface().getArgb(scheme)),
             surfaceVariant = Color(dynamicColors.surfaceVariant().getArgb(scheme)),
             onSurfaceVariant = Color(dynamicColors.onSurfaceVariant().getArgb(scheme)),
@@ -103,14 +85,14 @@ object DynamicColorSchemeFactory {
             outlineVariant = Color(dynamicColors.outlineVariant().getArgb(scheme)),
             scrim = Color(dynamicColors.scrim().getArgb(scheme)),
 
-            // Surface elevation tints (M3 surface containers with refined artwork infusion)
+            // Keep the generated Material 3 tones for the surface elevation roles.
             surfaceBright = Color(dynamicColors.surfaceBright().getArgb(scheme)),
             surfaceDim = Color(dynamicColors.surfaceDim().getArgb(scheme)),
-            surfaceContainer = tintSurface(rawSurfaceContainer, tintFactor),
-            surfaceContainerHigh = tintSurface(rawSurfaceContainerHigh, tintFactor * 1.25f),
-            surfaceContainerHighest = tintSurface(rawSurfaceContainerHighest, tintFactor * 1.5f),
-            surfaceContainerLow = tintSurface(rawSurfaceContainerLow, tintFactor * 0.75f),
-            surfaceContainerLowest = tintSurface(rawSurfaceContainerLowest, tintFactor * 0.4f),
+            surfaceContainer = Color(dynamicColors.surfaceContainer().getArgb(scheme)),
+            surfaceContainerHigh = Color(dynamicColors.surfaceContainerHigh().getArgb(scheme)),
+            surfaceContainerHighest = Color(dynamicColors.surfaceContainerHighest().getArgb(scheme)),
+            surfaceContainerLow = Color(dynamicColors.surfaceContainerLow().getArgb(scheme)),
+            surfaceContainerLowest = Color(dynamicColors.surfaceContainerLowest().getArgb(scheme)),
         ).also { schemeCache.put(cacheKey, it) }
     }
 

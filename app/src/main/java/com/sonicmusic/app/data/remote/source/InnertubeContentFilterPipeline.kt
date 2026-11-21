@@ -1,5 +1,7 @@
 package com.sonicmusic.app.data.remote.source
 
+import com.sonicmusic.app.core.network.awaitResponseBody
+import kotlinx.coroutines.CancellationException
 import android.util.Log
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
@@ -196,7 +198,7 @@ class InnertubePipelineOrchestrator @Inject constructor(
     /**
      * Executes the POST request to Innertube BROWSE endpoint.
      */
-    private fun fetchRawJson(browseId: String, region: String, cookies: String?): String? {
+    private suspend fun fetchRawJson(browseId: String, region: String, cookies: String?): String? {
         val language = "en"
         val requestBody = Innertube.webRemixBody(language, region) {
             put("browseId", browseId)
@@ -216,13 +218,15 @@ class InnertubePipelineOrchestrator @Inject constructor(
         )
 
         return try {
-            val response = okHttpClient.newCall(request).execute()
+            val response = okHttpClient.newCall(request).awaitResponseBody()
             if (response.isSuccessful) {
-                response.body?.string()
+                response.body
             } else {
                 Log.w(TAG, "HTTP ${response.code} fetching $browseId")
                 null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Network call failed for $browseId", e)
             null

@@ -1,14 +1,20 @@
 package com.sonicmusic.app.features.settings.presentation
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.util.Log
+import com.sonicmusic.app.BuildConfig
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sonicmusic.app.core.cache.DiskCacheMaintenance
 import com.sonicmusic.app.core.updater.UpdateDownloader
+import com.sonicmusic.app.core.updater.UpdatePackage
 import com.sonicmusic.app.features.updates.data.AppUpdateService
+import com.sonicmusic.app.features.updates.receiver.UpdateNotifications
 import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.FullPlayerStyle
-import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.domain.model.PlayerControlStyle
@@ -25,12 +31,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import android.annotation.SuppressLint
 import com.sonicmusic.app.domain.model.DarkMode
 import com.sonicmusic.app.domain.model.PaletteStyle
-import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -40,8 +47,8 @@ class SettingsViewModel @Inject constructor(
     private val audioEngine: AudioEngine,
     private val appUpdateService: AppUpdateService,
     private val recentSearchRepository: RecentSearchRepository,
-    private val databaseBackupManager: com.sonicmusic.app.data.local.database.DatabaseBackupManager,
     private val audioCapabilityDetector: com.sonicmusic.app.features.player.audio.AudioCapabilityDetector,
+    private val diskCache: DiskCacheMaintenance,
     @SuppressLint("StaticFieldLeak") @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -52,25 +59,27 @@ class SettingsViewModel @Inject constructor(
         val statusText: String = "Check for the latest app release",
         val isUpdateAvailable: Boolean = false,
         val latestVersion: String? = null,
-        val downloadUrl: String? = null
-    )
+        val updatePackage: UpdatePackage? = null
+    ) {
+        val downloadUrl: String? get() = updatePackage?.downloadUrl
+    }
+
+    private val whileObserved = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000)
 
     // Audio Engine Settings
-    val wifiStreamingQuality = audioEngine.audioEngineState
-        .map { it.wifiQualityTier }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.BEST)
-
-    val cellularStreamingQuality = audioEngine.audioEngineState
-        .map { it.cellularQualityTier }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.HIGH)
-
-    val downloadQuality = audioEngine.audioEngineState
-        .map { it.downloadQualityTier }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, StreamQuality.BEST)
-
     val normalizeVolume = audioEngine.audioEngineState
         .map { it.soundCheckEnabled }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, whileObserved, audioEngine.audioEngineState.value.soundCheckEnabled)
+
+    val balancedEqEnabled = audioEngine.audioEngineState
+        .map { it.eqEnabled && it.eqPreset == AudioEngine.BALANCED_EQ }
+        .stateIn(viewModelScope, whileObserved, false)
+
+    val equalizerAvailable = audioEngine.eqBands
+        .map { it.isNotEmpty() }
+        .stateIn(viewModelScope, whileObserved, audioEngine.eqBands.value.isNotEmpty())
+
+    fun setBalancedEq(enabled: Boolean) = audioEngine.setBalancedEq(enabled)
 
     val crossfadeDuration = audioEngine.audioEngineState
         .map { state ->
@@ -80,130 +89,93 @@ class SettingsViewModel @Inject constructor(
                 0
             }
         }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+        .stateIn(viewModelScope, whileObserved, 0)
+
+    val spatialAudioMode = audioEngine.spatialAudioMode
 
     val spatialAudioEnabled: StateFlow<Boolean> = audioEngine.audioEngineState
         .map { it.spatialAudioEnabled }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
-
-    val spatialStrength: StateFlow<Int> = audioEngine.audioEngineState
-        .map { it.spatialStrength }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH)
+        .stateIn(viewModelScope, whileObserved, true)
 
     val audioCapability: StateFlow<com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability> =
         audioCapabilityDetector.capability
             .stateIn(
                 viewModelScope,
-                SharingStarted.Eagerly,
+                whileObserved,
                 com.sonicmusic.app.features.player.audio.AudioCapabilityDetector.AudioCapability()
             )
 
     // Repository Settings
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ThemeMode.DYNAMIC)
+        .stateIn(viewModelScope, whileObserved, ThemeMode.DYNAMIC)
 
     val darkMode: StateFlow<DarkMode> = settingsRepository.darkMode
-        .stateIn(viewModelScope, SharingStarted.Eagerly, DarkMode.SYSTEM)
+        .stateIn(viewModelScope, whileObserved, DarkMode.SYSTEM)
 
     val paletteStyle: StateFlow<PaletteStyle> = settingsRepository.paletteStyle
-        .stateIn(viewModelScope, SharingStarted.Eagerly, PaletteStyle.CONTENT)
-
-    val pureBlack: StateFlow<Boolean> = settingsRepository.pureBlack
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+        .stateIn(viewModelScope, whileObserved, PaletteStyle.CONTENT)
 
     val fullPlayerStyle: StateFlow<FullPlayerStyle> = settingsRepository.fullPlayerStyle
-        .stateIn(viewModelScope, SharingStarted.Eagerly, FullPlayerStyle.NORMAL)
+        .stateIn(viewModelScope, whileObserved, FullPlayerStyle.WAVY)
 
     val dynamicColors: StateFlow<Boolean> = settingsRepository.dynamicColors
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, whileObserved, true)
 
     val dynamicColorIntensity: StateFlow<Int> = settingsRepository.dynamicColorIntensity
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 85)
+        .stateIn(viewModelScope, whileObserved, 85)
 
     val gaplessPlayback: StateFlow<Boolean> = settingsRepository.gaplessPlayback
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
-
-    val cacheSizeLimit: StateFlow<Long> = settingsRepository.cacheSizeLimit
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 2048L)
-
-    val pauseHistory: StateFlow<Boolean> = settingsRepository.pauseHistory
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    val albumArtBlur: StateFlow<Boolean> = settingsRepository.albumArtBlur
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, whileObserved, true)
 
     val skipSilence: StateFlow<Boolean> = settingsRepository.skipSilence
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+        .stateIn(viewModelScope, whileObserved, true)
 
     val autoQueueSimilar: StateFlow<Boolean> = settingsRepository.autoQueueSimilar
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    val autoUpdateEnabled: StateFlow<Boolean> = settingsRepository.autoUpdateEnabled
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
-    val onboardingCompleted: StateFlow<Boolean?> = settingsRepository.onboardingCompleted
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        .stateIn(viewModelScope, whileObserved, false)
 
     val thumbnailShape: StateFlow<ThumbnailShape> = settingsRepository.thumbnailShape
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ThumbnailShape.ROUNDED_SQUARE)
+        .stateIn(viewModelScope, whileObserved, ThumbnailShape.ROUNDED_SQUARE)
 
     val playerControlStyle: StateFlow<PlayerControlStyle> = settingsRepository.playerControlStyle
-        .stateIn(viewModelScope, SharingStarted.Eagerly, PlayerControlStyle.CLASSIC)
+        .stateIn(viewModelScope, whileObserved, PlayerControlStyle.MODERN)
 
     val navbarStyle: StateFlow<NavbarStyle> = settingsRepository.navbarStyle
-        .stateIn(viewModelScope, SharingStarted.Eagerly, NavbarStyle.MODERN)
+        .stateIn(viewModelScope, whileObserved, NavbarStyle.MODERN)
 
     private val _appUpdateState = MutableStateFlow(AppUpdateState())
     val appUpdateState: StateFlow<AppUpdateState> = _appUpdateState.asStateFlow()
         
     // Region Settings
-    val regionCode: StateFlow<String?> = regionRepository.regionCode
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
-        
     val countryCode: StateFlow<String?> = regionRepository.countryCode
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        .stateIn(viewModelScope, whileObserved, null)
 
     val countryName: StateFlow<String?> = regionRepository.countryName
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+        .stateIn(viewModelScope, whileObserved, null)
 
-    // Cache size tracking
-    // Cache size tracking
-    private val _cacheSize = MutableStateFlow("Calculating...")
+    val isRegionManual: StateFlow<Boolean> = regionRepository.isRegionManual
+        .stateIn(viewModelScope, whileObserved, false)
+
+    private val _cacheSize = MutableStateFlow("Calculating…")
     val cacheSize: StateFlow<String> = _cacheSize.asStateFlow()
 
-    // App version
-    private val packageInfo = runCatching {
-        context.packageManager.getPackageInfo(context.packageName, 0)
-    }.getOrNull()
-
-    private val appVersionName: String = packageInfo?.versionName
-        ?.takeIf { it.isNotBlank() }
-        ?: "1.0.0"
-
-    val appVersion: String = packageInfo?.let { info ->
-        val versionCode = androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(info)
-        "${info.versionName} (Build $versionCode)"
-    } ?: appVersionName
+    private val appVersionName = BuildConfig.VERSION_NAME
+    val appVersion = "$appVersionName (Build ${BuildConfig.VERSION_CODE})"
 
     init {
-        calculateCacheSize()
-        enforceCacheLimit()
+        viewModelScope.launch {
+            UpdateDownloader(context).observeStatus().collect { message ->
+                if (message != null) {
+                    _appUpdateState.value = _appUpdateState.value.copy(
+                        isDownloading = false,
+                        statusText = message
+                    )
+                }
+            }
+        }
         viewModelScope.launch {
             if (settingsRepository.autoUpdateEnabled.first()) {
                 checkForUpdates()
             }
-        }
-    }
-
-    fun setWifiQuality(quality: StreamQuality) = audioEngine.setWifiQualityTier(quality)
-    
-    fun setCellularQuality(quality: StreamQuality) = audioEngine.setCellularQualityTier(quality)
-
-    fun setDownloadQuality(quality: StreamQuality) {
-        viewModelScope.launch {
-            // Keep both stores in sync for compatibility with existing app flows.
-            settingsRepository.setDownloadQuality(quality)
-            audioEngine.setDownloadQualityTier(quality)
         }
     }
 
@@ -222,12 +194,6 @@ class SettingsViewModel @Inject constructor(
     fun setPaletteStyle(style: PaletteStyle) {
         viewModelScope.launch {
             settingsRepository.setPaletteStyle(style)
-        }
-    }
-
-    fun setPureBlack(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setPureBlack(enabled)
         }
     }
 
@@ -272,32 +238,8 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun setSpatialAudio(enabled: Boolean, strength: Int = com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH) {
+    fun setSpatialAudio(enabled: Boolean, strength: Int = audioEngine.audioEngineState.value.spatialStrength) {
         audioEngine.setSpatialAudio(enabled, strength)
-    }
-
-    fun setSpatialStrength(strength: Int = com.sonicmusic.app.features.player.audio.AudioEngine.MAX_VIRTUALIZER_STRENGTH) {
-        val currentEnabled = audioEngine.audioEngineState.value.spatialAudioEnabled
-        audioEngine.setSpatialAudio(currentEnabled, strength)
-    }
-
-    fun setCacheSizeLimit(mb: Long) {
-        viewModelScope.launch {
-            settingsRepository.setCacheSizeLimit(mb)
-            enforceCacheLimit(limitMb = mb)
-        }
-    }
-
-    fun setPauseHistory(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setPauseHistory(enabled)
-        }
-    }
-
-    fun setAlbumArtBlur(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setAlbumArtBlur(enabled)
-        }
     }
 
     fun setSkipSilence(enabled: Boolean) {
@@ -309,21 +251,6 @@ class SettingsViewModel @Inject constructor(
     fun setAutoQueueSimilar(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setAutoQueueSimilar(enabled)
-        }
-    }
-
-    fun setAutoUpdateEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setAutoUpdateEnabled(enabled)
-        }
-        if (enabled) {
-            checkForUpdates()
-        }
-    }
-
-    fun setOnboardingCompleted(completed: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.setOnboardingCompleted(completed)
         }
     }
 
@@ -363,7 +290,7 @@ class SettingsViewModel @Inject constructor(
                                 statusText = "New version ${result.latestVersion} is available",
                                 isUpdateAvailable = true,
                                 latestVersion = result.latestVersion,
-                                downloadUrl = result.downloadUrl
+                                updatePackage = result.updatePackage
                             )
                         } else {
                             AppUpdateState(
@@ -382,10 +309,10 @@ class SettingsViewModel @Inject constructor(
                         )
                     }
                 },
-                onFailure = {
+                onFailure = { error ->
                     _appUpdateState.value = AppUpdateState(
                         isChecking = false,
-                        statusText = "Failed to check updates. Try again."
+                        statusText = (error as? IllegalArgumentException)?.message ?: "Failed to check updates. Try again."
                     )
                 }
             )
@@ -395,13 +322,25 @@ class SettingsViewModel @Inject constructor(
     fun downloadUpdate() {
         val currentState = _appUpdateState.value
         if (currentState.isChecking || currentState.isDownloading) return
+        if (UpdateNotifications.openConfirmation(context)) return
 
-        val downloadUrl = currentState.downloadUrl
+        val updatePackage = currentState.updatePackage
         val latestVersion = currentState.latestVersion
-        if (downloadUrl.isNullOrBlank() || latestVersion.isNullOrBlank()) {
+        if (updatePackage == null || latestVersion.isNullOrBlank()) {
             _appUpdateState.value = currentState.copy(
                 statusText = "No in-app update package is available for this release"
             )
+            return
+        }
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            _appUpdateState.value = currentState.copy(
+                statusText = "Allow SonicMusic to install updates in Android settings, then tap Update again."
+            )
+            runCatching {
+                val permission = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + context.packageName))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(permission)
+            }
             return
         }
 
@@ -413,62 +352,29 @@ class SettingsViewModel @Inject constructor(
                 statusText = "Downloading v$latestVersion..."
             )
 
-            runCatching {
+            try {
                 val downloader = UpdateDownloader(context)
-                downloader.downloadApk(downloadUrl, "SonicMusic-$latestVersion.apk")
-            }.onSuccess { downloadId ->
-                val downloader = UpdateDownloader(context)
+                val downloadId = withContext(Dispatchers.IO) { downloader.downloadApk(updatePackage) }
                 downloader.observeDownloadProgress(downloadId).collect { progress ->
                     _appUpdateState.value = _appUpdateState.value.copy(
-                        isDownloading = progress < 100,
+                        isDownloading = true,
                         downloadProgress = progress,
-                        statusText = if (progress < 100) "Downloading v$latestVersion... $progress%" else " Download complete."
+                        statusText = "Downloading v$latestVersion… $progress%"
                     )
                 }
-            }.onFailure { error ->
-                Log.e("SettingsVM", " Failed to start in-app update download", error)
-                _appUpdateState.value = AppUpdateState(
-                    isChecking = false,
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("SettingsVM", "Could not download update", e)
+                _appUpdateState.value = currentState.copy(
                     isDownloading = false,
-                    statusText = "Failed to start update download. Try again.",
-                    isUpdateAvailable = true,
-                    latestVersion = latestVersion,
-                    downloadUrl = downloadUrl
+                    statusText = (e as? IllegalArgumentException)?.message ?: "Could not download the update. Try again."
                 )
             }
         }
     }
 
-    fun clearCache() {
-        viewModelScope.launch {
-            // Clear app cache directory
-            try {
-                context.cacheDir?.let { cacheDir ->
-                    cacheDir.listFiles()?.forEach { file ->
-                        deleteRecursively(file)
-                    }
-                }
-
-                // Clear external cache if available
-                context.externalCacheDir?.let { externalCache ->
-                    externalCache.listFiles()?.forEach { file ->
-                        deleteRecursively(file)
-                    }
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-            // Recalculate cache size after clearing
-            calculateCacheSize()
-        }
-    }
-
-    private fun deleteRecursively(file: File) {
-        if (file.isDirectory) {
-            file.listFiles()?.forEach { deleteRecursively(it) }
-        }
-        file.delete()
-    }
+    suspend fun clearCache(): Boolean = viewModelScope.async { maintainDiskCache(clear = true) }.await()
 
     fun clearSearchHistory() {
         viewModelScope.launch {
@@ -481,82 +387,40 @@ class SettingsViewModel @Inject constructor(
             settingsRepository.resetToDefaults()
             audioEngine.resetToDefault()
             regionRepository.initializeRegion()
-            calculateCacheSize()
+            maintainDiskCache()
         }
     }
 
-    private fun calculateCacheSize() {
-        viewModelScope.launch {
-            try {
-                var totalSize = 0L
-                context.cacheDir?.let { totalSize += getDirSize(it) }
-                context.externalCacheDir?.let { totalSize += getDirSize(it) }
-                _cacheSize.value = formatFileSize(totalSize)
-            } catch (e: Exception) {
-                _cacheSize.value = "Unknown"
-            }
-        }
+    suspend fun refreshCacheSize() {
+        maintainDiskCache()
     }
 
-    private fun getDirSize(dir: File): Long {
-        var size = 0L
-        if (dir.isDirectory) {
-            dir.listFiles()?.forEach { file ->
-                size += if (file.isDirectory) getDirSize(file) else file.length()
-            }
-        }
-        return size
-    }
-
-    /**
-     * Enforce the cache size limit by deleting oldest files first.
-     * Walks both internal and external cache directories.
-     */
-    private fun enforceCacheLimit(limitMb: Long? = null) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                try {
-                    val maxBytes = (limitMb ?: settingsRepository.cacheSizeLimit.first()) * 1024L * 1024L
-                    if (maxBytes <= 0) return@withContext
-
-                    // Collect all cached files across both cache dirs
-                    val cacheDirs = listOfNotNull(context.cacheDir, context.externalCacheDir)
-                    val allFiles = cacheDirs.flatMap { dir ->
-                        dir.walkTopDown()
-                            .filter { it.isFile }
-                            .toList()
-                    }
-
-                    var totalSize = allFiles.sumOf { it.length() }
-                    if (totalSize <= maxBytes) return@withContext
-
-                    // Sort by last modified (oldest first) and delete until under limit
-                    val sorted = allFiles.sortedBy { it.lastModified() }
-                    var deleted = 0
-                    for (file in sorted) {
-                        if (totalSize <= maxBytes) break
-                        val fileSize = file.length()
-                        if (file.delete()) {
-                            totalSize -= fileSize
-                            deleted++
-                        }
-                    }
-
-                    if (deleted > 0) {
-                        Log.d("SettingsVM", "Evicted $deleted cache files to enforce ${limitMb ?: " saved"}MB limit")
-                    }
-                } catch (e: Exception) {
-                    Log.e("SettingsVM", " Cache enforcement failed", e)
-                }
-            }
-            // Refresh displayed size after enforcement
-            calculateCacheSize()
-        }
+    private suspend fun maintainDiskCache(clear: Boolean = false): Boolean = try {
+        _cacheSize.value = formatFileSize(diskCache.trimAndMeasure(clear))
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("SettingsVM", "Could not update cache size", e)
+        _cacheSize.value = "Unknown"
+        false
     }
 
     fun refreshRegion() {
         viewModelScope.launch {
             regionRepository.refreshRegion()
+        }
+    }
+
+    fun setManualCountry(countryCode: String) {
+        viewModelScope.launch {
+            regionRepository.setManualCountry(countryCode)
+        }
+    }
+
+    fun setAutoDetectRegion() {
+        viewModelScope.launch {
+            regionRepository.setAutoDetectRegion()
         }
     }
 
@@ -566,44 +430,6 @@ class SettingsViewModel @Inject constructor(
             bytes < 1024 * 1024 -> "${bytes / 1024} KB"
             bytes < 1024 * 1024 * 1024 -> String.format("%.1f MB", bytes / (1024.0 * 1024))
             else -> String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024))
-        }
-    }
-
-    fun backupDatabase(uri: android.net.Uri, onSuccess: () -> Unit, onError: (String) -> Unit) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openOutputStream(uri)?.use { output ->
-                        databaseBackupManager.backupDatabase(output).getOrThrow()
-                    } ?: throw Exception("Failed to open output stream")
-                }
-            }.fold(
-                onSuccess = {
-                    withContext(Dispatchers.Main) { onSuccess() }
-                },
-                onFailure = { error ->
-                    withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
-                }
-            )
-        }
-    }
-
-    fun restoreDatabase(uri: android.net.Uri, onSuccess: () -> Unit, onError: (String) -> Unit) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        databaseBackupManager.restoreDatabase(input).getOrThrow()
-                    } ?: throw Exception("Failed to open input stream")
-                }
-            }.fold(
-                onSuccess = {
-                    withContext(Dispatchers.Main) { onSuccess() }
-                },
-                onFailure = { error ->
-                    withContext(Dispatchers.Main) { onError(error.localizedMessage ?: "Unknown error") }
-                }
-            )
         }
     }
 }

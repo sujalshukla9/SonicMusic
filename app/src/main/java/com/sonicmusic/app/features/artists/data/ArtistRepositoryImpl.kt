@@ -30,8 +30,11 @@ class ArtistRepositoryImpl @Inject constructor(
 ) : ArtistRepository {
 
     companion object {
+        private const val CATALOG_VERSION = 2
         private const val ALBUM_CACHE_TTL_MS = 60 * 60 * 1000L
         private const val MAX_ARTIST_SONG_LIMIT = 600
+        private const val MAX_CACHE_ENTRIES = 40
+        private val WHITESPACE_REGEX = Regex("\\s+")
     }
 
     private data class CacheEntry<T>(
@@ -45,6 +48,15 @@ class ArtistRepositoryImpl @Inject constructor(
     private val cachePolicy = ArtistCachePolicy()
     private val retryPolicy = RetryPolicy()
     private val json = Json { ignoreUnknownKeys = true }
+
+    private fun <K, V> trimCache(cache: ConcurrentHashMap<K, CacheEntry<V>>, maxSize: Int = MAX_CACHE_ENTRIES) {
+        if (cache.size > maxSize) {
+            val oldest = cache.entries.minByOrNull { it.value.cachedAtMs }?.key
+            if (oldest != null) {
+                cache.remove(oldest)
+            }
+        }
+    }
 
     override suspend fun followArtist(name: String, browseId: String?, thumbnailUrl: String?) {
         val canonicalName = canonicalArtistName(name)
@@ -125,8 +137,8 @@ class ArtistRepositoryImpl @Inject constructor(
             queryCacheKeys.firstNotNullOfOrNull { key ->
                 getCached(profileCache, key, cachePolicy.artistPageTtlMs)
             }?.let { cached ->
-                if (canonicalBrowseId == null || cached.browseId == canonicalBrowseId) {
-                    return@withContext Result.success(cached.copy(isStale = false))
+                if (cached.catalogVersion == CATALOG_VERSION && (canonicalBrowseId == null || cached.browseId == canonicalBrowseId)) {
+                    return@withContext Result.success(cached.normalizedArtistCatalog().copy(isStale = false))
                 }
             }
         }
@@ -143,12 +155,13 @@ class ArtistRepositoryImpl @Inject constructor(
             }
             if (freshDbEntry != null) {
                 val profile = decodeArtistProfile(freshDbEntry.second.data)
-                if (profile != null && (canonicalBrowseId == null || profile.browseId == canonicalBrowseId)) {
+                if (profile?.catalogVersion == CATALOG_VERSION && (canonicalBrowseId == null || profile.browseId == canonicalBrowseId)) {
+                    trimCache(profileCache)
                     profileCache[freshDbEntry.first] = CacheEntry(
                         value = profile,
                         cachedAtMs = freshDbEntry.second.fetchedAt
                     )
-                    return@withContext Result.success(profile.copy(isStale = false))
+                    return@withContext Result.success(profile.normalizedArtistCatalog().copy(isStale = false))
                 }
             }
         }
@@ -168,21 +181,10 @@ class ArtistRepositoryImpl @Inject constructor(
                         title = section.title,
                         browseId = section.browseId,
                         moreEndpoint = section.moreEndpoint,
-                        items = section.items.distinctBy { it.id }
+                        items = section.items.distinctBy { it.id },
+                        continuationToken = section.continuationToken
                     )
                 }
-                val sectionAlbums = sections
-                    .asSequence()
-                    .filter { section ->
-                        section.type == ArtistProfileSectionType.Albums ||
-                            section.type == ArtistProfileSectionType.Singles
-                    }
-                    .flatMap { section -> section.items.asSequence() }
-                    .filter { item -> item.id.isNotBlank() }
-                    .toList()
-                val mergedAlbums = (remote.albums + remote.singles + sectionAlbums)
-                    .distinctBy { it.id }
-
                 val songsMoreEndpoint = sections.firstOrNull {
                     it.type == ArtistProfileSectionType.TopSongs
                 }?.moreEndpoint ?: remote.songsMoreEndpoint
@@ -205,8 +207,8 @@ class ArtistRepositoryImpl @Inject constructor(
                     description = remote.description,
                     shufflePlaylistId = remote.shufflePlaylistId,
                     radioPlaylistId = remote.radioPlaylistId,
-                    topSongs = remote.topSongs.distinctBy { it.id }.take(5),
-                    albums = mergedAlbums,
+                    topSongs = remote.topSongs,
+                    albums = remote.albums,
                     singles = remote.singles.distinctBy { it.id },
                     videos = remote.videos.distinctBy { it.id },
                     featuredOn = remote.featuredOn.distinctBy { it.id },
@@ -216,8 +218,9 @@ class ArtistRepositoryImpl @Inject constructor(
                     albumsMoreEndpoint = albumsMoreEndpoint,
                     singlesMoreEndpoint = singlesMoreEndpoint,
                     sections = sections,
-                    isStale = false
-                )
+                    isStale = false,
+                    catalogVersion = CATALOG_VERSION
+                ).normalizedArtistCatalog()
 
                 val writeKeys = buildProfileCacheKeys(
                     canonicalName = canonicalArtistName(canonicalName.ifBlank { profile.name }),
@@ -239,14 +242,14 @@ class ArtistRepositoryImpl @Inject constructor(
                     ?.takeIf { entry -> !cachePolicy.isStaleBeyondTolerance(entry.fetchedAt, now) }
                     ?.let { entry -> decodeArtistProfile(entry.data) }
                 if (staleDbProfile != null) {
-                    return@fold Result.success(staleDbProfile.copy(isStale = true))
+                    return@fold Result.success(staleDbProfile.normalizedArtistCatalog().copy(isStale = true))
                 }
 
                 val staleMemoryProfile = staleMemoryEntry
                     ?.takeIf { entry -> !cachePolicy.isStaleBeyondTolerance(entry.cachedAtMs, now) }
                     ?.value
                 staleMemoryProfile?.let { stale ->
-                    Result.success(stale.copy(isStale = true))
+                    Result.success(stale.normalizedArtistCatalog().copy(isStale = true))
                 } ?: Result.failure(error)
             }
         )
@@ -304,6 +307,7 @@ class ArtistRepositoryImpl @Inject constructor(
                     .toList()
             }
             .onSuccess { songs ->
+                trimCache(albumSongsCache)
                 albumSongsCache[browseId] = CacheEntry(
                     value = songs,
                     cachedAtMs = System.currentTimeMillis()
@@ -316,7 +320,9 @@ class ArtistRepositoryImpl @Inject constructor(
         sectionType: ArtistProfileSectionType,
         moreEndpoint: String?,
         limit: Int,
-        forceRefresh: Boolean
+        forceRefresh: Boolean,
+        continuationToken: String?,
+        dedicatedBrowse: Boolean
     ): Result<List<Song>> {
         val browseId = canonicalBrowseId(artistBrowseId)
             ?: return Result.failure(IllegalArgumentException("Artist browseId is empty"))
@@ -333,6 +339,10 @@ class ArtistRepositoryImpl @Inject constructor(
             append(endpointToken.orEmpty())
             append("|")
             append(safeLimit)
+            append('|')
+            append(dedicatedBrowse)
+            append('|')
+            append(continuationToken.orEmpty())
         }
 
         if (forceRefresh) {
@@ -348,7 +358,9 @@ class ArtistRepositoryImpl @Inject constructor(
             artistBrowseId = browseId,
             sectionType = sectionType.toRemoteSectionType(),
             moreEndpoint = endpointToken,
-            limit = safeLimit
+            limit = safeLimit,
+            continuationToken = continuationToken,
+            dedicatedBrowse = dedicatedBrowse
         )
             .map { items ->
                 items.asSequence()
@@ -357,6 +369,7 @@ class ArtistRepositoryImpl @Inject constructor(
                     .toList()
             }
             .onSuccess { items ->
+                trimCache(sectionItemsCache)
                 sectionItemsCache[cacheKey] = CacheEntry(
                     value = items,
                     cachedAtMs = System.currentTimeMillis()
@@ -366,7 +379,7 @@ class ArtistRepositoryImpl @Inject constructor(
 
     private fun canonicalArtistName(name: String): String {
         return name.trim()
-            .replace(Regex("\\s+"), " ")
+            .replace(WHITESPACE_REGEX, " ")
     }
 
     private fun canonicalBrowseId(browseId: String?): String? {
@@ -393,6 +406,7 @@ class ArtistRepositoryImpl @Inject constructor(
         if (keys.isEmpty()) return
         val payload = json.encodeToString(profile)
         keys.distinct().forEach { key ->
+            trimCache(profileCache)
             profileCache[key] = CacheEntry(
                 value = profile,
                 cachedAtMs = fetchedAt

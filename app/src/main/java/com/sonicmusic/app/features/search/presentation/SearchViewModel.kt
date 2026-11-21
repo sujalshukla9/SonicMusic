@@ -17,15 +17,13 @@ import com.sonicmusic.app.shared.state.SearchFilters
 import com.sonicmusic.app.shared.state.SearchState
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import com.sonicmusic.app.core.network.NetworkMonitor
@@ -40,7 +38,6 @@ import javax.inject.Inject
 /**
  * Enhanced Search ViewModel with MVI pattern, pagination, and improved state management
  */
-@OptIn(FlowPreview::class)
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val searchRepository: SearchRepository,
@@ -89,40 +86,14 @@ class SearchViewModel @Inject constructor(
     // Jobs
     private var searchJob: Job? = null
     private var suggestionsJob: Job? = null
+    private var paginationJob: Job? = null
+    private var videoPaginationJob: Job? = null
 
     // Trending searches
     private val _trendingSearches = MutableStateFlow<List<String>>(emptyList())
     val trendingSearches: StateFlow<List<String>> = _trendingSearches.asStateFlow()
 
     init {
-        // Debounced query changes for suggestions
-        _searchQuery
-            .debounce(300)
-            .onEach { query ->
-                val trimmed = query.trim()
-                if (trimmed.length >= 2) {
-                    fetchSuggestions(trimmed)
-                } else if (trimmed.isNotEmpty()) {
-                    _textSuggestions.value = emptyList()
-                    _contentSuggestions.value = emptyList()
-                    _isLoadingSuggestions.value = false
-                    // 1-character query: immediately show local matching recent searches with 0ms latency
-                    _searchState.value = SearchState.Suggestions(
-                        query = trimmed,
-                        suggestions = emptyList(),
-                        recentSearches = _recentSearches.value
-                            .filter { it.contains(trimmed, ignoreCase = true) }
-                            .take(5)
-                    )
-                } else {
-                    _textSuggestions.value = emptyList()
-                    _contentSuggestions.value = emptyList()
-                    _isLoadingSuggestions.value = false
-                    _searchState.value = SearchState.Initial
-                }
-            }
-            .launchIn(viewModelScope)
-
         loadRecentSearches()
         loadTrendingSearches()
     }
@@ -195,9 +166,11 @@ class SearchViewModel @Inject constructor(
 
         _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
 
-        viewModelScope.launch {
+        val searchToken = activeSearchToken
+        paginationJob = viewModelScope.launch {
             searchRepository.loadMoreArtists(token).fold(
                 onSuccess = { result ->
+                    if (searchToken != activeSearchToken) return@fold
                     val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
                     // Filter duplicates
                     val existingIds = latestState.artists.map { it.id }.toSet()
@@ -205,11 +178,12 @@ class SearchViewModel @Inject constructor(
 
                     _searchState.value = latestState.copy(
                         artists = latestState.artists + newArtists,
-                        continuationToken = result.continuationToken,
+                        continuationToken = result.continuationToken?.takeUnless { it == token },
                         isPaginating = false
                     )
                 },
                 onFailure = { e ->
+                    if (searchToken != activeSearchToken) return@fold
                     val latestState = _searchState.value as? SearchState.BrowseArtists ?: return@fold
                     _searchState.value = latestState.copy(
                         isPaginating = false,
@@ -228,9 +202,11 @@ class SearchViewModel @Inject constructor(
 
         _searchState.value = currentState.copy(isPaginating = true, paginationError = null)
 
-        viewModelScope.launch {
+        val searchToken = activeSearchToken
+        paginationJob = viewModelScope.launch {
             searchRepository.loadMoreAlbums(token).fold(
                 onSuccess = { result ->
+                    if (searchToken != activeSearchToken) return@fold
                     val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
                     // Filter duplicates
                     val existingIds = latestState.albums.map { it.id }.toSet()
@@ -238,11 +214,12 @@ class SearchViewModel @Inject constructor(
 
                     _searchState.value = latestState.copy(
                         albums = latestState.albums + newAlbums,
-                        continuationToken = result.continuationToken,
+                        continuationToken = result.continuationToken?.takeUnless { it == token },
                         isPaginating = false
                     )
                 },
                 onFailure = { e ->
+                    if (searchToken != activeSearchToken) return@fold
                     val latestState = _searchState.value as? SearchState.BrowseAlbums ?: return@fold
                     _searchState.value = latestState.copy(
                         isPaginating = false,
@@ -254,29 +231,33 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun handleQueryChange(query: String) {
+        if (_searchQuery.value == query) return
+        cancelActiveJobs()
         _searchQuery.value = query
-
-        if (query.isBlank()) {
-            cancelActiveJobs()
+        val trimmed = query.trim()
+        _textSuggestions.value = emptyList()
+        _contentSuggestions.value = emptyList()
+        _isLoadingSuggestions.value = false
+        _searchState.value = if (trimmed.isEmpty()) {
             currentQuery = ""
-            _textSuggestions.value = emptyList()
-            _contentSuggestions.value = emptyList()
-            _isLoadingSuggestions.value = false
-            _searchState.value = SearchState.Initial
+            SearchState.Initial
         } else {
-            val state = _searchState.value
-            if (state is SearchState.Results || state is SearchState.Empty || state is SearchState.Error) {
-                val trimmed = query.trim()
-                _searchState.value = SearchState.Suggestions(
-                    query = trimmed,
-                    suggestions = _textSuggestions.value,
-                    recentSearches = _recentSearches.value
-                        .filter { it.contains(trimmed, ignoreCase = true) }
-                        .take(5)
-                )
+            suggestionsState(trimmed)
+        }
+        if (trimmed.length >= 2) {
+            val searchToken = activeSearchToken
+            suggestionsJob = viewModelScope.launch {
+                delay(300)
+                fetchSuggestions(trimmed, searchToken)
             }
         }
     }
+
+    private fun suggestionsState(query: String) = SearchState.Suggestions(
+        query = query,
+        suggestions = _textSuggestions.value,
+        recentSearches = _recentSearches.value.filter { it.contains(query, ignoreCase = true) }.take(5)
+    )
 
     private fun submitSearch(query: String) {
         val trimmedQuery = query.trim()
@@ -285,7 +266,6 @@ class SearchViewModel @Inject constructor(
         cancelActiveJobs()
         currentQuery = trimmedQuery
         _searchQuery.value = trimmedQuery
-        activeSearchToken += 1L
         val searchToken = activeSearchToken
 
         // Immediately record search in history when submitted
@@ -354,7 +334,8 @@ class SearchViewModel @Inject constructor(
                     if (searchToken != activeSearchToken) return@fold
 
                     val songs = result.songs.distinctBy { it.id }
-                    if (songs.isEmpty() && result.videos.isEmpty()) {
+                    val canAdvance = result.canAdvanceFrom(offset = 0, continuation = null)
+                    if (songs.isEmpty() && result.videos.isEmpty() && !canAdvance) {
                         _searchState.value = SearchState.Empty(
                             query = trimmedQuery,
                             suggestions = getAlternativeSuggestions(trimmedQuery)
@@ -365,11 +346,7 @@ class SearchViewModel @Inject constructor(
                             songs = songs,
                             videos = result.videos,
                             totalCount = if (songs.isNotEmpty()) songs.size else result.videos.size,
-                            paginationState = if (result.hasMore) {
-                                PaginationState.Idle
-                            } else {
-                                PaginationState.NoMoreData
-                            },
+                            paginationState = paginationAfterPage(canAdvance, songs.isNotEmpty()),
                             videoPaginationState = if (!result.videoContinuationToken.isNullOrBlank()) {
                                 PaginationState.Idle
                             } else {
@@ -377,7 +354,8 @@ class SearchViewModel @Inject constructor(
                             },
                             filters = currentFilters,
                             continuationToken = result.continuationToken,
-                            videoContinuationToken = result.videoContinuationToken
+                            videoContinuationToken = result.videoContinuationToken,
+                            nextOffset = result.nextOffset,
                         )
                         _effects.send(SearchEffect.ScrollToTop(trimmedQuery))
                     }
@@ -394,84 +372,30 @@ class SearchViewModel @Inject constructor(
         }
     }
 
-    private fun fetchSuggestions(query: String) {
-        suggestionsJob?.cancel()
-
-        val trimmedQuery = query.trim()
-        if (trimmedQuery.length < 2) return
-
-        val currentState = _searchState.value
-        if (currentState is SearchState.Results && currentState.query == trimmedQuery) {
-            return
-        }
-        if (currentState is SearchState.LoadingResults && currentState.query == trimmedQuery) {
-            return
-        }
-
-        _textSuggestions.value = emptyList()
-        _contentSuggestions.value = emptyList()
-        _searchState.value = SearchState.LoadingSuggestions(trimmedQuery)
-
-        if (!networkMonitor.isConnectedNow()) {
-            suggestionsJob = viewModelScope.launch {
-                try {
-                    val localSongs = downloadRepository.searchDownloadedSongs("%$trimmedQuery%")
-                    if (_searchQuery.value.trim() != trimmedQuery) return@launch
-                    val suggestions = localSongs.map { it.title }.distinct().take(5)
-                    _textSuggestions.value = suggestions
-                    _contentSuggestions.value = emptyList()
-                    _isLoadingSuggestions.value = false
-                    _searchState.value = SearchState.Suggestions(
-                        query = trimmedQuery,
-                        suggestions = suggestions,
-                        recentSearches = _recentSearches.value
-                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
-                            .take(3)
-                    )
-                } catch (e: Exception) {
-                    if (_searchQuery.value.trim() != trimmedQuery) return@launch
-                    _textSuggestions.value = emptyList()
-                    _contentSuggestions.value = emptyList()
-                    _isLoadingSuggestions.value = false
-                    _searchState.value = SearchState.Suggestions(
-                        query = trimmedQuery,
-                        suggestions = emptyList(),
-                        recentSearches = _recentSearches.value
-                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
-                            .take(3)
-                    )
-                }
-            }
-            return
-        }
-
+    private suspend fun fetchSuggestions(query: String, searchToken: Long) {
+        if (searchToken != activeSearchToken) return
         _isLoadingSuggestions.value = true
-        suggestionsJob = viewModelScope.launch {
-            searchSuggestionRepository.getSearchSuggestions(trimmedQuery).fold(
-                onSuccess = { parsedSuggestions ->
-                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
-                    val textSugs = parsedSuggestions.first
-                    val contentSugs = parsedSuggestions.second
-
-                    _textSuggestions.value = textSugs
-                    _contentSuggestions.value = contentSugs
-                    _isLoadingSuggestions.value = false
-
-                    _searchState.value = SearchState.Suggestions(
-                        query = trimmedQuery,
-                        suggestions = textSugs,
-                        recentSearches = _recentSearches.value
-                            .filter { it.contains(trimmedQuery, ignoreCase = true) }
-                            .take(3)
-                    )
-                },
-                onFailure = {
-                    if (_searchQuery.value.trim() != trimmedQuery) return@fold
-                    _isLoadingSuggestions.value = false
-                    // Keep existing cached suggestions but fail silently as requested
-                }
-            )
+        try {
+            val remote = if (networkMonitor.isConnectedNow()) {
+                searchSuggestionRepository.getSearchSuggestions(query).getOrNull()
+            } else null
+            val (text, content) = remote ?: (localSuggestions(query) to emptyList())
+            if (searchToken != activeSearchToken) return
+            _textSuggestions.value = text
+            _contentSuggestions.value = content
+            _searchState.value = suggestionsState(query)
+        } finally {
+            if (searchToken == activeSearchToken) _isLoadingSuggestions.value = false
         }
+    }
+
+    private suspend fun localSuggestions(query: String): List<String> = try {
+        downloadRepository.searchDownloadedSongs("%$query%").asSequence()
+            .map { it.title }.distinct().take(5).toList()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        emptyList()
     }
 
     private fun handleSuggestionClick(suggestion: String) {
@@ -564,8 +488,9 @@ class SearchViewModel @Inject constructor(
             paginationState = PaginationState.Loading
         )
 
-        viewModelScope.launch {
-            val offset = currentState.songs.size
+        val searchToken = activeSearchToken
+        paginationJob = viewModelScope.launch {
+            val offset = currentState.nextOffset ?: 0
 
             searchRepository.searchSongs(
                 query = currentState.query,
@@ -576,27 +501,24 @@ class SearchViewModel @Inject constructor(
             ).fold(
                 onSuccess = { result ->
                     val latestState = _searchState.value as? SearchState.Results
-                    if (latestState == null || latestState.query != currentState.query) return@fold
+                    if (searchToken != activeSearchToken || latestState == null || latestState.query != currentState.query) return@fold
 
                     val existingIds = latestState.songs.asSequence().map { it.id }.toHashSet()
-                    val appendedSongs = result.songs.filterNot { existingIds.contains(it.id) }
+                    val appendedSongs = result.songs.filter { existingIds.add(it.id) }
                     val mergedSongs = latestState.songs + appendedSongs
-                    val hasMoreData = result.hasMore && appendedSongs.isNotEmpty()
+                    val hasMoreData = result.canAdvanceFrom(offset, currentState.continuationToken)
 
                     _searchState.value = latestState.copy(
                         songs = mergedSongs,
                         totalCount = mergedSongs.size,
-                        paginationState = if (hasMoreData) {
-                            PaginationState.Idle
-                        } else {
-                            PaginationState.NoMoreData
-                        },
-                        continuationToken = result.continuationToken
+                        paginationState = paginationAfterPage(hasMoreData, appendedSongs.isNotEmpty()),
+                        continuationToken = result.continuationToken,
+                        nextOffset = result.nextOffset,
                     )
                 },
                 onFailure = { exception ->
                     val latestState = _searchState.value as? SearchState.Results
-                    if (latestState == null || latestState.query != currentState.query) return@fold
+                    if (searchToken != activeSearchToken || latestState == null || latestState.query != currentState.query) return@fold
 
                     _searchState.value = latestState.copy(
                         paginationState = PaginationState.Error(
@@ -632,7 +554,8 @@ class SearchViewModel @Inject constructor(
             videoPaginationState = PaginationState.Loading
         )
 
-        viewModelScope.launch {
+        val searchToken = activeSearchToken
+        videoPaginationJob = viewModelScope.launch {
             searchRepository.searchVideos(
                 query = currentState.query,
                 limit = 20,
@@ -640,7 +563,7 @@ class SearchViewModel @Inject constructor(
             ).fold(
                 onSuccess = { result ->
                     val latestState = _searchState.value as? SearchState.Results
-                    if (latestState == null || latestState.query != currentState.query) return@fold
+                    if (searchToken != activeSearchToken || latestState == null || latestState.query != currentState.query) return@fold
 
                     val existingVideoIds = latestState.videos.map { it.id }.toHashSet()
                     val newVideos = result.videos
@@ -648,20 +571,17 @@ class SearchViewModel @Inject constructor(
                         .distinctBy { it.id }
 
                     val mergedVideos = latestState.videos + newVideos
-                    val hasMoreVideos = !result.videoContinuationToken.isNullOrBlank() && newVideos.isNotEmpty()
+                    val hasMoreVideos = !result.videoContinuationToken.isNullOrBlank() &&
+                        result.videoContinuationToken != currentState.videoContinuationToken
                     _searchState.value = latestState.copy(
                         videos = mergedVideos,
-                        videoPaginationState = if (hasMoreVideos) {
-                            PaginationState.Idle
-                        } else {
-                            PaginationState.NoMoreData
-                        },
+                        videoPaginationState = paginationAfterPage(hasMoreVideos, newVideos.isNotEmpty()),
                         videoContinuationToken = result.videoContinuationToken
                     )
                 },
                 onFailure = { exception ->
                     val latestState = _searchState.value as? SearchState.Results
-                    if (latestState == null || latestState.query != currentState.query) return@fold
+                    if (searchToken != activeSearchToken || latestState == null || latestState.query != currentState.query) return@fold
 
                     _searchState.value = latestState.copy(
                         videoPaginationState = PaginationState.Error(
@@ -681,16 +601,20 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun browseArtists() {
+        cancelActiveJobs()
+        val searchToken = activeSearchToken
         _searchState.value = SearchState.BrowseArtists(isLoading = true)
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
             searchRepository.getTopArtists(50).fold(
                 onSuccess = { artists ->
+                    if (searchToken != activeSearchToken) return@fold
                     _searchState.value = SearchState.BrowseArtists(
                         artists = artists,
                         isLoading = false
                     )
                 },
                 onFailure = { e ->
+                    if (searchToken != activeSearchToken) return@fold
                     _searchState.value = SearchState.BrowseArtists(
                         isLoading = false,
                         error = e.message ?: "Failed to load artists"
@@ -701,16 +625,20 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun browseAlbums() {
+        cancelActiveJobs()
+        val searchToken = activeSearchToken
         _searchState.value = SearchState.BrowseAlbums(isLoading = true)
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
             searchRepository.getTopAlbums(50).fold(
                 onSuccess = { albums ->
+                    if (searchToken != activeSearchToken) return@fold
                     _searchState.value = SearchState.BrowseAlbums(
                         albums = albums,
                         isLoading = false
                     )
                 },
                 onFailure = { e ->
+                    if (searchToken != activeSearchToken) return@fold
                     _searchState.value = SearchState.BrowseAlbums(
                         isLoading = false,
                         error = e.message ?: "Failed to load albums"
@@ -721,6 +649,7 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun backFromBrowse() {
+        cancelActiveJobs()
         _searchState.value = SearchState.Initial
     }
 
@@ -744,6 +673,10 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun cancelActiveJobs() {
+        activeSearchToken += 1L
+        _isLoadingSuggestions.value = false
+        paginationJob?.cancel()
+        videoPaginationJob?.cancel()
         searchJob?.cancel()
         suggestionsJob?.cancel()
     }

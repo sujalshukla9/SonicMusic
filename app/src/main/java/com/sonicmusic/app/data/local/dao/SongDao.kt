@@ -16,11 +16,17 @@ interface SongDao {
     @Query("SELECT * FROM songs WHERE id = :songId")
     suspend fun getSongById(songId: String): SongEntity?
 
+    @Query("SELECT * FROM songs WHERE id IN (:ids)")
+    suspend fun getSongsByIds(ids: List<String>): List<SongEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSong(song: SongEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(songs: List<SongEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertMissingSongs(songs: List<SongEntity>)
 
     @Update
     suspend fun updateSong(song: SongEntity)
@@ -37,6 +43,4 @@ interface SongDao {
     @Query("DELETE FROM songs WHERE id = :songId")
     suspend fun deleteSong(songId: String)
 
-    @Query("UPDATE songs SET cachedStreamUrl = null, cacheExpiry = null")
-    suspend fun clearAllCachedStreamUrls()
 }

@@ -12,14 +12,19 @@ import com.sonicmusic.app.data.local.dao.ArtistPlayCount
 import com.sonicmusic.app.domain.model.LocalSong
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Playlist
+import com.sonicmusic.app.domain.model.HomeShelfItem
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.toSong
 import com.sonicmusic.app.domain.repository.ArtistRepository
 import com.sonicmusic.app.domain.repository.HistoryRepository
 import com.sonicmusic.app.domain.repository.LocalMusicRepository
 import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
+import com.sonicmusic.app.features.library.data.MusicLibraryPage
+import com.sonicmusic.app.features.library.data.MusicLibrarySection
+import com.sonicmusic.app.features.library.data.YouTubeMusicLibrary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,6 +32,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.FlowPreview
@@ -55,14 +61,32 @@ class LibraryViewModel @Inject constructor(
     private val localMusicRepository: LocalMusicRepository,
     private val artistRepository: ArtistRepository,
     private val songDownloadManager: SongDownloadManager,
-    private val playerServiceConnection: PlayerServiceConnection
+    private val playerServiceConnection: PlayerServiceConnection,
+    private val accountLibrary: YouTubeMusicLibrary
 ) : ViewModel() {
     companion object {
         private const val RECENTLY_PLAYED_LIMIT = 10 // Preview only; full list loaded in RecentlyPlayedScreen
     }
 
-    val likedSongs: StateFlow<List<Song>> = songRepository.getLikedSongs()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val accountSharing = SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0)
+
+    val likedSongs: StateFlow<List<Song>> = combine(songRepository.getLikedSongs(), accountLibrary.observe(MusicLibrarySection.Likes)) { local, remote ->
+        (local + remote.items.mapNotNull(HomeShelfItem::playableSong)).distinctBy(Song::id)
+    }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, accountSharing, emptyList())
+
+    val accountSongs = accountLibrary.observe(MusicLibrarySection.SavedSongs)
+        .stateIn(viewModelScope, accountSharing, MusicLibraryPage())
+    val accountAlbums = accountLibrary.observe(MusicLibrarySection.Albums)
+        .stateIn(viewModelScope, accountSharing, MusicLibraryPage())
+    val accountArtists = accountLibrary.observe(MusicLibrarySection.Artists)
+        .stateIn(viewModelScope, accountSharing, MusicLibraryPage())
+    val accountPlaylists = accountLibrary.observe(MusicLibrarySection.Playlists)
+        .stateIn(viewModelScope, accountSharing, MusicLibraryPage())
+
+    fun loadMoreAccount(section: MusicLibrarySection) {
+        viewModelScope.launch { accountLibrary.loadMore(section) }
+    }
 
     val playlists: StateFlow<List<Playlist>> = playlistRepository.getAllPlaylists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -113,6 +137,10 @@ class LibraryViewModel @Inject constructor(
     // History search filter
     private val _historySearchQuery = MutableStateFlow("")
     val historySearchQuery: StateFlow<String> = _historySearchQuery.asStateFlow()
+    val accountHistory = combine(accountLibrary.observe(MusicLibrarySection.History), _historySearchQuery) { history, query ->
+        history.copy(items = history.items.filter { it.title.contains(query, true) || it.subtitle.contains(query, true) })
+    }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, accountSharing, MusicLibraryPage())
 
     val fullHistory: StateFlow<List<PlaybackHistory>> = combine(
         _historySearchQuery,
@@ -126,7 +154,7 @@ class LibraryViewModel @Inject constructor(
                 it.artist.contains(query, ignoreCase = true)
             }
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     fun setHistorySearchQuery(query: String) {
         _historySearchQuery.value = query
@@ -149,7 +177,7 @@ class LibraryViewModel @Inject constructor(
             it.title.contains(query, ignoreCase = true) ||
             it.artist.contains(query, ignoreCase = true)
         }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.stateIn(viewModelScope, accountSharing, emptyList())
 
     // --- Downloads Filtering, Sorting, and Searching ---
     private val _downloadSortType = MutableStateFlow(DownloadedSortType.RECENTLY_DOWNLOADED)
@@ -205,7 +233,7 @@ class LibraryViewModel @Inject constructor(
         }
 
         list
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.flowOn(Dispatchers.Default).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         viewModelScope.launch {
@@ -273,7 +301,13 @@ class LibraryViewModel @Inject constructor(
 
     fun onSongClick(song: Song) {
         viewModelScope.launch {
-            songRepository.getStreamUrl(song.id, StreamQuality.BEST)
+            songRepository.getStreamUrl(
+                songId = song.id,
+                quality = StreamQuality.BEST,
+                title = song.title,
+                artist = song.artist,
+                durationSec = song.duration
+            )
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }
@@ -283,20 +317,15 @@ class LibraryViewModel @Inject constructor(
         }
     }
     
-    fun onLocalSongClick(localSong: LocalSong) {
-        // Convert local song to Song and play
-        val song = Song(
-            id = "local_${localSong.id}",
-            title = localSong.title,
-            artist = localSong.artist,
-            duration = localSong.duration / 1000,
-            thumbnailUrl = "" // Local songs don't have thumbnails
-        )
-        
-        // For local songs, use the file path directly as stream URL
-        playerServiceConnection.playSong(song, localSong.filePath)
+    fun playLocalSongs(localSongs: List<LocalSong>, startIndex: Int = 0) {
+        playerServiceConnection.playSongsLazy(localSongs.map { it.toSong() }, startIndex)
     }
-    
+
+    fun playLocalSong(localSong: LocalSong) {
+        // Play only the clicked song + fresh radio recommendations (not all local songs)
+        playerServiceConnection.playSongWithRadio(localSong.toSong())
+    }
+
     fun onHistoryItemClick(history: PlaybackHistory) {
         // Convert history to song and play
         val song = Song(
@@ -308,7 +337,12 @@ class LibraryViewModel @Inject constructor(
         )
         
         viewModelScope.launch {
-            songRepository.getStreamUrl(history.songId, StreamQuality.BEST)
+            songRepository.getStreamUrl(
+                songId = history.songId,
+                quality = StreamQuality.BEST,
+                title = history.title,
+                artist = history.artist
+            )
                 .onSuccess { streamUrl ->
                     playerServiceConnection.playSong(song, streamUrl)
                 }
@@ -392,19 +426,8 @@ class LibraryViewModel @Inject constructor(
         playerServiceConnection.playSongsLazy(songs, 0, songRepository)
     }
 
-    fun removeDownloadedSong(songId: String) {
-        viewModelScope.launch {
-            val removed = songDownloadManager.deleteDownload(songId)
-            if (!removed) {
-                _error.value = "Failed to remove download"
-            }
-        }
-    }
-
-    fun restoreDownloadedSong(song: DownloadedSong) {
-        viewModelScope.launch {
-            songDownloadManager.restoreDownloadedSong(song)
-        }
+    suspend fun removeDownloadedSong(songId: String) {
+        if (!songDownloadManager.deleteDownload(songId)) _error.value = "Failed to remove download"
     }
 
     fun updateStorageMetrics() {

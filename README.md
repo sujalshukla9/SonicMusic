@@ -73,4 +73,16 @@ _Note: For maximum performance and smooth 60fps animations, compile using the `r
 
 ---
 
+### YouTube Music account sync setup
+
+1. In Google Cloud, enable **YouTube Data API v3** and configure the OAuth consent screen for the `https://www.googleapis.com/auth/youtube.readonly` scope. For a consent screen in Testing, add the Google account as a test user.
+2. Create an **Android** OAuth client with package `com.sonicmusic.app` and the SHA-1 of the certificate that signs the installed APK. Run `./gradlew :app:signingReport` to find the debug fingerprint.
+3. On an Android device with Google Play services, open **Settings → YouTube Music account sync → Connect Google Account**. The synced playlists and liked music appear in **Library → Playlists**. Use **Sync now** to refresh them.
+
+If Google closes the consent screen, check that the Android client matches the installed APK’s signing SHA-1 and that the account is listed under **Audience → Test users** when the app is in Testing.
+
+[Android OAuth setup](https://developer.android.com/identity/authorization) · [YouTube Data API setup](https://developers.google.com/youtube/data/getting-started)
+
+---
+
 > **Disclaimer:** This app uses data and streams provided by third parties (YouTube). It is intended for educational purposes and personal use.

@@ -1,11 +1,9 @@
 package com.sonicmusic.app.features.search.data
 
-import androidx.paging.Pager
-import androidx.paging.PagingConfig
-import androidx.paging.PagingData
+import kotlinx.coroutines.CancellationException
+
 import com.sonicmusic.app.data.local.dao.SongDao
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
-import com.sonicmusic.app.data.paging.SearchPagingSource
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.Song
@@ -19,7 +17,6 @@ import com.sonicmusic.app.shared.state.DurationFilter
 import com.sonicmusic.app.shared.state.SortOption
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -44,28 +41,7 @@ class SearchRepositoryImpl @Inject constructor(
 
     // Bounded in-memory cache (LRU, max 50 entries) to prevent unbounded memory growth
     private val searchCache = LruCache<String, CacheEntry>(50)
-    private val fallbackCountryCode = "US"
-
-    override fun searchSongsPaged(
-        query: String,
-        filters: SearchFilters
-    ): Flow<PagingData<Song>> {
-        return Pager(
-            config = PagingConfig(
-                pageSize = SearchPagingSource.DEFAULT_PAGE_SIZE,
-                prefetchDistance = 3,
-                enablePlaceholders = false,
-                initialLoadSize = SearchPagingSource.DEFAULT_PAGE_SIZE
-            ),
-            pagingSourceFactory = {
-                SearchPagingSource(
-                    youTubeiService = youTubeiService,
-                    query = query,
-                    filters = filters
-                )
-            }
-        ).flow
-    }
+    private val fallbackCountryCode get() = com.sonicmusic.app.domain.model.CountryUtils.resolveFallbackCountryCode()
 
     override suspend fun searchSongs(
         query: String,
@@ -133,12 +109,12 @@ class SearchRepositoryImpl @Inject constructor(
                         ).take(safeLimit)
 
 
-                        val nextContinuation = page.continuationToken?.takeIf { it.isNotBlank() }
+                        val nextContinuation = page.continuationToken?.takeIf { it.isNotBlank() && it != safeContinuation }
                         val hasMore = if (nextContinuation != null) {
                             true
                         } else {
                             // Offset fallback path (e.g. NewPipe first page)
-                            page.songs.size >= safeLimit
+                            safeContinuation == null && page.songs.size >= safeLimit
                         }
                         val nextOffsetCandidate = if (nextContinuation == null && hasMore) {
                             safeOffset + safeLimit
@@ -148,7 +124,7 @@ class SearchRepositoryImpl @Inject constructor(
 
                         // Filter out videos that are already in song results
                         val songIds = pageSongs.map { it.id }.toHashSet()
-                        val filteredVideos = videoResults.filterNot { songIds.contains(it.id) }
+                        val filteredVideos = videoResults.filterNot { songIds.contains(it.id) }.distinctBy { it.id }
 
                         val searchResult = SearchResult(
                             songs = pageSongs,
@@ -210,6 +186,8 @@ class SearchRepositoryImpl @Inject constructor(
                     }
                 )
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }

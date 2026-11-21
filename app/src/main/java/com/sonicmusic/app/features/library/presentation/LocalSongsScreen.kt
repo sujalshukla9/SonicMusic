@@ -3,7 +3,7 @@ package com.sonicmusic.app.features.library.presentation
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -107,7 +107,7 @@ fun LocalSongsScreen(
                 contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 // Header with play controls
-                item {
+                item(key = "local_play_all", contentType = "controls") {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -117,7 +117,7 @@ fun LocalSongsScreen(
                         Button(
                             onClick = { 
                                 if (localSongs.isNotEmpty()) {
-                                    viewModel.onLocalSongClick(localSongs.first())
+                                    viewModel.playLocalSongs(localSongs)
                                     onShowFullPlayer()
                                 }
                             },
@@ -134,7 +134,7 @@ fun LocalSongsScreen(
                     }
                 }
 
-                item {
+                item(key = "local_songs_count", contentType = "header") {
                     Text(
                         text = "${localSongs.size} songs",
                         style = MaterialTheme.typography.bodyMedium,
@@ -143,15 +143,15 @@ fun LocalSongsScreen(
                     )
                 }
 
-                items(
-                    items = localSongs, 
-                    key = { it.id },
-                    contentType = { "local_song" }
-                ) { song ->
+                itemsIndexed(
+                    items = localSongs,
+                    key = { _, song -> song.id },
+                    contentType = { _, _ -> "local_song" }
+                ) { _, song ->
                     LocalSongItem(
                         song = song,
                         onClick = { 
-                            viewModel.onLocalSongClick(song)
+                            viewModel.playLocalSong(song)
                             onShowFullPlayer()
                         }
                     )
@@ -228,7 +228,7 @@ private fun LocalSongItem(
         }
 
         Text(
-            text = formatDuration(song.duration / 1000),
+            text = formatDuration(song.duration),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

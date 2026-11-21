@@ -1,24 +1,26 @@
 package com.sonicmusic.app.features.player.presentation
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import com.sonicmusic.app.theme.contentMotion
+import com.sonicmusic.app.theme.iconMotion
+import com.sonicmusic.app.theme.pressable
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.EnterTransition
+import com.sonicmusic.app.theme.MotionTokens
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -30,13 +32,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
-import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,31 +45,28 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.widthIn
 import com.sonicmusic.app.theme.Dimens
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sonicmusic.app.shared.components.SongThumbnail
+import com.sonicmusic.app.theme.sharedPlayerArtwork
 import com.sonicmusic.app.features.player.presentation.PlayerViewModel
-import com.sonicmusic.app.domain.model.ThumbnailShape
-import com.sonicmusic.app.theme.toComposeShape
-import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -86,6 +84,7 @@ fun MiniPlayer(
     modifier: Modifier = Modifier,
     viewModel: PlayerViewModel = hiltViewModel(),
     backgroundColorOverride: Color? = null,
+    floating: Boolean = false,
     onExpand: () -> Unit = {}
 ) {
     val currentSong by viewModel.currentSong.collectAsStateWithLifecycle()
@@ -106,38 +105,40 @@ fun MiniPlayer(
 
     androidx.compose.animation.AnimatedVisibility(
         visible = currentSong != null && songToDisplay != null,
-        enter = if (reduceMotion) fadeIn(androidx.compose.animation.core.snap()) else {
-            androidx.compose.animation.slideInVertically(
-                initialOffsetY = { it },
-                animationSpec = tween(
-                    durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationStandard,
-                    easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedDecelerate
-                )
-            ) + fadeIn(animationSpec = tween(com.sonicmusic.app.theme.MotionTokens.DurationFast))
-        },
-        exit = if (reduceMotion) fadeOut(androidx.compose.animation.core.snap()) else {
-            androidx.compose.animation.slideOutVertically(
-                targetOffsetY = { it },
-                animationSpec = tween(
-                    durationMillis = com.sonicmusic.app.theme.MotionTokens.DurationFast,
-                    easing = com.sonicmusic.app.theme.MotionTokens.EmphasizedAccelerate
-                )
-            ) + fadeOut(animationSpec = tween(com.sonicmusic.app.theme.MotionTokens.DurationFast))
-        },
+        enter = if (reduceMotion) EnterTransition.None else
+            slideInVertically(MotionTokens.spatial()) { it / 2 } + fadeIn(MotionTokens.effects()),
+        exit = if (reduceMotion) ExitTransition.None else
+            slideOutVertically(MotionTokens.quickSpatial()) { it / 2 } + fadeOut(MotionTokens.quickEffects()),
         modifier = modifier
     ) {
-        val miniHeight = Dimens.miniPlayerHeight
+        val miniHeight = if (floating) 64.dp else Dimens.miniPlayerHeight
         val artSize = Dimens.miniPlayerArtSize
 
-        // Swipe offset driven by an Animatable inside the gesture handlers.
-        val offsetX = remember { Animatable(0f) }
+        var dragOffset by remember { mutableFloatStateOf(0f) }
+        val settleOffset = remember { Animatable(0f) }
+        var dragging by remember { mutableStateOf(false) }
         val swipeScope = rememberCoroutineScope()
-        
-        val swipeThreshold = 120f
+        var settleJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+        fun settleSwipe() {
+            val offset = dragOffset
+            settleJob?.cancel()
+            settleJob = swipeScope.launch {
+                settleOffset.snapTo(offset)
+                dragging = false
+                if (reduceMotion) settleOffset.snapTo(0f)
+                else settleOffset.animateTo(0f, MotionTokens.PanelSpring)
+            }
+        }
+
         val colorScheme = MaterialTheme.colorScheme
+        val backgroundColor = backgroundColorOverride ?: colorScheme.secondaryContainer
+        val foregroundColor = if (backgroundColorOverride == null) {
+            colorScheme.onSecondaryContainer
+        } else {
+            colorScheme.onSurface
+        }
         val accentColor = colorScheme.primary
         val onAccentColor = colorScheme.onPrimary
-        val backgroundColor = backgroundColorOverride ?: colorScheme.surfaceContainerHigh
 
         Box(
             modifier = Modifier.fillMaxWidth(),
@@ -148,49 +149,46 @@ fun MiniPlayer(
                 .widthIn(max = Dimens.maxContentWidth)
                 .fillMaxWidth()
                 .height(miniHeight)
-                .pointerInput(Unit) {
+                .pointerInput(reduceMotion) {
+                    val swipeThreshold = 64.dp.toPx()
+                    val maxOffset = 116.dp.toPx()
                     detectHorizontalDragGestures(
+                        onDragStart = {
+                            settleJob?.cancel()
+                            dragOffset = settleOffset.value
+                            dragging = true
+                        },
                         onDragEnd = {
                             when {
-                                offsetX.value < -swipeThreshold -> {
-                                    if (viewModel.playerUiState.value.canSkipNext) {
-                                        viewModel.skipToNext()
-                                    }
-                                }
-                                offsetX.value > swipeThreshold -> {
-                                    if (viewModel.playerUiState.value.canSkipPrevious) {
-                                        viewModel.forceSkipToPrevious()
-                                    }
-                                }
+                                dragOffset < -swipeThreshold && viewModel.playerUiState.value.canSkipNext -> viewModel.skipToNext()
+                                dragOffset > swipeThreshold && viewModel.playerUiState.value.canSkipPrevious -> viewModel.forceSkipToPrevious()
                             }
-                            swipeScope.launch {
-                                offsetX.animateTo(0f, tween(durationMillis = 150, easing = FastOutSlowInEasing))
-                            }
+                            settleSwipe()
                         },
-                        onDragCancel = {
-                            swipeScope.launch {
-                                offsetX.animateTo(0f, tween(durationMillis = 150, easing = FastOutSlowInEasing))
-                            }
-                        },
+                        onDragCancel = { settleSwipe() },
                         onHorizontalDrag = { change, dragAmount ->
                             change.consume()
-                            swipeScope.launch {
-                                offsetX.snapTo((offsetX.value + dragAmount).coerceIn(-200f, 200f))
-                            }
+                            dragOffset = (dragOffset + dragAmount).coerceIn(-maxOffset, maxOffset)
                         }
                     )
                 }
-                .clickable(onClick = onExpand),
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                .pressable(role = Role.Button, onClickLabel = "Open Now Playing", onClick = onExpand),
+            shape = if (floating) {
+                RoundedCornerShape(24.dp)
+            } else {
+                RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+            },
             color = backgroundColor,
-            tonalElevation = 6.dp,
-            shadowElevation = 2.dp
+            tonalElevation = if (floating) 0.dp else 6.dp,
+            shadowElevation = if (floating) 0.dp else 2.dp
         ) {
             Box {
                 // Swipe indicators (background)
                 // Main content
                 Column(
-                    modifier = Modifier.offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                    modifier = Modifier.graphicsLayer {
+                        translationX = if (dragging) dragOffset else settleOffset.value
+                    }
                 ) {
                     Row(
                         modifier = Modifier
@@ -203,77 +201,75 @@ fun MiniPlayer(
                         SongThumbnail(
                             artworkUrl = songToDisplay?.thumbnailUrl,
                             shape = thumbnailShape,
-                            shadowElevation = 8.dp,
-                            modifier = Modifier.size(artSize)
+                            shadowElevation = if (floating) 0.dp else 8.dp,
+                            modifier = Modifier.size(artSize).sharedPlayerArtwork(songToDisplay?.id)
                         )
 
                         Spacer(modifier = Modifier.width(12.dp))
 
                         // Song Info
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = songToDisplay?.title ?: "",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = colorScheme.onSurface
-                            )
-                            Text(
-                                text = songToDisplay?.artist ?: "",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        // Like Button — AnimatedContent with spring pop for heart fill
-                        FilledTonalIconButton(
-                            onClick = { viewModel.toggleLike() },
-                            modifier = Modifier.size(40.dp),
-                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = if (isLiked) {
-                                    colorScheme.errorContainer
-                                } else {
-                                    colorScheme.surfaceContainerHighest
-                                },
-                                contentColor = if (isLiked) {
-                                    colorScheme.onErrorContainer
-                                } else {
-                                    colorScheme.onSurfaceVariant
-                                }
-                            )
-                        ) {
-                            AnimatedContent(
-                                targetState = isLiked,
-                                transitionSpec = {
-                                    if (targetState) {
-                                        (scaleIn(
-                                            animationSpec = spring(dampingRatio = 0.55f, stiffness = 600f),
-                                            initialScale = 0.6f
-                                        ) + fadeIn(tween(100)))
-                                            .togetherWith(scaleOut(tween(70)) + fadeOut(tween(70)))
-                                    } else {
-                                        (fadeIn(tween(100)) + scaleIn(initialScale = 0.85f, animationSpec = tween(100)))
-                                            .togetherWith(fadeOut(tween(70)) + scaleOut(targetScale = 0.85f, animationSpec = tween(70)))
-                                    }
-                                },
-                                label = "mini_like_icon_morph"
-                            ) { liked ->
-                                Icon(
-                                    imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                    contentDescription = if (liked) "Unlike" else " Like",
-                                    modifier = Modifier.size(18.dp)
+                        AnimatedContent(
+                            targetState = songToDisplay,
+                            contentKey = { it?.id },
+                            transitionSpec = { contentMotion(reduceMotion) },
+                            label = "mini_player_metadata",
+                            modifier = Modifier.weight(1f)
+                        ) { song ->
+                            Column {
+                                Text(
+                                    text = song?.title.orEmpty(),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = foregroundColor
+                                )
+                                Text(
+                                    text = song?.artist.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (floating) foregroundColor else colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
 
-                        // Play/Pause Button — AnimatedContent crossfade
+                        if (!floating) {
+                            FilledTonalIconButton(
+                                onClick = { viewModel.toggleLike() },
+                                modifier = Modifier.size(40.dp),
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = if (isLiked) {
+                                        colorScheme.errorContainer
+                                    } else {
+                                        colorScheme.surfaceContainerHighest
+                                    },
+                                    contentColor = if (isLiked) {
+                                        colorScheme.onErrorContainer
+                                    } else {
+                                        colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            ) {
+                                AnimatedContent(
+                                    targetState = isLiked,
+                                    transitionSpec = { iconMotion(reduceMotion) },
+                                    label = "mini_like_icon_morph"
+                                ) { liked ->
+                                    Icon(
+                                        imageVector = if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                        contentDescription = if (liked) "Unlike" else "Like",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        // Playback and buffering share the same footprint.
                         Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                             if (isBuffering) {
                                 CircularProgressIndicator(
@@ -290,25 +286,28 @@ fun MiniPlayer(
                                         contentColor = onAccentColor
                                     )
                                 ) {
-                                    AnimatedContent(
-                                        targetState = isPlaying,
-                                        transitionSpec = {
-                                            (fadeIn(animationSpec = tween(180, delayMillis = 50)) +
-                                                    scaleIn(initialScale = 0.85f, animationSpec = tween(180, delayMillis = 50)))
-                                                .togetherWith(
-                                                    fadeOut(animationSpec = tween(70)) +
-                                                            scaleOut(targetScale = 0.85f, animationSpec = tween(70))
-                                                )
-                                        },
-                                        label = "mini_play_pause_morph"
-                                    ) { playing ->
-                                        Icon(
-                                            imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                            contentDescription = if (playing) "Pause" else "Play",
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                    }
+                                    PlaybackGlyph(playing = isPlaying, modifier = Modifier.size(28.dp))
                                 }
+                            }
+                        }
+
+                        if (floating) {
+                            val canSkipNext by remember(viewModel) {
+                                viewModel.playerUiState
+                                    .map { it.canSkipNext }
+                                    .distinctUntilChanged()
+                            }.collectAsStateWithLifecycle(
+                                initialValue = viewModel.playerUiState.value.canSkipNext
+                            )
+                            IconButton(
+                                onClick = { viewModel.skipToNext() },
+                                enabled = canSkipNext
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.SkipNext,
+                                    contentDescription = "Next track",
+                                    tint = foregroundColor.copy(alpha = if (canSkipNext) 1f else 0.38f)
+                                )
                             }
                         }
                     }
@@ -316,7 +315,8 @@ fun MiniPlayer(
                     // Progress Bar - Isolated to prevent full recomposition
                     MiniPlayerProgress(
                         viewModel = viewModel,
-                        progressColor = accentColor
+                        progressColor = accentColor,
+                        modifier = if (floating) Modifier.padding(horizontal = 24.dp) else Modifier
                     )
                 }
             }
@@ -328,13 +328,14 @@ fun MiniPlayer(
 @Composable
 private fun MiniPlayerProgress(
     viewModel: PlayerViewModel,
-    progressColor: Color
+    progressColor: Color,
+    modifier: Modifier = Modifier
 ) {
-    val progress by viewModel.progress.collectAsStateWithLifecycle()
+    val progress = viewModel.progress.collectAsStateWithLifecycle()
     
     LinearProgressIndicator(
-        progress = { progress },
-        modifier = Modifier
+        progress = { progress.value },
+        modifier = modifier
             .fillMaxWidth()
             .height(2.dp),
         color = progressColor,

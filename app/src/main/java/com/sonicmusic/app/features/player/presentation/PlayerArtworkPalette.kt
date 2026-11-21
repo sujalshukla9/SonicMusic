@@ -8,7 +8,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.ColorUtils
-import com.sonicmusic.app.domain.model.PaletteStyle
 import com.sonicmusic.app.theme.DynamicColorSchemeFactory
 import com.sonicmusic.app.theme.LocalDynamicThemeState
 import com.sonicmusic.app.theme.blendColorScheme
@@ -50,7 +49,7 @@ fun rememberPlayerArtworkPalette(
         val generatedScheme = DynamicColorSchemeFactory.generateColorScheme(
             seedColor = seedColor.toArgb(),
             isDark = isDarkTheme,
-            style = PaletteStyle.CONTENT
+            style = themeState.paletteStyle
         )
 
         val accent = generatedScheme.primary

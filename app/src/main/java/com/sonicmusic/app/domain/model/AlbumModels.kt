@@ -1,5 +1,7 @@
 package com.sonicmusic.app.domain.model
 
+import com.sonicmusic.app.core.util.ThumbnailUrlUtils
+
 data class AlbumDetails(
     val browseId: String,
     val title: String,
@@ -11,7 +13,8 @@ data class AlbumDetails(
     val songs: List<AlbumTrack>,
     val videos: List<AlbumVideo>, // empty if none found
     val artistBrowseId: String? = null,
-    val artistRefs: List<ArtistRef> = emptyList()
+    val artistRefs: List<ArtistRef> = emptyList(),
+    val hasMoreTracks: Boolean = false
 )
 
 data class AlbumTrack(
@@ -23,7 +26,8 @@ data class AlbumTrack(
     val albumBrowseId: String,   // parent album's browseId
     val albumName: String,
     val artistBrowseIds: List<String> = emptyList(),
-    val artistRefs: List<ArtistRef> = emptyList()
+    val artistRefs: List<ArtistRef> = emptyList(),
+    val thumbnailUrl: String? = null
 )
 
 data class AlbumVideo(
@@ -64,7 +68,7 @@ fun AlbumTrack.toSong(albumArtUrl: String? = null): Song {
         album = albumName,
         albumId = albumBrowseId,
         duration = durationSeconds,
-        thumbnailUrl = albumArtUrl.takeIf { !it.isNullOrBlank() } ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg",
+        thumbnailUrl = ThumbnailUrlUtils.albumTrackArtwork(videoId, thumbnailUrl, albumArtUrl),
         category = "Music",
         contentType = ContentType.SONG,
         albumBrowseId = albumBrowseId,

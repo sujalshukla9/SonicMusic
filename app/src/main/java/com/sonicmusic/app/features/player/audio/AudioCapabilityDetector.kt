@@ -13,9 +13,14 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,8 +51,8 @@ import javax.inject.Singleton
  *
  * ## Threading
  *
- * Detection runs on the calling thread (fast — no I/O). The [AudioDeviceCallback] is
- * dispatched on the main looper. Results are emitted via [StateFlow] (thread-safe).
+ * Audio route callbacks enqueue a refresh. Capability detection and its system queries
+ * run in a single background coroutine.
  *
  * @param context Application context (injected by Hilt)
  */
@@ -170,7 +175,9 @@ class AudioCapabilityDetector @Inject constructor(
     val capability: StateFlow<AudioCapability> = _capability.asStateFlow()
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val refreshRequests = Channel<Unit>(Channel.CONFLATED)
     private var spatializerListener: Any? = null
+    private var headTrackingListener: Any? = null
 
     private val deviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
@@ -185,22 +192,24 @@ class AudioCapabilityDetector @Inject constructor(
     }
 
     init {
-        // Run initial detection
-        refresh()
-        // Register callback for output device changes (headphones, Bluetooth, USB DAC, etc.)
-        audioManager.registerAudioDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
-        // Register Spatializer listener for dynamic updates on API 32+
-        registerSpatializerListener()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                audioManager.registerAudioDeviceCallback(deviceCallback, Handler(Looper.getMainLooper()))
+            }.onFailure { Log.w(TAG, "Could not observe audio device changes", it) }
+            registerSpatializerListener()
+            refresh()
+            for (request in refreshRequests) {
+                _capability.value = detectAll()
+            }
+        }
     }
 
     /**
      * Force a re-detection of all audio capabilities.
      * Called automatically on init and on device changes.
      */
-    fun refresh() {
-        val result = detectAll()
-        _capability.value = result
-        Log.d(TAG, "Detection result: $result")
+    private fun refresh() {
+        refreshRequests.trySend(Unit)
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -584,8 +593,6 @@ class AudioCapabilityDetector @Inject constructor(
             }
         }
     }
-
-    private var headTrackingListener: Any? = null
 
     @Suppress("NewApi")
     private fun registerHeadTrackingListener(spatializer: Spatializer) {

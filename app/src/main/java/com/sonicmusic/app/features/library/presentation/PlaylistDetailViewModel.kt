@@ -59,7 +59,7 @@ class PlaylistDetailViewModel @Inject constructor(
             
             // Auto sync YTM playlist if cache expired (> 1 hour)
             val current = _playlist.value
-            if (current != null && !current.isLocal && current.remoteId != null) {
+            if (current != null && !current.isLocal && !current.isYouTubeAccountPlaylist && current.remoteId != null) {
                 val age = System.currentTimeMillis() - current.updatedAt
                 val oneHour = 60 * 60 * 1000L
                 if (age > oneHour) {
@@ -71,7 +71,7 @@ class PlaylistDetailViewModel @Inject constructor(
 
     fun syncPlaylist() {
         val current = _playlist.value ?: return
-        if (!current.isLocal && current.remoteId != null) {
+        if (!current.isLocal && !current.isYouTubeAccountPlaylist && current.remoteId != null) {
             syncRemotePlaylist(current.remoteId)
         } else {
             viewModelScope.launch {
@@ -101,9 +101,8 @@ class PlaylistDetailViewModel @Inject constructor(
     }
 
     fun playSong(song: Song) {
-        val allSongs = _songs.value
-        val index = allSongs.indexOfFirst { it.id == song.id }.takeIf { it >= 0 } ?: 0
-        playerServiceConnection.playSongsLazy(allSongs, index, songRepository)
+        // Play only the clicked song + fresh radio recommendations (not all playlist songs)
+        playerServiceConnection.playSongWithRadio(song)
     }
 
     fun playAll(songs: List<Song>) {

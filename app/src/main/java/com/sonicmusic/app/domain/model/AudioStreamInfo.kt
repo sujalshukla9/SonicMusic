@@ -1,5 +1,8 @@
 package com.sonicmusic.app.domain.model
 
+import com.sonicmusic.app.domain.audio.models.QualityClassification
+import com.sonicmusic.app.domain.audio.models.VerificationStatus
+
 /**
  * Rich metadata about the currently playing audio stream.
  * 
@@ -19,6 +22,10 @@ data class AudioStreamInfo(
     val itag: Int? = null,
     val loudnessDb: Double? = null,
     val contentLength: Long? = null,
+    val isArchiveSource: Boolean = false,
+    val sourceType: SourceType = SourceType.INNERTUBE,
+    val qualityClassification: QualityClassification = QualityClassification.UNKNOWN,
+    val verificationStatus: VerificationStatus = VerificationStatus.VERIFIED,
 ) {
     /**
      * Whether this stream qualifies as genuine high-res audio.
@@ -31,9 +38,44 @@ data class AudioStreamInfo(
                 (sampleRate > 48000 || bitDepth > 16)
 
     /**
-     * Human-readable quality badge.
-     * Displays only verified properties (e.g. "OPUS 128", "AAC 130", "AAC 256", "Lossless FLAC").
-     * Never assigns fake bitrate values or labels lossy streams as Hi-Res or lossless.
+     * PRD FR-08 honest quality indicators:
+     * - "Lossless — Verified" (or "Hi-Res Lossless — Verified")
+     * - "High Quality — Verified"
+     * - "Standard Quality"
+     * - "Quality Unknown"
+     */
+    val verifiedQualityBadge: String
+        get() {
+            if (verificationStatus == VerificationStatus.INSUFFICIENT_EVIDENCE ||
+                qualityClassification == QualityClassification.UNKNOWN && (bitrate <= 0 && codec.isBlank())
+            ) {
+                return "Quality Unknown"
+            }
+
+            if (qualityClassification == QualityClassification.VERIFIED_LOSSLESS ||
+                (codec.equals("FLAC", true) || codec.equals("ALAC", true) || codec.equals("WAV", true)) &&
+                verificationStatus == VerificationStatus.VERIFIED
+            ) {
+                return if (isHighRes) "Hi-Res Lossless — Verified" else "Lossless — Verified"
+            }
+
+            // High Quality lossy (AAC >= 256, OPUS >= 128)
+            val isAacHigh = codec.contains("AAC", true) && bitrate >= 256
+            val isOpusHigh = codec.equals("OPUS", true) && (bitrate >= 125 || sampleRate >= 48000 && bitrate >= 120)
+            if (isAacHigh || isOpusHigh || bitrate >= 256) {
+                return "High Quality — Verified"
+            }
+
+            if (bitrate > 0 || codec.isNotBlank()) {
+                return "Standard Quality"
+            }
+
+            return "Quality Unknown"
+        }
+
+    /**
+     * Human-readable quality badge (e.g. "OPUS 160", "AAC 256", "Archive · Lossless").
+     * Preserved for backward-compatibility with existing tests and UI.
      */
     val qualityBadge: String
         get() = when {
@@ -50,6 +92,15 @@ data class AudioStreamInfo(
             bitrate > 0 -> "$bitrate kbps"
             else -> "Audio"
         }
+
+    val compactQualityLabel: String
+        get() = buildList {
+            if (sampleRate > 0) add("${(sampleRate / 1000f).toString().removeSuffix(".0")} kHz")
+            if (bitrate > 0) add("$bitrate kbps")
+            if (codec.isNotBlank() && !codec.equals("Unknown", true) && !codec.equals("Local", true)) {
+                add(if (codec.equals("OPUS", true)) "Opus" else codec)
+            }
+        }.joinToString(" · ")
 
     /**
      * Full quality description for settings/info display.
@@ -105,15 +156,19 @@ data class AudioStreamInfo(
         /**
          * Detect codec from MIME type or codec string
          */
+        private val aacLc = Regex("(?i)mp4a\\.40\\.2(?![0-9])")
+        private val aacHe = Regex("(?i)mp4a\\.40\\.5(?![0-9])")
+
         fun codecFromMimeType(mimeType: String): String = when {
             mimeType.contains("opus", true) -> "OPUS"
-            mimeType.contains("mp4a.40.2", true) -> "AAC-LC"
-            mimeType.contains("mp4a.40.5", true) -> "AAC-HE"
-            mimeType.contains("mp4a", true) || mimeType.contains("aac", true) -> "AAC"
+            aacLc.containsMatchIn(mimeType) -> "AAC-LC"
+            mimeType.contains("mp4a.40.29", true) || mimeType.equals("HE-AACv2", true) -> "AAC-HEv2"
+            aacHe.containsMatchIn(mimeType) || mimeType.equals("HE-AAC", true) -> "AAC-HE"
+            mimeType.contains("mp4a.40.", true) || mimeType.contains("aac", true) -> "AAC"
             mimeType.contains("flac", true) -> "FLAC"
             mimeType.contains("alac", true) -> "ALAC"
             mimeType.contains("vorbis", true) -> "Vorbis"
-            mimeType.contains("mp3", true) || mimeType.contains("mpeg", true) -> "MP3"
+            mimeType.contains("mp3", true) || mimeType.equals("audio/mpeg", true) || mimeType.contains("mp4a.69", true) || mimeType.contains("mp4a.6b", true) -> "MP3"
             mimeType.contains("wav", true) -> "WAV"
             else -> "Unknown"
         }
@@ -127,7 +182,7 @@ data class AudioStreamInfo(
             mimeType.contains("ogg", true) -> "OGG"
             mimeType.contains("flac", true) -> "FLAC"
             mimeType.contains("wav", true) -> "WAV"
-            mimeType.contains("mp3", true) || mimeType.contains("mpeg", true) -> "MP3"
+            mimeType.contains("mp3", true) || mimeType.equals("audio/mpeg", true) || mimeType.contains("mp4a.69", true) || mimeType.contains("mp4a.6b", true) -> "MP3"
             else -> "Unknown"
         }
 

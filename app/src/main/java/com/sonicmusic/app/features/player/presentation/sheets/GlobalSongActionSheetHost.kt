@@ -13,7 +13,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.sonicmusic.app.app.SubScreens
 import com.sonicmusic.app.app.navigateToAlbum
-import kotlinx.coroutines.flow.flowOf
 
 @Composable
 fun GlobalSongActionSheetHost(
@@ -42,9 +41,9 @@ fun GlobalSongActionSheetHost(
 
         val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
         val downloadProgress = activeDownloads[song.id]
-        val isDownloaded = remember(song.id, activeDownloads) {
-            viewModel.isDownloaded(song.id)
-        }
+        val downloadedSize = remember(song.id) { viewModel.observeDownloadedFileSize(song.id) }
+        val fileSize by downloadedSize.collectAsStateWithLifecycle(initialValue = null)
+        val isDownloaded = fileSize != null
 
         GlobalSongActionSheet(
             isVisible = isVisible,

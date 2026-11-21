@@ -42,6 +42,8 @@ import com.sonicmusic.app.features.library.presentation.DownloadedFilterType
 import com.sonicmusic.app.features.library.presentation.DownloadedSortType
 import com.sonicmusic.app.features.library.presentation.LibraryViewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -57,7 +59,11 @@ fun DownloadedSongsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // State bindings
-    val filteredSongs by viewModel.filteredDownloadedSongs.collectAsStateWithLifecycle()
+    val visibleDownloads by viewModel.filteredDownloadedSongs.collectAsStateWithLifecycle()
+    val pendingRemoval = remember { mutableStateListOf<String>() }
+    val filteredSongs by remember {
+        derivedStateOf { visibleDownloads.filterNot { it.videoId in pendingRemoval } }
+    }
     val activeDownloads by viewModel.activeDownloads.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val freeSpace by viewModel.freeSpaceBytes.collectAsStateWithLifecycle()
@@ -141,17 +147,22 @@ fun DownloadedSongsScreen(
 
     // Handle delete with undo
     fun handleDeleteSong(song: DownloadedSong) {
-        viewModel.removeDownloadedSong(song.videoId)
+        if (song.videoId in pendingRemoval) return
+        pendingRemoval.add(song.videoId)
 
         coroutineScope.launch {
-            val result = snackbarHostState.showSnackbar(
-                message = "Removed: ${song.title}",
-                actionLabel = "Undo",
-                duration = SnackbarDuration.Short
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                // Re-insert the original DownloadedSong record to restore it
-                viewModel.restoreDownloadedSong(song)
+            var keepDownload = false
+            try {
+                keepDownload = snackbarHostState.showSnackbar(
+                    message = "Removing ${song.title}",
+                    actionLabel = "Undo",
+                    duration = SnackbarDuration.Short
+                ) == SnackbarResult.ActionPerformed
+            } finally {
+                withContext(NonCancellable) {
+                    if (!keepDownload) viewModel.removeDownloadedSong(song.videoId)
+                    pendingRemoval.remove(song.videoId)
+                }
             }
         }
     }
@@ -453,6 +464,7 @@ fun DownloadedSongsScreen(
                     }
                 }
             } else {
+                val completedSongs = remember(filteredSongs) { filteredSongs.filter { it.status == DownloadStatus.COMPLETED } }
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
@@ -460,9 +472,8 @@ fun DownloadedSongsScreen(
                     contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
                 ) {
                     // Play All & Shuffle Actions (only shown if not in selection mode and has completed songs)
-                    val completedSongs = filteredSongs.filter { it.status == DownloadStatus.COMPLETED }
                     if (!isMultiSelectMode && completedSongs.isNotEmpty()) {
-                        item {
+                        item(key = "downloads_play_controls", contentType = "controls") {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -505,7 +516,7 @@ fun DownloadedSongsScreen(
                     }
 
                     // Download List Items
-                    items(filteredSongs, key = { it.videoId }) { song ->
+                    items(filteredSongs, key = { it.videoId }, contentType = { "downloaded_song" }) { song ->
                         val isSelected = selectedSongs.contains(song.videoId)
                         val activeDownloadInfo = activeDownloads[song.videoId]
 

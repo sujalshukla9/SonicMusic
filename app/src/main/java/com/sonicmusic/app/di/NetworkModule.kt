@@ -34,7 +34,7 @@ object NetworkModule {
     @Singleton
     fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
-            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.HEADERS
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
                     else HttpLoggingInterceptor.Level.NONE
         }
 
@@ -45,10 +45,12 @@ object NetworkModule {
         val builder = OkHttpClient.Builder()
             .addInterceptor(logging)
             .addInterceptor { chain ->
-                val request = chain.request().newBuilder()
-                    .header("User-Agent", " SonicMusic/1.0 (Android; Mobile)")
-                    .build()
-                chain.proceed(request)
+                val request = chain.request()
+                if (request.header("User-Agent") != null) {
+                    chain.proceed(request)
+                } else {
+                    chain.proceed(request.newBuilder().header("User-Agent", "SonicMusic/1.0 (Android; Mobile)").build())
+                }
             }
             .cache(cache)
             .connectionPool(ConnectionPool(5, 30, TimeUnit.SECONDS))

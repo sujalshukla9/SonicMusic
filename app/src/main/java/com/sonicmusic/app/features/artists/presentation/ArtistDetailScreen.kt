@@ -1,5 +1,26 @@
 package com.sonicmusic.app.features.artists.presentation
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
+import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.theme.MotionTokens
+import com.sonicmusic.app.theme.pressable
+import com.sonicmusic.app.theme.shouldReduceMotion
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberCoroutineScope
 
@@ -34,6 +55,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -45,7 +67,6 @@ import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
-import com.sonicmusic.app.shared.components.ArtistProfileSkeleton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -77,7 +98,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
-import com.sonicmusic.app.domain.model.ArtistProfile
 import com.sonicmusic.app.domain.model.ArtistProfileSectionType
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Song
@@ -85,22 +105,19 @@ import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.shared.components.songPressable
 import com.sonicmusic.app.shared.components.songCombinedClickable
-import com.sonicmusic.app.features.artists.presentation.ArtistDetailViewModel
 
-/**
- * Artist Detail Screen — YouTube Music Style
- *
- * Layout:
- * 1. Hero header with large artist image, name, subscriber count, follow button
- * 2. Play All + Shuffle action buttons
- * 3. "Songs" numbered list from YouTube
- * 4. "Albums" horizontal scrollable row
- * 5. "Singles" horizontal scrollable row
- * 6. "Videos" horizontal scrollable row
- * 7. "Related Artists" circular avatars row
- * 8. "Recently Played" from local history (collapsible)
- */
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+private enum class ArtistTab(val label: String, val section: ArtistProfileSectionType? = null) {
+    Overview("Overview"),
+    Songs("Songs", ArtistProfileSectionType.TopSongs),
+    Albums("Albums", ArtistProfileSectionType.Albums),
+    Singles("Singles", ArtistProfileSectionType.Singles),
+    Videos("Videos", ArtistProfileSectionType.Videos),
+    Featured("Featured on", ArtistProfileSectionType.FeaturedOn),
+    Related("Related artists", ArtistProfileSectionType.RelatedArtists),
+    Library("Library")
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtistDetailScreen(
     artistName: String,
@@ -113,605 +130,282 @@ fun ArtistDetailScreen(
     viewModel: ArtistDetailViewModel = hiltViewModel()
 ) {
     val profile by viewModel.profile.collectAsStateWithLifecycle()
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
-    val isFollowed by viewModel.isFollowed.collectAsStateWithLifecycle()
-    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val history by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
+    val followed by viewModel.isFollowed.collectAsStateWithLifecycle()
+    val loading by viewModel.isLoading.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
-    val loadingMoreSections by viewModel.loadingMoreSections.collectAsStateWithLifecycle()
+    val loadingSections by viewModel.loadingMoreSections.collectAsStateWithLifecycle()
+    val failedSections by viewModel.failedSections.collectAsStateWithLifecycle()
 
+    val tabs = ArtistTab.entries
+    val pager = rememberPagerState(pageCount = { tabs.size })
+    val tabList = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val reduceMotion = shouldReduceMotion()
 
-
-
-    LaunchedEffect(artistName, browseId) {
-        viewModel.loadArtist(artistName, browseId)
+    fun openTab(tab: ArtistTab) {
+        scope.launch {
+            if (reduceMotion) pager.scrollToPage(tab.ordinal)
+            else pager.animateScrollToPage(tab.ordinal, animationSpec = MotionTokens.standardTween())
+        }
+    }
+    fun openRelease(song: Song) {
+        val id = if (song.contentType == ContentType.PLAYLIST) song.id else {
+            song.albumBrowseId?.takeIf(String::isNotBlank) ?: song.albumId?.takeIf(String::isNotBlank) ?: song.id
+        }
+        onNavigateToAlbum(id, song.title, song.artist, song.thumbnailUrl)
+    }
+    fun playSong(song: Song) {
+        viewModel.playSong(song)
+        onShowFullPlayer()
+    }
+    fun playHistory(entry: PlaybackHistory) {
+        viewModel.playHistorySong(entry)
+        onShowFullPlayer()
     }
 
-    val colorScheme = MaterialTheme.colorScheme
-
-    val tabs = listOf(
-        "Overview",
-        "Songs",
-        "Albums",
-        "Singles",
-        "Videos",
-        "Library"
-    )
-    val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { tabs.size })
-    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(artistName, browseId) { viewModel.loadArtist(artistName, browseId) }
+    LaunchedEffect(pager.settledPage, loading, profile != null, profile?.browseId) {
+        if (!loading && profile != null) tabs[pager.settledPage].section?.let { viewModel.loadMoreSection(it) }
+    }
+    LaunchedEffect(pager.currentPage, reduceMotion) {
+        if (tabList.layoutInfo.visibleItemsInfo.none { it.index == pager.currentPage }) {
+            if (reduceMotion) tabList.scrollToItem(pager.currentPage)
+            else tabList.animateScrollToItem(pager.currentPage)
+        }
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
-                title = {},
+                title = { Text(profile?.name ?: artistName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
-                )
+                }
             )
         }
-    ) { paddingValues ->
-        if (isLoading) {
-            ArtistProfileSkeleton(
-                contentPadding = PaddingValues(
-                    top = paddingValues.calculateTopPadding()
-                )
-            )
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = paddingValues.calculateTopPadding())
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            LazyRow(
+                state = tabList,
+                modifier = Modifier.fillMaxWidth().selectableGroup(),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Fixed Hero Header
-                ArtistHeroHeader(
-                    artistName = profile?.name ?: artistName,
-                    imageUrl = profile?.imageUrl,
-                    bannerUrl = profile?.bannerUrl,
-                    subscribersText = profile?.subscribersText,
-                    songCount = profile?.topSongs?.size ?: 0,
-                    onPlayAll = {
-                        viewModel.playAll()
-                        onShowFullPlayer()
-                    },
-                    onShuffle = {
-                        viewModel.shufflePlay()
-                        onShowFullPlayer()
-                    },
-                    isFollowed = isFollowed,
-                    onToggleFollow = { viewModel.toggleFollow() },
-                    hasSongs = (profile?.topSongs?.isNotEmpty() == true) || recentlyPlayed.isNotEmpty()
-                )
-
-                // Scrollable Tab Row
-                androidx.compose.material3.ScrollableTabRow(
-                    selectedTabIndex = pagerState.currentPage,
-                    edgePadding = 16.dp,
-                    containerColor = Color.Transparent,
-                    divider = {}
-                ) {
-                    tabs.forEachIndexed { index, title ->
-                        androidx.compose.material3.Tab(
-                            selected = pagerState.currentPage == index,
-                            onClick = {
-                                coroutineScope.launch {
-                                    pagerState.animateScrollToPage(index)
-                                }
-                            },
-                            text = { 
-                                Text(
-                                    text = title, 
-                                    fontWeight = if (pagerState.currentPage == index) FontWeight.Bold else FontWeight.Medium
-                                ) 
-                            }
+                items(tabs, key = { it.name }) { tab ->
+                    val selected = pager.currentPage == tab.ordinal
+                    val container by animateColorAsState(
+                        targetValue = if (selected) MaterialTheme.colorScheme.secondaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainer,
+                        animationSpec = if (reduceMotion) snap() else MotionTokens.fastTween(),
+                        label = "artist_tab_color"
+                    )
+                    Surface(
+                        color = container,
+                        shape = CircleShape,
+                        modifier = Modifier.clip(CircleShape).selectable(
+                            selected = selected,
+                            role = Role.Tab,
+                            onClick = { openTab(tab) }
+                        )
+                    ) {
+                        Text(
+                            text = tab.label,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                            color = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelLarge
                         )
                     }
                 }
-                
-                HorizontalDivider(
-                    color = colorScheme.outlineVariant.copy(alpha = 0.3f)
-                )
+            }
+            Spacer(Modifier.height(10.dp))
 
-                // Horizontal Pager for Content
-                androidx.compose.foundation.pager.HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.fillMaxSize()
-                ) { page ->
-                    when (page) {
-                        0 -> { // Overview Tab
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
-                            ) {
-                                // ── Songs Section ───────────────────────────────────
-                                val topSongs = profile?.topSongs ?: emptyList()
-                                if (topSongs.isNotEmpty()) {
-                                    val isSongsLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.TopSongs)
-                                    val hasSongLoadMoreSource = !profile?.songsMoreEndpoint.isNullOrBlank() ||
-                                        !profile?.topSongsBrowseId.isNullOrBlank() ||
-                                        !profile?.browseId.isNullOrBlank()
-                                    item {
-                                        SectionHeader(
-                                            title = "Songs",
-                                            count = topSongs.size,
-                                            isLoadingMore = isSongsLoadingMore,
-                                            onSeeAllClick = if (topSongs.size > 5 || hasSongLoadMoreSource) {
-                                                {
-                                                    coroutineScope.launch {
-                                                        pagerState.animateScrollToPage(1)
-                                                    }
-                                                }
-                                            } else null,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
+            HorizontalPager(state = pager, modifier = Modifier.weight(1f).fillMaxWidth()) { page ->
+                val tab = tabs[page]
+                val current = profile
+                val pageModifier = Modifier.fillMaxSize().graphicsLayer {
+                    if (!reduceMotion) {
+                        val offset = kotlin.math.abs(pager.currentPage - page + pager.currentPageOffsetFraction).coerceIn(0f, 1f)
+                        alpha = 1f - offset * 0.25f
+                        scaleX = 1f - offset * 0.025f
+                        scaleY = scaleX
+                    } else {
+                        alpha = 1f
+                        scaleX = 1f
+                        scaleY = 1f
+                    }
+                }
+                val section = tab.section
+                val pending = (loading && current == null) || (section != null && section in loadingSections)
+                val sectionFailed = section != null && section in failedSections
+                val loadError = if (sectionFailed) "Couldn't load all " + tab.label.lowercase() else error
+                val retry: () -> Unit = if (sectionFailed) {
+                    { section?.let { viewModel.loadMoreSection(it, retry = true) } }
+                } else viewModel::retryArtist
 
-                                    val displaySongs = topSongs.take(5)
-                                    itemsIndexed(
-                                        items = displaySongs,
-                                        key = { _, song -> "top_${song.id}" }
-                                    ) { index, song ->
-                                        ArtistTopSongItem(
-                                            song = song,
-                                            trackNumber = index + 1,
-                                            onClick = {
-                                                viewModel.playSong(song)
-                                                onShowFullPlayer()
-                                            }
-                                        )
-                                    }
-                                }
-
-                                // ── Albums Section ──────────────────────────────────
-                                val albums = profile?.albums ?: emptyList()
-                                if (albums.isNotEmpty()) {
-                                    val albumsMoreEndpoint = profile?.albumsMoreEndpoint
-                                        ?: profile?.sections?.firstOrNull { it.type == ArtistProfileSectionType.Albums }?.moreEndpoint
-                                    val isAlbumsLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Albums)
-                                    item {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        SectionHeader(
-                                            title = "Albums",
-                                            count = albums.size,
-                                            isLoadingMore = isAlbumsLoadingMore,
-                                            onSeeAllClick = if (!albumsMoreEndpoint.isNullOrBlank()) {
-                                                { 
-                                                    coroutineScope.launch { 
-                                                        pagerState.animateScrollToPage(2) 
-                                                    } 
-                                                }
-                                            } else null,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    item {
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            items(albums, key = { "album_${it.id}" }) { album ->
-                                                AlbumCard(
-                                                    song = album,
-                                                    onClick = {
-                                                        onNavigateToAlbum(album.id, album.title, album.artist, album.thumbnailUrl)
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ── Singles Section ─────────────────────────────────
-                                val singles = profile?.singles ?: emptyList()
-                                if (singles.isNotEmpty()) {
-                                    val singlesMoreEndpoint = profile?.singlesMoreEndpoint
-                                        ?: profile?.sections?.firstOrNull { it.type == ArtistProfileSectionType.Singles }?.moreEndpoint
-                                    val isSinglesLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Singles)
-                                    item {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        SectionHeader(
-                                            title = "Singles",
-                                            count = singles.size,
-                                            isLoadingMore = isSinglesLoadingMore,
-                                            onSeeAllClick = if (!singlesMoreEndpoint.isNullOrBlank()) {
-                                                { 
-                                                    coroutineScope.launch { 
-                                                        pagerState.animateScrollToPage(3) 
-                                                    } 
-                                                }
-                                            } else null,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    item {
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            items(singles, key = { "single_${it.id}" }) { single ->
-                                                AlbumCard(
-                                                    song = single,
-                                                    onClick = {
-                                                        onNavigateToAlbum(single.id, single.title, single.artist, single.thumbnailUrl)
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ── Videos Section ──────────────────────────────────
-                                val videos = profile?.videos ?: emptyList()
-                                if (videos.isNotEmpty()) {
-                                    val videosMoreEndpoint = profile?.sections?.firstOrNull {
-                                        it.type == ArtistProfileSectionType.Videos
-                                    }?.moreEndpoint
-                                    val isVideosLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Videos)
-                                    item {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        SectionHeader(
-                                            title = "Videos",
-                                            count = videos.size,
-                                            isLoadingMore = isVideosLoadingMore,
-                                            onSeeAllClick = if (!videosMoreEndpoint.isNullOrBlank()) {
-                                                { 
-                                                    coroutineScope.launch { 
-                                                        pagerState.animateScrollToPage(4) 
-                                                    } 
-                                                }
-                                            } else null,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    item {
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            items(videos, key = { "video_${it.id}" }) { video ->
-                                                VideoCard(
-                                                    song = video,
-                                                    onClick = {
-                                                        viewModel.playSong(video)
-                                                        onShowFullPlayer()
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ── Featured On Section ─────────────────────────────
-                                val featuredOn = profile?.featuredOn ?: emptyList()
-                                if (featuredOn.isNotEmpty()) {
-                                    item {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        SectionHeader(
-                                            title = "Featured On",
-                                            count = featuredOn.size,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    item {
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            items(featuredOn, key = { "featured_${it.id}" }) { item ->
-                                                AlbumCard(
-                                                    song = item,
-                                                    onClick = {
-                                                        viewModel.playSong(item)
-                                                        onShowFullPlayer()
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ── Related Artists Section ─────────────────────────
-                                val relatedArtists = profile?.relatedArtists ?: emptyList()
-                                if (relatedArtists.isNotEmpty()) {
-                                    item {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        SectionHeader(
-                                            title = "Fans might also like",
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    item {
-                                        LazyRow(
-                                            contentPadding = PaddingValues(horizontal = 16.dp),
-                                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                                        ) {
-                                            items(relatedArtists, key = { "related_${it.id}" }) { related ->
-                                                RelatedArtistChip(
-                                                    song = related,
-                                                    onClick = {
-                                                        // Navigate to related artist profile
-                                                        val name = related.title.ifBlank { related.artist }
-                                                        val relatedBrowseId = related.id.takeIf { it.startsWith("UC") }
-                                                            ?: related.artists.firstOrNull { !it.browseId.isNullOrBlank() }?.browseId
-                                                            ?: related.artistId?.split(",")?.firstOrNull()?.trim()?.takeIf { it.startsWith("UC") }
-                                                            ?: related.id.takeIf { it.isNotBlank() }
-                                                        if (name.isNotBlank()) {
-                                                            onNavigateToArtist(name, relatedBrowseId)
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // ── About Section ───────────────────────────────────
-                                val description = profile?.description
-                                if (!description.isNullOrBlank()) {
-                                    item {
-                                        HorizontalDivider(
-                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                            color = colorScheme.outlineVariant.copy(alpha = 0.3f)
-                                        )
-                                        ArtistBioSection(description = description)
-                                    }
-                                }
-                                
-                                // ── Empty State ─────────────────────────────────────
-                                if ((profile?.topSongs?.isEmpty() != false) && recentlyPlayed.isEmpty() && error != null) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(48.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.MusicNote,
-                                                    contentDescription = null,
-                                                    modifier = Modifier.size(48.dp),
-                                                    tint = colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                                )
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                Text(
-                                                    text = error ?: "No songs found",
-                                                    style = MaterialTheme.typography.bodyLarge,
-                                                    color = colorScheme.onSurfaceVariant,
-                                                    textAlign = TextAlign.Center
-                                                )
-                                            }
-                                        }
-                                    }
+                val bottom = bottomPadding + 24.dp
+                when (tab) {
+                    ArtistTab.Overview -> LazyColumn(
+                        modifier = pageModifier,
+                        contentPadding = PaddingValues(bottom = bottom),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        item(key = "hero") {
+                            ArtistHeroHeader(
+                                artistName = current?.name ?: artistName,
+                                imageUrl = current?.imageUrl,
+                                bannerUrl = current?.bannerUrl,
+                                subscribersText = current?.subscribersText,
+                                songCount = current?.topSongs?.size ?: 0,
+                                onPlayAll = { if (viewModel.playAll()) onShowFullPlayer() },
+                                onShuffle = { if (viewModel.playAll(shuffle = true)) onShowFullPlayer() },
+                                onRadio = { if (viewModel.startRadio()) onShowFullPlayer() },
+                                hasRadio = !current?.topSongs.isNullOrEmpty() || !current?.videos.isNullOrEmpty(),
+                                isFollowed = followed,
+                                onToggleFollow = viewModel::toggleFollow,
+                                hasSongs = !current?.topSongs.isNullOrEmpty() || history.isNotEmpty()
+                            )
+                        }
+                        if (loading || error != null) item(key = "overview_status") {
+                            ArtistTabStatus(loading, error, "", viewModel::retryArtist)
+                        }
+                        val topSongs = current?.topSongs.orEmpty()
+                        if (topSongs.isNotEmpty()) {
+                            item(key = "top_songs") {
+                                SectionHeader("Songs", onSeeAllClick = { openTab(ArtistTab.Songs) },
+                                    modifier = Modifier.padding(horizontal = 20.dp))
+                            }
+                            itemsIndexed(topSongs.take(5), key = { _, song -> "song_" + song.id }) { index, song ->
+                                ArtistTopSongItem(song, index + 1, onClick = { playSong(song) })
+                            }
+                        }
+                        for (releaseTab in listOf(ArtistTab.Albums, ArtistTab.Singles)) {
+                            val releases = if (releaseTab == ArtistTab.Albums) current?.albums.orEmpty()
+                                else current?.singles.orEmpty()
+                            if (releases.isNotEmpty()) item(key = releaseTab.name) {
+                                ArtistShelf(releaseTab.label, releases, { openTab(releaseTab) }) {
+                                    AlbumCard(it, onClick = { openRelease(it) })
                                 }
                             }
                         }
-                        1 -> { // Songs Tab
-                            val topSongs = profile?.topSongs ?: emptyList()
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
-                            ) {
-                                itemsIndexed(
-                                    items = topSongs,
-                                    key = { _, song -> "songs_tab_${song.id}" }
-                                ) { index, song ->
-                                    ArtistTopSongItem(
-                                        song = song,
-                                        trackNumber = index + 1,
-                                        onClick = {
-                                            viewModel.playSong(song)
-                                            onShowFullPlayer()
-                                        }
-                                    )
-                                    
-                                    // Trigger load more when reaching the end
-                                    if (index == topSongs.lastIndex) {
-                                        LaunchedEffect(key1 = topSongs.size) {
-                                            viewModel.loadMoreSongs()
-                                        }
-                                    }
-                                }
-                                
-                                val isSongsLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.TopSongs)
-                                if (isSongsLoadingMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "Loading more...",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
+                        val videos = current?.videos.orEmpty()
+                        if (videos.isNotEmpty()) item(key = "videos") {
+                            ArtistShelf("Videos", videos, { openTab(ArtistTab.Videos) }) {
+                                VideoCard(it, onClick = { playSong(it) })
+                            }
+                        }
+                        val playlists = current?.featuredOn.orEmpty()
+                        if (playlists.isNotEmpty()) item(key = "featured") {
+                            ArtistShelf("Featured on", playlists, { openTab(ArtistTab.Featured) }) {
+                                AlbumCard(it, onClick = { openRelease(it) })
+                            }
+                        }
+                        val related = current?.relatedArtists.orEmpty()
+                        if (related.isNotEmpty()) item(key = "related") {
+                            ArtistShelf("Related artists", related, { openTab(ArtistTab.Related) }) { artist ->
+                                RelatedArtistChip(artist, onClick = { onNavigateToArtist(artist.title, artist.id) })
+                            }
+                        }
+                        current?.description?.takeIf(String::isNotBlank)?.let { description ->
+                            item(key = "bio") { ArtistBioSection(description) }
+                        }
+                        if (history.isNotEmpty()) {
+                            item(key = "history") {
+                                SectionHeader("Recently Played", onSeeAllClick = { openTab(ArtistTab.Library) },
+                                    modifier = Modifier.padding(horizontal = 20.dp))
+                            }
+                            items(history.take(3), key = { "history_" + it.id }) {
+                                RecentlyPlayedItem(it, onClick = { playHistory(it) })
+                            }
+                        }
+                    }
+
+                    ArtistTab.Songs, ArtistTab.Library -> LazyColumn(
+                        modifier = pageModifier,
+                        contentPadding = PaddingValues(bottom = bottom)
+                    ) {
+                        val songs = if (tab == ArtistTab.Songs) current?.topSongs.orEmpty() else emptyList()
+                        if (songs.isNotEmpty()) {
+                            itemsIndexed(songs, key = { _, song -> song.id }, contentType = { _, _ -> "song" }) { index, song ->
+                                ArtistTopSongItem(song, index + 1, onClick = { playSong(song) })
+                            }
+                        } else if (history.isNotEmpty() && tab == ArtistTab.Library) {
+                            item(key = "history_header") {
+                                SectionHeader("Recently Played", count = history.size,
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                            }
+                            items(history, key = { "history_" + it.id }) {
+                                RecentlyPlayedItem(it, onClick = { playHistory(it) })
+                            }
+                        }
+                        if (tab == ArtistTab.Songs && (pending || loadError != null || songs.isEmpty())) {
+                            item(key = "songs_status") { ArtistTabStatus(pending, loadError, "No songs available", retry) }
+                        } else if (tab == ArtistTab.Library && history.isEmpty()) {
+                            item(key = "library_empty") {
+                                ArtistTabStatus(false, null, "No listening history for this artist", {})
+                            }
+                        }
+                    }
+
+                    ArtistTab.Albums, ArtistTab.Singles, ArtistTab.Featured -> {
+                        val releases = when (tab) {
+                            ArtistTab.Albums -> current?.albums.orEmpty()
+                            ArtistTab.Singles -> current?.singles.orEmpty()
+                            else -> current?.featuredOn.orEmpty()
+                        }
+                        LazyVerticalGrid(
+                            columns = GridCells.Adaptive(140.dp),
+                            modifier = pageModifier,
+                            contentPadding = PaddingValues(start = 16.dp, top = 6.dp, end = 16.dp, bottom = bottom),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            gridItems(releases, key = { it.id }, contentType = { "release" }) { release ->
+                                AlbumCard(release, modifier = Modifier.fillMaxWidth(), onClick = { openRelease(release) })
+                            }
+                            if (pending || loadError != null || releases.isEmpty()) {
+                                item(key = "release_status", span = { GridItemSpan(maxLineSpan) }) {
+                                    ArtistTabStatus(pending, loadError, "No " + tab.label.lowercase() + " available", retry)
                                 }
                             }
                         }
-                        2 -> { // Albums Tab
-                            val albums = profile?.albums ?: emptyList()
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                itemsIndexed(albums.chunked(2)) { rowIndex, rowItems ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                                    ) {
-                                        rowItems.forEach { album ->
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                AlbumCard(
-                                                    song = album,
-                                                    onClick = {
-                                                        onNavigateToAlbum(album.id, album.title, album.artist, album.thumbnailUrl)
-                                                    }
-                                                )
-                                            }
-                                        }
-                                        // Fill empty space if row has only 1 item
-                                        if (rowItems.size < 2) {
-                                            Spacer(modifier = Modifier.weight((2 - rowItems.size).toFloat()))
-                                        }
-                                    }
-                                    
-                                    if (rowIndex == albums.chunked(2).lastIndex) {
-                                        LaunchedEffect(key1 = albums.size) {
-                                            viewModel.loadMoreSection(ArtistProfileSectionType.Albums)
-                                        }
-                                    }
-                                }
-                                
-                                val isAlbumsLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Albums)
-                                if (isAlbumsLoadingMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "Loading more...",
-                                                style = MaterialTheme.typography.labelLarge,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
+                    }
+
+                    ArtistTab.Related -> LazyVerticalGrid(
+                        columns = GridCells.Adaptive(140.dp),
+                        modifier = pageModifier,
+                        contentPadding = PaddingValues(start = 16.dp, top = 6.dp, end = 16.dp, bottom = bottom),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val related = current?.relatedArtists.orEmpty()
+                        gridItems(related, key = { it.id }, contentType = { "artist" }) { artist ->
+                            RelatedArtistChip(artist, onClick = { onNavigateToArtist(artist.title, artist.id) })
+                        }
+                        if (pending || loadError != null || related.isEmpty()) {
+                            item(key = "related_status", span = { GridItemSpan(maxLineSpan) }) {
+                                ArtistTabStatus(pending, loadError, "No related artists available", retry)
                             }
                         }
-                        3 -> { // Singles Tab
-                            val singles = profile?.singles ?: emptyList()
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                itemsIndexed(singles.chunked(2)) { rowIndex, rowItems ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                                    ) {
-                                        rowItems.forEach { single ->
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                AlbumCard(
-                                                    song = single,
-                                                    onClick = {
-                                                        onNavigateToAlbum(single.id, single.title, single.artist, single.thumbnailUrl)
-                                                    }
-                                                )
-                                            }
-                                        }
-                                        if (rowItems.size < 2) {
-                                            Spacer(modifier = Modifier.weight((2 - rowItems.size).toFloat()))
-                                        }
-                                    }
-                                    
-                                    if (rowIndex == singles.chunked(2).lastIndex) {
-                                        LaunchedEffect(key1 = singles.size) {
-                                            viewModel.loadMoreSection(ArtistProfileSectionType.Singles)
-                                        }
-                                    }
-                                }
-                                
-                                val isSinglesLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Singles)
-                                if (isSinglesLoadingMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(text = "Loading more...", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                }
+                    }
+
+                    ArtistTab.Videos -> {
+                        val videos = current?.videos.orEmpty()
+                        LazyColumn(
+                            modifier = pageModifier,
+                            contentPadding = PaddingValues(start = 16.dp, top = 6.dp, end = 16.dp, bottom = bottom),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            items(videos, key = { it.id }, contentType = { "video" }) { video ->
+                                VideoCard(video, modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(), onClick = { playSong(video) })
                             }
-                        }
-                        4 -> { // Videos Tab
-                            val videos = profile?.videos ?: emptyList()
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = bottomPadding + 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                itemsIndexed(videos) { index, video ->
-                                    VideoCard(
-                                        song = video,
-                                        onClick = {
-                                            viewModel.playSong(video)
-                                            onShowFullPlayer()
-                                        }
-                                    )
-                                    
-                                    if (index == videos.lastIndex) {
-                                        LaunchedEffect(key1 = videos.size) {
-                                            viewModel.loadMoreSection(ArtistProfileSectionType.Videos)
-                                        }
-                                    }
-                                }
-                                
-                                val isVideosLoadingMore = loadingMoreSections.contains(ArtistProfileSectionType.Videos)
-                                if (isVideosLoadingMore) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(text = "Loading more...", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        5 -> { // Library Tab
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
-                            ) {
-                                if (recentlyPlayed.isEmpty()) {
-                                    item {
-                                        Box(
-                                            modifier = Modifier.fillMaxWidth().padding(48.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "No recently played songs from this artist.",
-                                                style = MaterialTheme.typography.bodyLarge,
-                                                color = colorScheme.onSurfaceVariant,
-                                                textAlign = TextAlign.Center
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    item {
-                                        SectionHeader(
-                                            title = "Recently Played",
-                                            count = recentlyPlayed.size,
-                                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                                        )
-                                    }
-                                    items(
-                                        items = recentlyPlayed,
-                                        key = { "recent_${it.id}" }
-                                    ) { history ->
-                                        RecentlyPlayedItem(
-                                            history = history,
-                                            onClick = {
-                                                viewModel.playHistorySong(history)
-                                                onShowFullPlayer()
-                                            }
-                                        )
-                                    }
-                                }
+                            if (pending || loadError != null || videos.isEmpty()) item(key = "video_status") {
+                                ArtistTabStatus(pending, loadError, "No videos available", retry)
                             }
                         }
                     }
@@ -720,18 +414,43 @@ fun ArtistDetailScreen(
         }
     }
 }
-// ═════════════════════════════════════════════════════════════════════
-// COMPONENTS
-// ═════════════════════════════════════════════════════════════════════
 
-/**
- * Section header — title with optional item count
- */
+@Composable
+private fun ArtistShelf(
+    title: String,
+    songs: List<Song>,
+    onSeeAll: (() -> Unit)? = null,
+    card: @Composable (Song) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SectionHeader(title, onSeeAllClick = onSeeAll, modifier = Modifier.padding(horizontal = 20.dp))
+        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(songs, key = { it.id }) { card(it) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ArtistTabStatus(loading: Boolean, error: String?, emptyMessage: String, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (loading) {
+            LoadingIndicator(modifier = Modifier.size(42.dp))
+        } else {
+            Text(error ?: emptyMessage, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (error != null) TextButton(onClick = onRetry) { Text("Retry") }
+        }
+    }
+}
+
 @Composable
 private fun SectionHeader(
     title: String,
     count: Int? = null,
-    isLoadingMore: Boolean = false,
     onSeeAllClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -746,21 +465,8 @@ private fun SectionHeader(
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f)
         )
-        if (isLoadingMore) {
-            Text(
-                text = "Loading...",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
-        } else if (onSeeAllClick != null) {
-            Text(
-                text = "See all",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.clickable { onSeeAllClick() }
-            )
+        if (onSeeAllClick != null) {
+            TextButton(onClick = onSeeAllClick) { Text("See all") }
         } else if (count != null && count > 0) {
             Text(
                 text = "$count",
@@ -783,6 +489,8 @@ private fun ArtistHeroHeader(
     songCount: Int,
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
+    onRadio: () -> Unit,
+    hasRadio: Boolean,
     isFollowed: Boolean,
     onToggleFollow: () -> Unit,
     hasSongs: Boolean
@@ -962,6 +670,13 @@ private fun ArtistHeroHeader(
             }
         }
 
+        if (hasRadio) {
+            TextButton(onClick = onRadio, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Start radio")
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
     }
     }
@@ -1064,18 +779,19 @@ private fun ArtistTopSongItem(
 @Composable
 private fun AlbumCard(
     song: Song,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.width(140.dp)
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
     Column(
-        modifier = Modifier
-            .width(140.dp)
-            .clickable(onClick = onClick)
+        modifier = modifier
+            .clip(MaterialTheme.shapes.large)
+            .pressable(onClick = onClick)
     ) {
         Surface(
             modifier = Modifier
-                .size(140.dp)
+                .fillMaxWidth()
                 .aspectRatio(1f),
             shape = RoundedCornerShape(12.dp),
             color = colorScheme.surfaceContainerHigh,
@@ -1111,9 +827,13 @@ private fun AlbumCard(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
         )
-        if (song.artist.isNotBlank()) {
+        val subtitle = listOfNotNull(
+            song.artist.takeIf { it.isNotBlank() && !it.equals("Unknown artist", ignoreCase = true) },
+            song.year?.toString()
+        ).joinToString(" • ")
+        if (subtitle.isNotBlank()) {
             Text(
-                text = song.artist,
+                text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -1129,13 +849,14 @@ private fun AlbumCard(
 @Composable
 private fun VideoCard(
     song: Song,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.width(200.dp)
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
     Column(
-        modifier = Modifier
-            .width(200.dp)
+        modifier = modifier
+            .clip(MaterialTheme.shapes.large)
             .songPressable(
                 song = song,
                 source = SongActionSource.ARTIST,
@@ -1207,7 +928,7 @@ private fun RelatedArtistChip(
     Column(
         modifier = Modifier
             .width(90.dp)
-            .clickable(onClick = onClick),
+            .pressable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Surface(
@@ -1273,7 +994,7 @@ private fun RecentlyPlayedItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .pressable(onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

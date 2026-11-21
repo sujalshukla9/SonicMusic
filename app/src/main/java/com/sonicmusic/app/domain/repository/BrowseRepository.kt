@@ -1,8 +1,6 @@
 package com.sonicmusic.app.domain.repository
 
 import com.sonicmusic.app.domain.model.ChartSection
-import com.sonicmusic.app.domain.model.CommunityPlaylist
-import com.sonicmusic.app.domain.model.ContinuationShelf
 import com.sonicmusic.app.domain.model.MoodGenre
 import com.sonicmusic.app.domain.model.Song
 
@@ -48,34 +46,6 @@ interface BrowseRepository {
      * @param forceRefresh If true, bypasses cache and fetches fresh artists from YTM
      */
     suspend fun getTrendingArtists(limit: Int = 20, forceRefresh: Boolean = false): Result<List<Song>>
-
-    /**
-     * Fetch auto-generated mixes from `FEmusic_home` shelves.
-     * Falls back to local history-based mixing if personalized
-     * content is unavailable.
-     *
-     * @param limit Maximum number of songs to return
-     * @param forceRefresh If true, bypasses cache and fetches fresh home shelves from YTM
-     */
-    suspend fun getMixedForYou(limit: Int = 15, forceRefresh: Boolean = false): Result<List<Song>>
-
-    /**
-     * Fetch trending community-curated playlists from YouTube Music.
-     *
-     * @param limit Maximum number of playlists to return
-     * @param forceRefresh If true, bypasses cache and fetches fresh playlists
-     */
-    suspend fun getTrendingCommunityPlaylists(limit: Int = 20, forceRefresh: Boolean = false): Result<List<CommunityPlaylist>>
-
-    /**
-     * Fetch initial home shelves and continuation token.
-     */
-    suspend fun getHomeShelvesWithContinuation(forceRefresh: Boolean = false): Result<Pair<List<ContinuationShelf>, String?>>
-
-    /**
-     * Fetch continuation shelves using the next page continuation token.
-     */
-    suspend fun getHomeContinuation(continuationToken: String): Result<Pair<List<ContinuationShelf>, String?>>
 
     /**
      * Fetch songs for a specific mood/genre playlist.

@@ -59,6 +59,7 @@ fun LikedSongsScreen(
     viewModel: LikedSongsViewModel = hiltViewModel()
 ) {
     val likedSongs by viewModel.likedSongs.collectAsStateWithLifecycle()
+    val accountLikes by viewModel.accountLikes.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val actionSheetController = LocalSongActionSheetController.current
 
@@ -85,7 +86,7 @@ fun LikedSongsScreen(
                     bottom = bottomPadding + 16.dp
                 )
             )
-        } else if (likedSongs.isEmpty()) {
+        } else if (likedSongs.isEmpty() && !accountLikes.hasMore) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -121,7 +122,7 @@ fun LikedSongsScreen(
                 contentPadding = PaddingValues(bottom = bottomPadding + 16.dp)
             ) {
                 // Header with play controls
-                item {
+                item(key = "liked_play_controls", contentType = "controls") {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -156,7 +157,7 @@ fun LikedSongsScreen(
                     }
                 }
 
-                item {
+                item(key = "liked_count_header", contentType = "header") {
                     Text(
                         text = "${likedSongs.size} songs",
                         style = MaterialTheme.typography.bodyMedium,
@@ -165,12 +166,17 @@ fun LikedSongsScreen(
                     )
                 }
 
-                items(likedSongs, key = { it.id }) { song ->
+                items(likedSongs, key = { it.id }, contentType = { "song" }) { song ->
                     LikedSongItem(
                         song = song,
                         onClick = { viewModel.playSong(song); onShowFullPlayer() },
                         onMoreClick = { actionSheetController.show(song, SongActionSource.LIKED_SONGS) }
                     )
+                }
+                if (accountLikes.hasMore) {
+                    item(key = "more_account_likes") {
+                        androidx.compose.material3.TextButton(onClick = viewModel::loadMoreLikes) { Text("Load more") }
+                    }
                 }
             }
         }

@@ -1,6 +1,11 @@
 package com.sonicmusic.app.features.updates.data
 
 import android.util.Log
+import android.net.Uri
+import com.sonicmusic.app.BuildConfig
+import com.sonicmusic.app.core.network.awaitSuccessfulBody
+import com.sonicmusic.app.core.updater.UpdatePackage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -19,8 +24,10 @@ class AppUpdateService @Inject constructor(
         val isUpdateAvailable: Boolean,
         val currentVersion: String,
         val latestVersion: String,
-        val downloadUrl: String?
-    )
+        val updatePackage: UpdatePackage?
+    ) {
+        val downloadUrl: String? get() = updatePackage?.downloadUrl
+    }
 
     data class GitHubRelease(
         val tagName: String,
@@ -43,63 +50,71 @@ class AppUpdateService @Inject constructor(
         }
 
         try {
-            val request = Request.Builder()
-                .url(RELEASES_API_URL)
-                .get()
-                .header("Accept", " application/vnd.github+json")
-                .header("User-Agent", " SonicMusic-Android")
-                .build()
+            val release = JSONObject(fetchBody(RELEASES_API_URL))
+            val tag = release.optString("tag_name")
+            val latest = normalizeVersion(tag.ifBlank { release.optString("name") })
+            require(latest.isNotBlank()) { "The latest release has an invalid version." }
 
-            okHttpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(
-                        IllegalStateException("Failed to check updates (HTTP ${response.code})")
-                    )
-                }
-
-                val body = response.body?.string()
-                    ?: return@withContext Result.failure(IllegalStateException("Empty update response"))
-                val json = JSONObject(body)
-
-                val latestRaw = json.optString("tag_name")
-                    .ifBlank { json.optString("name") }
-                val normalizedLatest = normalizeVersion(latestRaw)
-                if (normalizedLatest.isBlank()) {
-                    return@withContext Result.failure(IllegalStateException("Invalid latest version"))
-                }
-
-                // Find APK download URL from assets
-                var downloadUrl: String? = null
-                val assets = json.optJSONArray("assets")
-                if (assets != null) {
-                    for (i in 0 until assets.length()) {
-                        val asset = assets.getJSONObject(i)
-                        val name = asset.optString("name", "")
-                        if (name.endsWith(".apk")) {
-                            downloadUrl = asset.optString("browser_download_url")
-                            break
-                        }
-                    }
-                }
-
-                val updateAvailable = isRemoteVersionNewer(
-                    remoteVersion = normalizedLatest,
-                    currentVersion = normalizedCurrent
-                )
-
-                Result.success(
-                    UpdateCheck(
-                        isUpdateAvailable = updateAvailable,
-                        currentVersion = normalizedCurrent,
-                        latestVersion = normalizedLatest,
-                        downloadUrl = downloadUrl?.takeIf { it.isNotBlank() }
-                    )
-                )
+            val assets = release.optJSONArray("assets") ?: JSONArray()
+            val metadata = (0 until assets.length()).asSequence()
+                .map(assets::getJSONObject)
+                .singleOrNull { it.optString("name") == "sonicmusic-update.json" }
+            val verified = metadata?.let {
+                readUpdatePackage(assets, tag, latest, it.optString("browser_download_url"))
             }
+            val available = verified?.let { it.versionCode > BuildConfig.VERSION_CODE }
+                ?: isRemoteVersionNewer(remoteVersion = latest, currentVersion = normalizedCurrent)
+            Result.success(UpdateCheck(available, normalizedCurrent, latest, verified?.takeIf { available }))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to check app updates", e)
+            Log.w(TAG, "Failed to check app updates", e)
             Result.failure(e)
         }
+    }
+
+    private suspend fun readUpdatePackage(
+        assets: JSONArray,
+        tag: String,
+        latest: String,
+        metadataUrl: String
+    ): UpdatePackage {
+        requireReleaseAsset(metadataUrl, tag, "sonicmusic-update.json")
+        val metadata = JSONObject(fetchBody(metadataUrl))
+        val apkName = metadata.getString("apk")
+        require(Regex("[A-Za-z0-9_.-]+[.]apk").matches(apkName)) { "Invalid release APK name." }
+        require(metadata.getString("packageName") == BuildConfig.APPLICATION_ID &&
+            metadata.getString("versionName") == latest
+        ) { "Release metadata does not match SonicMusic or its version." }
+
+        val apk = (0 until assets.length()).asSequence().map(assets::getJSONObject)
+            .singleOrNull { it.optString("name") == apkName }
+            ?: error("The release APK is missing.")
+        val url = apk.getString("browser_download_url")
+        requireReleaseAsset(url, tag, apkName)
+        val sha = metadata.getString("sha256").lowercase()
+        val assetDigest = apk.optString("digest").takeUnless { it.isBlank() || it == "null" }
+        require(assetDigest == null || assetDigest.equals("sha256:$sha", ignoreCase = true)) {
+            "The release checksum disagrees with GitHub."
+        }
+        return UpdatePackage(url, metadata.getInt("versionCode"), sha, metadata.getString("signingCertificateSha256").lowercase())
+    }
+
+    private fun requireReleaseAsset(url: String, tag: String, name: String) {
+        val uri = Uri.parse(url)
+        require(
+            uri.scheme == "https" && uri.encodedAuthority == "github.com" &&
+                uri.pathSegments == listOf("sujalshukla9", "SonicMusic", "releases", "download", tag, name) &&
+                uri.query == null && uri.fragment == null
+        ) { "Unexpected GitHub release asset URL." }
+    }
+
+    private suspend fun fetchBody(url: String): String {
+        val request = Request.Builder().url(url)
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "SonicMusic-Android")
+            .build()
+        return okHttpClient.newCall(request).awaitSuccessfulBody() ?: error("Empty release response.")
     }
 
     suspend fun getReleases(): Result<List<GitHubRelease>> = withContext(Dispatchers.IO) {
@@ -169,6 +184,7 @@ class AppUpdateService @Inject constructor(
         return rawVersion.trim()
             .removePrefix("v")
             .removePrefix("V")
+            .removePrefix(".")
     }
 
     private fun isRemoteVersionNewer(remoteVersion: String, currentVersion: String): Boolean {

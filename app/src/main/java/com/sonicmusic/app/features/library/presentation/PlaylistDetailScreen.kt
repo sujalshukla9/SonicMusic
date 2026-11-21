@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,10 +60,10 @@ fun PlaylistDetailScreen(
     viewModel: PlaylistDetailViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val playlist by viewModel.playlist.collectAsState()
-    val songs by viewModel.songs.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val error by viewModel.error.collectAsState()
+    val playlist by viewModel.playlist.collectAsStateWithLifecycle()
+    val songs by viewModel.songs.collectAsStateWithLifecycle()
+    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
 
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showCoverArtDialog by remember { mutableStateOf(false) }
@@ -130,11 +131,13 @@ fun PlaylistDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showDeleteDialog = true }) {
-                        Icon(
-                            imageVector = Icons.Rounded.Delete,
-                            contentDescription = "Delete playlist"
-                        )
+                    if (playlist?.isYouTubeAccountPlaylist != true) {
+                        IconButton(onClick = { showDeleteDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Delete,
+                                contentDescription = "Delete playlist"
+                            )
+                        }
                     }
                 }
             )
@@ -460,7 +463,7 @@ fun PlaylistDetailScreen(
 
     // Cover Art Picker Dialog
     if (showCoverArtDialog && isLocal) {
-        val downloadedSongsList by viewModel.downloadedSongs.collectAsState()
+        val downloadedSongsList by viewModel.downloadedSongs.collectAsStateWithLifecycle()
         AlertDialog(
             onDismissRequest = { showCoverArtDialog = false },
             title = { Text("Select Cover Art") },
@@ -484,7 +487,11 @@ fun PlaylistDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(downloadedSongsList) { downloadedSong ->
+                        items(
+                            items = downloadedSongsList,
+                            key = { it.videoId },
+                            contentType = { "cover_item" }
+                        ) { downloadedSong ->
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(1f)

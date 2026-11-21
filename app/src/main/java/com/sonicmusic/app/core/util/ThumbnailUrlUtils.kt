@@ -5,6 +5,24 @@ object ThumbnailUrlUtils {
     private val iYtImgPathRegex = Regex("https?://i\\.ytimg\\.com/vi(?:_webp)?/([A-Za-z0-9_-]{11})/([^?]+)")
     private val iYtImgUrlRegex = Regex("https?://i\\.ytimg\\.com/vi(?:_webp)?/([A-Za-z0-9_-]{11})/[^\\s]+")
 
+    fun playlistTrackArtwork(videoId: String, artwork: String?, cover: String?): String {
+        fun imageKey(url: String?) = url?.substringBefore('?')?.substringBefore('=')
+        val artworkVideoId = artwork?.let { iYtImgPathRegex.find(it)?.groupValues?.get(1) }
+        return artwork?.takeIf {
+            it.isNotBlank() && imageKey(it) != imageKey(cover) &&
+                (artworkVideoId == null || artworkVideoId == videoId)
+        } ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+    }
+
+    fun albumTrackArtwork(videoId: String, artwork: String?, cover: String?): String {
+        fun validForTrack(url: String?): String? = url?.trim()?.takeIf { candidate ->
+            candidate.isNotEmpty() &&
+                (iYtImgPathRegex.find(candidate)?.groupValues?.get(1)?.let { it == videoId } != false)
+        }
+        return validForTrack(artwork) ?: validForTrack(cover)
+            ?: normalizeVideoId(videoId)?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" }.orEmpty()
+    }
+
     fun toHighQuality(url: String?, videoId: String? = null): String? {
         val cleanedUrl = url?.trim().orEmpty().takeIf { it.isNotEmpty() }
         val id = normalizeVideoId(videoId) ?: extractVideoId(cleanedUrl)

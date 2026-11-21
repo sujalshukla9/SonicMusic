@@ -10,12 +10,41 @@
 
     <!-- Home -->
     <string name="home_title">SonicMusic</string>
-    <string name="section_listen_again">Listen Again</string>
-    <string name="section_quick_picks">Quick Picks</string>
-    <string name="section_forgotten_favorites">Forgotten Favorites</string>
-    <string name="section_new_releases">New Releases</string>
-    <string name="section_trending">Trending</string>
-    <string name="section_english_hits">English Hits</string>
+    <string name="home_good_morning">Good Morning</string>
+    <string name="home_good_afternoon">Good Afternoon</string>
+    <string name="home_good_evening">Good Evening</string>
+    <string name="home_good_night">Good Night</string>
+    <string name="home_feed_unavailable">YouTube Music Home is unavailable</string>
+    <string name="home_account_unavailable">Couldn’t refresh your YouTube Music Home.</string>
+    <string name="home_account_reconnect">Reconnect your YouTube Music session to refresh your Home.</string>
+    <string name="home_public_fallback">Your YouTube Music Home is temporarily unavailable. Showing public recommendations.</string>
+    <string name="home_public_reconnect">Your YouTube Music session needs reconnecting. Showing public recommendations.</string>
+    <string name="home_account_settings">Settings</string>
+    <string name="home_retry">Retry</string>
+    <string name="home_listen_again">Listen Again</string>
+    <string name="home_recently_played">Recently Played</string>
+    <string name="home_quick_picks">Quick Picks</string>
+    <string name="home_quick_picks_subtitle">From your YouTube Music Home recommendations</string>
+    <string name="home_load_more">Load more</string>
+    <string name="player_seek_backward">Back 10 seconds</string>
+    <string name="player_seek_forward">Forward 10 seconds</string>
+    <string name="player_seek_backward_indicator">−10 s</string>
+    <string name="player_seek_forward_indicator">+10 s</string>
+    <string name="chart_section_title">Charts</string>
+    <string name="chart_top_songs">Top songs</string>
+    <string name="chart_top_artists">Top artists</string>
+    <string name="chart_top_albums">Top albums</string>
+    <string name="chart_music_videos">Top music videos</string>
+    <string name="chart_new_releases">New releases</string>
+    <string name="chart_play">Play chart</string>
+    <string name="chart_back">Back</string>
+    <string name="chart_refresh">Refresh chart</string>
+    <string name="chart_retry">Try again</string>
+    <string name="chart_offline">Reconnect to load this chart.</string>
+    <string name="chart_load_error">Couldn’t load this chart. Try again in a moment.</string>
+    <string name="chart_unavailable">This chart is currently unavailable in your region.</string>
+    <string name="chart_cached_offline">Showing the last saved chart while offline.</string>
+    <string name="chart_cached_error">Couldn’t refresh. Showing the last saved chart.</string>
     <string name="see_all">See All</string>
 
     <!-- Search -->

@@ -1,5 +1,7 @@
 package com.sonicmusic.app.features.library.presentation
 
+import com.sonicmusic.app.theme.pressScale
+import com.sonicmusic.app.theme.pressable
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -67,12 +69,17 @@ import com.sonicmusic.app.features.library.presentation.PlaylistsViewModel
 fun PlaylistsScreen(
     onNavigateBack: () -> Unit,
     onPlaylistClick: (Long) -> Unit,
+    onAccountPlaylistClick: (String, String, String, String) -> Unit = { _, _, _, _ -> },
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     viewModel: PlaylistsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val localPlaylists by viewModel.localPlaylists.collectAsStateWithLifecycle()
     val remotePlaylists by viewModel.remotePlaylists.collectAsStateWithLifecycle()
+    val accountPage by viewModel.accountPlaylists.collectAsStateWithLifecycle()
+    val accountPlaylists = remember(accountPage.items) {
+        accountPage.items.filterIsInstance<com.sonicmusic.app.domain.model.HomeShelfItem.Playlist>()
+    }
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
@@ -107,15 +114,17 @@ fun PlaylistsScreen(
             )
         },
         floatingActionButton = {
+            val presses = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             FloatingActionButton(
                 onClick = { showCreateDialog = true },
-                modifier = Modifier.padding(bottom = bottomPadding)
+                modifier = Modifier.padding(bottom = bottomPadding).pressScale(presses),
+                interactionSource = presses
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Create playlist")
             }
         }
     ) { paddingValues ->
-        if (isLoading && localPlaylists.isEmpty() && remotePlaylists.isEmpty()) {
+        if (isLoading && localPlaylists.isEmpty() && remotePlaylists.isEmpty() && accountPlaylists.isEmpty()) {
             SongListSkeleton(
                 contentPadding = PaddingValues(
                     top = paddingValues.calculateTopPadding(),
@@ -135,7 +144,7 @@ fun PlaylistsScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                if (localPlaylists.isEmpty() && remotePlaylists.isEmpty()) {
+                if (localPlaylists.isEmpty() && remotePlaylists.isEmpty() && accountPlaylists.isEmpty() && !accountPage.hasMore) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -185,7 +194,7 @@ fun PlaylistsScreen(
                     ) {
                         // My Playlists Section
                         if (localPlaylists.isNotEmpty()) {
-                            item {
+                            item(key = "local_playlists_header", contentType = "header") {
                                 Text(
                                     text = "My Playlists",
                                     style = MaterialTheme.typography.titleMedium,
@@ -194,7 +203,7 @@ fun PlaylistsScreen(
                                     modifier = Modifier.padding(vertical = 4.dp)
                                 )
                             }
-                            items(localPlaylists, key = { "local_${it.id}" }) { playlist ->
+                            items(localPlaylists, key = { "local_${it.id}" }, contentType = { "playlist" }) { playlist ->
                                 PlaylistCard(
                                     playlist = playlist,
                                     onClick = { onPlaylistClick(playlist.id) }
@@ -204,7 +213,7 @@ fun PlaylistsScreen(
 
                         // Saved from YTM Section
                         if (remotePlaylists.isNotEmpty()) {
-                            item {
+                            item(key = "remote_playlists_header", contentType = "header") {
                                 if (localPlaylists.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(16.dp))
                                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -218,11 +227,29 @@ fun PlaylistsScreen(
                                     modifier = Modifier.padding(vertical = 4.dp)
                                 )
                             }
-                            items(remotePlaylists, key = { "remote_${it.id}" }) { playlist ->
+                            items(remotePlaylists, key = { "remote_${it.id}" }, contentType = { "playlist" }) { playlist ->
                                 PlaylistCard(
                                     playlist = playlist,
                                     onClick = { onPlaylistClick(playlist.id) }
                                 )
+                            }
+                        }
+                        if (accountPlaylists.isNotEmpty() || accountPage.hasMore) {
+                            item(key = "account_playlists_header") {
+                                Text("YouTube Music", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            }
+                            items(accountPlaylists, key = { "account_${it.key}" }, contentType = { "account_playlist" }) { entry ->
+                                AccountMusicRow(entry) {
+                                    val playlist = entry.playlist
+                                    onAccountPlaylistClick(
+                                        accountPage.playlistRoute(playlist.browseId), playlist.title, playlist.creator, playlist.thumbnailUrl
+                                    )
+                                }
+                            }
+                            if (accountPage.hasMore) {
+                                item(key = "more_account_playlists") {
+                                    TextButton(onClick = viewModel::loadMoreAccountPlaylists) { Text("Load more") }
+                                }
                             }
                         }
                     }
@@ -362,7 +389,7 @@ private fun PlaylistCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .pressable(onClick = onClick),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow

@@ -8,8 +8,11 @@
 # INNERTUBE_API_KEY=
 # YOUTUBE_API_KEY=
 
-# Release Signing (Optional, falls back to debug config if omitted):
+# Release signing (required for release builds):
 # KEYSTORE_FILE=keystore/release.jks
 # KEYSTORE_PASSWORD=
 # KEY_ALIAS=
 # KEY_PASSWORD=
+# RELEASE_CERT_SHA256=
+# PREVIOUS_RELEASE_APK=/path/to/last-published.apk
+# RELEASE_VERSION_NAME=2.0.1

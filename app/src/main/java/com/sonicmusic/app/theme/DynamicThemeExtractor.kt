@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+data class ArtworkColors(val primary: Int, val complementary: Int? = null)
+
 /**
  * High-performance, production-ready Content-Based Dynamic Theme Extractor.
  *
@@ -36,163 +38,127 @@ object DynamicThemeExtractor {
     private const val STRICT_MIN_SATURATION = 0.16f
     private const val RELAXED_MIN_SATURATION = 0.08f
 
-    data class Candidate(
+    private data class Candidate(
         val color: Int,
         val score: Float,
+        val hue: Float,
         val saturation: Float,
         val lightness: Float,
         val population: Int
     )
 
-    /**
-     * Determines whether a candidate color is suitable as an M3 accent seed.
-     */
-    fun isValidAccentCandidate(
-        color: Int,
-        minSaturation: Float = STRICT_MIN_SATURATION,
-        minLightness: Float = MIN_LIGHTNESS,
-        maxLightness: Float = MAX_LIGHTNESS
-    ): Boolean {
-        val alpha = (color ushr 24) and 0xFF
-        if (alpha < MIN_ALPHA) return false
+    /** Extracts a representative seed and, when present, a distinct artwork accent. */
+    suspend fun extractColors(bitmap: Bitmap): ArtworkColors = withContext(Dispatchers.Default) {
+        var softwareBitmap: Bitmap? = null
+        var scaledBitmap: Bitmap? = null
+        try {
+            // Ensure software bitmap for pixel array access
+            softwareBitmap = if (bitmap.config == Bitmap.Config.HARDWARE) {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false)
+            } else {
+                bitmap
+            } ?: bitmap
 
-        val hsl = FloatArray(3)
-        ColorUtils.colorToHSL(color, hsl)
-        val saturation = hsl[1]
-        val lightness = hsl[2]
+            val width = softwareBitmap.width
+            val height = softwareBitmap.height
+            if (width <= 0 || height <= 0) return@withContext ArtworkColors(DEFAULT_FALLBACK_SEED)
 
-        return lightness in minLightness..maxLightness && saturation >= minSaturation
-    }
+            // Downscale to max 128x128 for rapid, low-memory extraction
+            val maxDim = maxOf(width, height)
+            val targetDim = 128
+            val scale = if (maxDim > targetDim) targetDim.toFloat() / maxDim else 1f
+            val targetWidth = (width * scale).toInt().coerceAtLeast(1)
+            val targetHeight = (height * scale).toInt().coerceAtLeast(1)
 
-    /**
-     * Extracts an optimal Material 3 dynamic seed color from an album artwork [Bitmap].
-     *
-     * Thread-safe, non-blocking, and executes on [Dispatchers.Default].
-     */
-    suspend fun extractSeedColor(bitmap: Bitmap): Int {
-        return withContext(Dispatchers.Default) {
-            var softwareBitmap: Bitmap? = null
-            var scaledBitmap: Bitmap? = null
-            try {
-                // Ensure software bitmap for pixel array access
-                softwareBitmap = if (bitmap.config == Bitmap.Config.HARDWARE) {
-                    bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                } else {
-                    bitmap
-                } ?: bitmap
+            scaledBitmap = if (scale < 1f) {
+                Bitmap.createScaledBitmap(softwareBitmap, targetWidth, targetHeight, true)
+            } else {
+                softwareBitmap
+            }
 
-                val width = softwareBitmap.width
-                val height = softwareBitmap.height
-                if (width <= 0 || height <= 0) return@withContext DEFAULT_FALLBACK_SEED
+            val totalPixels = scaledBitmap.width * scaledBitmap.height
+            val pixels = IntArray(totalPixels)
+            scaledBitmap.getPixels(pixels, 0, scaledBitmap.width, 0, 0, scaledBitmap.width, scaledBitmap.height)
 
-                // Downscale to max 128x128 for rapid, low-memory extraction
-                val maxDim = maxOf(width, height)
-                val targetDim = 128
-                val scale = if (maxDim > targetDim) targetDim.toFloat() / maxDim else 1f
-                val targetWidth = (width * scale).toInt().coerceAtLeast(1)
-                val targetHeight = (height * scale).toInt().coerceAtLeast(1)
+            // 1. AndroidX Palette analysis
+            val palette = runCatching {
+                Palette.from(scaledBitmap).maximumColorCount(32).generate()
+            }.getOrNull()
 
-                scaledBitmap = if (scale < 1f) {
-                    Bitmap.createScaledBitmap(softwareBitmap, targetWidth, targetHeight, true)
-                } else {
-                    softwareBitmap
-                }
+            // 2. Material Color Utilities (Celebi Quantization + CAM16 Scoring)
+            val opaquePixels = pixels.filter { (it ushr 24) >= MIN_ALPHA }.toIntArray()
+            if (opaquePixels.isEmpty()) return@withContext ArtworkColors(DEFAULT_FALLBACK_SEED)
+            val quantizedColors = QuantizerCelebi.quantize(opaquePixels, 64)
+            val scoredColors: List<Int> = Score.score(quantizedColors)
 
-                val totalPixels = scaledBitmap.width * scaledBitmap.height
-                val pixels = IntArray(totalPixels)
-                scaledBitmap.getPixels(pixels, 0, scaledBitmap.width, 0, 0, scaledBitmap.width, scaledBitmap.height)
+            // 3. Assemble and rank candidates
+            val candidates = mutableListOf<Candidate>()
 
-                // 1. AndroidX Palette analysis
-                val palette = runCatching {
-                    Palette.from(scaledBitmap).maximumColorCount(32).generate()
-                }.getOrNull()
+            fun addCandidate(color: Int, baseScore: Float, pop: Int) {
+                val alpha = (color ushr 24) and 0xFF
+                if (alpha < MIN_ALPHA) return
 
-                // 2. Material Color Utilities (Celebi Quantization + CAM16 Scoring)
-                val quantizedColors: Map<Int, Int> = QuantizerCelebi.quantize(pixels, 64)
-                val scoredColors: List<Int> = Score.score(quantizedColors)
+                val hsl = FloatArray(3)
+                ColorUtils.colorToHSL(color, hsl)
+                val saturation = hsl[1]
+                val lightness = hsl[2]
 
-                // 3. Assemble and rank candidates
-                val candidates = mutableListOf<Candidate>()
+                // Scoring formula:
+                // + Base priority (swatch role / MCU rank)
+                // + Saturation bonus (rewards rich, vibrant colors)
+                // - Distance from optimal mid-tone lightness 0.5 (avoids near-black/near-white extremes)
+                // + Population bonus (rewards prominent colors without letting background noise take over)
+                val satBonus = saturation * 70f
+                val lightPenalty = abs(lightness - 0.5f) * 45f
+                val popRatio = if (totalPixels > 0) (pop.toFloat() / totalPixels).coerceIn(0f, 1f) else 0f
+                val popBonus = popRatio * 25f
 
-                fun addCandidate(color: Int, baseScore: Float, pop: Int) {
-                    val alpha = (color ushr 24) and 0xFF
-                    if (alpha < MIN_ALPHA) return
+                val totalScore = baseScore + satBonus - lightPenalty + popBonus
+                candidates.add(Candidate(color, totalScore, hsl[0], saturation, lightness, pop))
+            }
 
-                    val hsl = FloatArray(3)
-                    ColorUtils.colorToHSL(color, hsl)
-                    val saturation = hsl[1]
-                    val lightness = hsl[2]
+            // Add AndroidX Palette swatches
+            palette?.vibrantSwatch?.let { addCandidate(it.rgb, 150f, it.population) }
+            palette?.lightVibrantSwatch?.let { addCandidate(it.rgb, 125f, it.population) }
+            palette?.darkVibrantSwatch?.let { addCandidate(it.rgb, 125f, it.population) }
+            palette?.dominantSwatch?.let { addCandidate(it.rgb, 100f, it.population) }
+            palette?.mutedSwatch?.let { addCandidate(it.rgb, 85f, it.population) }
+            palette?.lightMutedSwatch?.let { addCandidate(it.rgb, 70f, it.population) }
+            palette?.darkMutedSwatch?.let { addCandidate(it.rgb, 70f, it.population) }
 
-                    // Scoring formula:
-                    // + Base priority (swatch role / MCU rank)
-                    // + Saturation bonus (rewards rich, vibrant colors)
-                    // - Distance from optimal mid-tone lightness 0.5 (avoids near-black/near-white extremes)
-                    // + Population bonus (rewards prominent colors without letting background noise take over)
-                    val satBonus = saturation * 70f
-                    val lightPenalty = abs(lightness - 0.5f) * 45f
-                    val popRatio = if (totalPixels > 0) (pop.toFloat() / totalPixels).coerceIn(0f, 1f) else 0f
-                    val popBonus = popRatio * 25f
+            palette?.swatches?.forEach { swatch ->
+                addCandidate(swatch.rgb, 60f, swatch.population)
+            }
 
-                    val totalScore = baseScore + satBonus - lightPenalty + popBonus
-                    candidates.add(Candidate(color, totalScore, saturation, lightness, pop))
-                }
+            // Add Material Color Utilities scored colors
+            scoredColors.forEachIndexed { index, color ->
+                val mcuBase = (140f - (index * 15f)).coerceAtLeast(50f)
+                val pop = quantizedColors[color] ?: return@forEachIndexed
+                addCandidate(color, mcuBase, pop)
+            }
 
-                // Add AndroidX Palette swatches
-                palette?.vibrantSwatch?.let { addCandidate(it.rgb, 150f, it.population) }
-                palette?.lightVibrantSwatch?.let { addCandidate(it.rgb, 125f, it.population) }
-                palette?.darkVibrantSwatch?.let { addCandidate(it.rgb, 125f, it.population) }
-                palette?.dominantSwatch?.let { addCandidate(it.rgb, 100f, it.population) }
-                palette?.mutedSwatch?.let { addCandidate(it.rgb, 85f, it.population) }
-                palette?.lightMutedSwatch?.let { addCandidate(it.rgb, 70f, it.population) }
-                palette?.darkMutedSwatch?.let { addCandidate(it.rgb, 70f, it.population) }
+            val usable = candidates.filter { it.lightness in MIN_LIGHTNESS..MAX_LIGHTNESS }
+            val primary = usable.filter { it.saturation >= STRICT_MIN_SATURATION }.maxByOrNull { it.score }
+                ?: usable.filter { it.saturation >= RELAXED_MIN_SATURATION }.maxByOrNull { it.score }
+                ?: return@withContext ArtworkColors(DEFAULT_FALLBACK_SEED)
 
-                palette?.swatches?.forEach { swatch ->
-                    addCandidate(swatch.rgb, 60f, swatch.population)
-                }
-
-                // Add Material Color Utilities scored colors
-                scoredColors.forEachIndexed { index, color ->
-                    val mcuBase = (140f - (index * 15f)).coerceAtLeast(50f)
-                    val pop = quantizedColors[color] ?: 1
-                    addCandidate(color, mcuBase, pop)
-                }
-
-                // Deduplicate candidates by similar RGB
-                val uniqueCandidates = candidates.distinctBy { it.color }
-
-                // Pass 1: Strict suitability (must have saturation >= 0.16 and lightness in 0.08..0.94)
-                val strictValid = uniqueCandidates
-                    .filter { isValidAccentCandidate(it.color, minSaturation = STRICT_MIN_SATURATION) }
-                    .maxByOrNull { it.score }
-
-                if (strictValid != null) {
-                    return@withContext strictValid.color
-                }
-
-                // Pass 2: Relaxed suitability (for sepia, subtle or muted album covers: saturation >= 0.08)
-                val relaxedValid = uniqueCandidates
-                    .filter { isValidAccentCandidate(it.color, minSaturation = RELAXED_MIN_SATURATION) }
-                    .maxByOrNull { it.score }
-
-                if (relaxedValid != null) {
-                    return@withContext relaxedValid.color
-                }
-
-                // Pass 3: Strictly monochrome/grayscale artwork or no suitable color found
-                DEFAULT_FALLBACK_SEED
-            } catch (e: Exception) {
-                Log.e(TAG, "Seed extraction failed: ${e.message}", e)
-                DEFAULT_FALLBACK_SEED
-            } finally {
-                // Recycle temporary downscaled / copied bitmaps
-                if (scaledBitmap != null && scaledBitmap != softwareBitmap && scaledBitmap != bitmap) {
-                    scaledBitmap.recycle()
-                }
-                if (softwareBitmap != null && softwareBitmap != bitmap) {
-                    softwareBitmap.recycle()
-                }
+            val complementary = usable.filter {
+                val hueDistance = abs(primary.hue - it.hue)
+                minOf(hueDistance, 360f - hueDistance) >= 55f &&
+                    it.saturation >= STRICT_MIN_SATURATION && it.population >= opaquePixels.size / 10
+            }.maxByOrNull { it.score }
+            ArtworkColors(primary.color, complementary?.color)
+        } catch (e: Exception) {
+            Log.e(TAG, "Seed extraction failed: ${e.message}", e)
+            ArtworkColors(DEFAULT_FALLBACK_SEED)
+        } finally {
+            // Recycle temporary downscaled / copied bitmaps
+            if (scaledBitmap != null && scaledBitmap != softwareBitmap && scaledBitmap != bitmap) {
+                scaledBitmap.recycle()
+            }
+            if (softwareBitmap != null && softwareBitmap != bitmap) {
+                softwareBitmap.recycle()
             }
         }
     }
 }
-

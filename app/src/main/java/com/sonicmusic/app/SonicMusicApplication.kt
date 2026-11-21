@@ -15,13 +15,16 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import com.sonicmusic.app.data.local.dao.SongDao
+import com.sonicmusic.app.core.updater.UpdateDownloader
 import com.sonicmusic.app.features.updates.worker.AutoUpdateWorker
+import com.sonicmusic.app.features.updates.worker.CacheCleanupWorker
+import com.sonicmusic.app.features.library.data.YouTubeMusicSyncWorker
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.launch
 
 @HiltAndroidApp
@@ -29,9 +32,6 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
     
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
-
-    @Inject
-    lateinit var songDao: SongDao
 
     // Application-scoped coroutine scope — lives as long as the process.
     // Uses SupervisorJob so child failures don't cancel the whole scope.
@@ -46,20 +46,14 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
         super.onCreate()
         
         applicationScope.launch {
-            try {
-                songDao.clearAllCachedStreamUrls()
-                android.util.Log.d("SonicApp", "Purged all legacy cached stream URLs from database")
-            } catch (e: Exception) {
-                android.util.Log.w("SonicApp", "Failed to clear legacy cached stream URLs", e)
-            }
             scheduleAutoUpdate()
+            UpdateDownloader(this@SonicMusicApplication).resumePending()
+            CacheCleanupWorker.schedule(this@SonicMusicApplication)
+            YouTubeMusicSyncWorker.schedule(this@SonicMusicApplication)
         }
 
         if (BuildConfig.DEBUG) {
             setupStrictMode()
-            setupJankDetector()
-            System.setProperty("kotlinx.coroutines.debug", "on")
-            System.setProperty("kotlinx.coroutines.stacktrace.recovery", "true")
         }
     }
 
@@ -90,15 +84,20 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
     }
 
     private fun setupStrictMode() {
-        android.os.StrictMode.setThreadPolicy(
-            android.os.StrictMode.ThreadPolicy.Builder()
-                .detectDiskReads()
-                .detectDiskWrites()
-                .detectNetwork()
-                .detectCustomSlowCalls()
-                .penaltyLog()
-                .build()
-        )
+        val threadPolicy = android.os.StrictMode.ThreadPolicy.Builder()
+            .detectDiskReads()
+            .detectDiskWrites()
+            .detectNetwork()
+            .detectCustomSlowCalls()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            // Formatting diagnostic stacks on the main thread can amplify startup stalls.
+            threadPolicy.penaltyListener(Dispatchers.IO.asExecutor()) { violation ->
+                android.util.Log.w("StrictMode", "Thread policy violation", violation)
+            }
+        } else {
+            threadPolicy.penaltyLog()
+        }
+        android.os.StrictMode.setThreadPolicy(threadPolicy.build())
 
         android.os.StrictMode.setVmPolicy(
             android.os.StrictMode.VmPolicy.Builder()
@@ -112,45 +111,6 @@ class SonicMusicApplication : Application(), ImageLoaderFactory, Configuration.P
                 .penaltyLog()
                 .build()
         )
-    }
-
-    private fun setupJankDetector() {
-        val choreographer = android.view.Choreographer.getInstance()
-        var lastFrameTime = 0L
-        choreographer.postFrameCallback(object : android.view.Choreographer.FrameCallback {
-            override fun doFrame(frameTimeNanos: Long) {
-                if (lastFrameTime > 0) {
-                    val droppedFrames = ((frameTimeNanos - lastFrameTime) / 16_666_666) - 1
-                    if (droppedFrames > 2) {
-                        android.util.Log.w("Jank", "Dropped $droppedFrames frames " +
-                            "(${(frameTimeNanos - lastFrameTime) / 1_000_000}ms)")
-                    }
-                }
-                lastFrameTime = frameTimeNanos
-                choreographer.postFrameCallback(this)
-            }
-        })
-    }
-
-    // onTrimMemory is deprecated in API 34 in favour of ComponentCallbacks2,
-    // but we still need it for API 26-33. Suppress until minSdk is raised.
-    @Suppress("DEPRECATION")
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        val levelName = when (level) {
-            TRIM_MEMORY_RUNNING_LOW -> "RUNNING_LOW"
-            TRIM_MEMORY_RUNNING_CRITICAL -> "RUNNING_CRITICAL"
-            TRIM_MEMORY_BACKGROUND -> "BACKGROUND"
-            TRIM_MEMORY_COMPLETE -> "COMPLETE"
-            else -> "level=$level"
-        }
-        android.util.Log.w("Memory", "onTrimMemory: $levelName")
-
-        if (level >= TRIM_MEMORY_RUNNING_LOW) {
-            // Coil registers its own ComponentCallbacks2 and will trim
-            // its memory cache automatically. No manual intervention needed.
-            android.util.Log.w("Memory", " Mem pressure high — Coil will auto-trim memory cache.")
-        }
     }
 
     /**

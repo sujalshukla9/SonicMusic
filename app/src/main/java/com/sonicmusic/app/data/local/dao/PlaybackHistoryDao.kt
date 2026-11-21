@@ -15,20 +15,19 @@ interface PlaybackHistoryDao {
         """
         SELECT ph.*
         FROM playback_history ph
-        INNER JOIN (
-            SELECT songId, MAX(playedAt) AS lastPlayedAt
-            FROM playback_history
-            GROUP BY songId
-        ) latest
-            ON ph.songId = latest.songId
-            AND ph.playedAt = latest.lastPlayedAt
-        ORDER BY ph.playedAt DESC
+        WHERE ph.id = (
+            SELECT latest.id FROM playback_history latest
+            WHERE latest.songId = ph.songId
+            ORDER BY latest.playedAt DESC, latest.id DESC
+            LIMIT 1
+        )
+        ORDER BY ph.playedAt DESC, ph.id DESC
         LIMIT :limit
         """
     )
     fun getRecentlyPlayedUniqueSongs(limit: Int): Flow<List<PlaybackHistoryEntity>>
 
-    @Query("SELECT DISTINCT songId FROM playback_history ORDER BY playedAt DESC LIMIT :limit")
+    @Query("SELECT songId FROM playback_history GROUP BY songId ORDER BY MAX(playedAt) DESC LIMIT :limit")
     suspend fun getRecentSongIds(limit: Int): List<String>
 
     @Insert

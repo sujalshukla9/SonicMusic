@@ -1,77 +1,64 @@
 package com.sonicmusic.app.features.library.data
 
+import androidx.room.withTransaction
 import com.sonicmusic.app.data.local.dao.PlaylistDao
 import com.sonicmusic.app.data.local.dao.PlaylistWithCount
 import com.sonicmusic.app.data.local.dao.SongDao
+import com.sonicmusic.app.data.local.database.SonicMusicDatabase
 import com.sonicmusic.app.data.local.entity.PlaylistEntity
-import com.sonicmusic.app.data.local.entity.SongEntity
+import com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef
 import com.sonicmusic.app.data.mapper.toEntity
+import com.sonicmusic.app.data.mapper.toSong
 import com.sonicmusic.app.data.remote.source.YouTubeiService
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.domain.model.ContentType
+import com.sonicmusic.app.domain.model.YOUTUBE_ACCOUNT_PLAYLIST_PREFIX
 import com.sonicmusic.app.domain.repository.PlaylistRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class PlaylistRepositoryImpl @Inject constructor(
+    private val database: SonicMusicDatabase,
     private val playlistDao: PlaylistDao,
     private val songDao: SongDao,
     private val youTubeiService: YouTubeiService
 ) : PlaylistRepository {
 
     override fun getAllPlaylists(): Flow<List<Playlist>> {
-        return playlistDao.getPlaylistsWithSongCount().map { withCounts ->
-            withCounts.map { item ->
-                val songs = try {
-                    playlistDao.getPlaylistSongs(item.id)
-                        .take(4)
-                        .mapNotNull { songDao.getSongById(it.songId) }
-                        .map { entity ->
-                            Song(
-                                id = entity.id,
-                                title = entity.title,
-                                artist = entity.artist,
-                                duration = entity.duration,
-                                thumbnailUrl = entity.thumbnailUrl
-                            )
-                        }
-                } catch (e: Exception) {
-                    emptyList()
+        return playlistDao.observePlaylistPreviews().map { rows ->
+            rows.groupBy { it.playlist }.map { (playlist, previews) ->
+                val songs = previews.mapNotNull { row ->
+                    row.song?.let { Song(it.id, it.title, it.artist, duration = it.duration, thumbnailUrl = it.thumbnailUrl) }
                 }
-                item.toPlaylist().copy(songs = songs)
+                playlist.toPlaylist(songs)
             }
-        }
+        }.distinctUntilChanged().flowOn(Dispatchers.Default)
     }
 
     override suspend fun getPlaylistById(playlistId: Long): Result<Playlist> {
         return try {
-            val playlist = playlistDao.getPlaylistById(playlistId)
-            val songs = playlistDao.getPlaylistSongs(playlistId)
-            val songEntities = songs.mapNotNull { songDao.getSongById(it.songId) }
-            
-            if (playlist != null) {
-                Result.success(playlist.toPlaylist(songEntities.map { entity ->
-                    Song(
-                        id = entity.id,
-                        title = entity.title,
-                        artist = entity.artist,
-                        artistId = entity.artistId,
-                        album = entity.album,
-                        albumId = entity.albumId,
-                        duration = entity.duration,
-                        thumbnailUrl = entity.thumbnailUrl,
-                        year = entity.year,
-                        category = entity.category,
-                        viewCount = entity.viewCount
-                    )
-                }))
-            } else {
-                Result.failure(Exception("Playlist not found"))
+            val (playlist, songs) = database.withTransaction {
+                val playlist = checkNotNull(playlistDao.getPlaylistById(playlistId)) { "Playlist not found" }
+                playlist to playlistDao.getPlaylistSongs(playlistId)
             }
+            Result.success(withContext(Dispatchers.Default) { playlist.toPlaylist(songs.map { entity ->
+                    val song = entity.toSong()
+                    if (playlist.isLocal) song else song.copy(
+                        thumbnailUrl = com.sonicmusic.app.core.util.ThumbnailUrlUtils.playlistTrackArtwork(
+                            song.id, song.thumbnailUrl, playlist.coverArtUrl
+                        )
+                    )
+                }) })
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -94,33 +81,30 @@ class PlaylistRepositoryImpl @Inject constructor(
 
     override suspend fun addSongToPlaylist(playlistId: Long, songId: String, force: Boolean): Result<Unit> {
         return try {
-            val playlist = playlistDao.getPlaylistById(playlistId)
-                ?: return Result.failure(Exception("Playlist not found"))
+            database.withTransaction {
+                val playlist = checkNotNull(playlistDao.getPlaylistById(playlistId)) { "Playlist not found" }
+                check(playlist.remoteId?.startsWith(YOUTUBE_ACCOUNT_PLAYLIST_PREFIX) != true) {
+                    "Synced YouTube playlists are read-only."
+                }
+                if (!force && playlistDao.hasSongInPlaylist(playlistId, songId)) return@withTransaction
 
-            if (!force && playlistDao.hasSongInPlaylist(playlistId, songId)) {
-                // Idempotency: skip insertion but return success
-                return Result.success(Unit)
+                val now = System.currentTimeMillis()
+                playlistDao.addSongToPlaylist(
+                    PlaylistSongCrossRef(
+                        playlistId = playlistId,
+                        songId = songId,
+                        position = playlistDao.getNextSongPosition(playlistId),
+                        addedAt = now
+                    )
+                )
+                val songThumbnail = songDao.getSongById(songId)?.thumbnailUrl
+                playlistDao.updatePlaylist(
+                    playlist.copy(coverArtUrl = songThumbnail ?: playlist.coverArtUrl, updatedAt = now)
+                )
             }
-
-            val count = playlistDao.getSongCount(playlistId)
-            playlistDao.addSongToPlaylist(
-                com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef(
-                    playlistId = playlistId,
-                    songId = songId,
-                    position = count,
-                    addedAt = System.currentTimeMillis()
-                )
-            )
-
-            val songThumbnail = songDao.getSongById(songId)?.thumbnailUrl
-            playlistDao.updatePlaylist(
-                playlist.copy(
-                    coverArtUrl = songThumbnail ?: playlist.coverArtUrl,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -132,24 +116,20 @@ class PlaylistRepositoryImpl @Inject constructor(
 
     override suspend fun removeSongFromPlaylist(playlistId: Long, songId: String): Result<Unit> {
         return try {
-            playlistDao.removeSongFromPlaylist(playlistId, songId)
-
-            val playlist = playlistDao.getPlaylistById(playlistId)
-            if (playlist != null) {
-                val nextCoverArt = playlistDao.getPlaylistSongs(playlistId)
-                    .firstOrNull()
-                    ?.songId
-                    ?.let { firstSongId -> songDao.getSongById(firstSongId)?.thumbnailUrl }
-
+            database.withTransaction {
+                val playlist = playlistDao.getPlaylistById(playlistId) ?: return@withTransaction
+                playlistDao.removeSongFromPlaylist(playlistId, songId)
                 playlistDao.updatePlaylist(
                     playlist.copy(
-                        coverArtUrl = nextCoverArt,
+                        coverArtUrl = playlistDao.getFirstSongThumbnail(playlistId),
                         updatedAt = System.currentTimeMillis()
                     )
                 )
             }
 
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -198,52 +178,62 @@ class PlaylistRepositoryImpl @Inject constructor(
 
     override suspend fun saveRemotePlaylist(playlist: Playlist, songs: List<Song>): Result<Long> {
         return try {
-            val existing = playlist.remoteId?.let { playlistDao.getPlaylistByRemoteId(it) }
-            val playlistId = if (existing != null) {
-                val updated = existing.copy(
-                    name = playlist.name,
-                    description = playlist.description,
-                    coverArtUrl = playlist.coverArtUrl ?: existing.coverArtUrl,
-                    updatedAt = System.currentTimeMillis()
-                )
-                playlistDao.updatePlaylist(updated)
-                existing.id
-            } else {
-                val entity = PlaylistEntity(
-                    name = playlist.name,
-                    description = playlist.description,
-                    coverArtUrl = playlist.coverArtUrl,
-                    createdAt = System.currentTimeMillis(),
-                    updatedAt = System.currentTimeMillis(),
-                    isLocal = false,
-                    remoteId = playlist.remoteId
-                )
-                playlistDao.insertPlaylist(entity)
-            }
+            val songEntities = withContext(Dispatchers.Default) { songs.distinctBy { it.id }.map { it.toEntity() } }
+            val savedId = database.withTransaction {
+                val existing = playlist.remoteId?.let { id ->
+                    playlistDao.getPlaylistByRemoteId(id)
+                        ?: com.sonicmusic.app.data.remote.source.canonicalPublicPlaylistId(id)?.let { canonicalId ->
+                            playlistDao.getPlaylistByRemoteId("VL$canonicalId")
+                        }
+                }
+                val now = System.currentTimeMillis()
+                val playlistId = if (existing != null) {
+                    val updated = existing.copy(
+                        name = playlist.name,
+                        description = playlist.description,
+                        coverArtUrl = playlist.coverArtUrl ?: existing.coverArtUrl,
+                        updatedAt = now
+                    )
+                    playlistDao.updatePlaylist(updated)
+                    existing.id
+                } else {
+                    val entity = PlaylistEntity(
+                        name = playlist.name,
+                        description = playlist.description,
+                        coverArtUrl = playlist.coverArtUrl,
+                        createdAt = now,
+                        updatedAt = now,
+                        isLocal = false,
+                        remoteId = playlist.remoteId
+                    )
+                    playlistDao.insertPlaylist(entity)
+                }
 
-            // Save remote songs to local songs table, merging like status
-            songs.forEach { song ->
-                val existingSong = songDao.getSongById(song.id)
-                val songEntity = song.toEntity().copy(
-                    isLiked = existingSong?.isLiked ?: false,
-                    likedAt = existingSong?.likedAt
-                )
-                songDao.insertSong(songEntity)
-            }
+                songEntities.chunked(500).forEach { batch ->
+                    val existingSongs = songDao.getSongsByIds(batch.map { it.id }).associateBy { it.id }
+                    songDao.insertAll(batch.map { song ->
+                        val existingSong = existingSongs[song.id]
+                        song.copy(isLiked = existingSong?.isLiked ?: false, likedAt = existingSong?.likedAt)
+                    })
+                }
 
-            // Rebuild cross refs
-            playlistDao.clearPlaylistSongs(playlistId)
-            val crossRefs = songs.mapIndexed { index, song ->
-                com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef(
-                    playlistId = playlistId,
-                    songId = song.id,
-                    position = index,
-                    addedAt = System.currentTimeMillis()
-                )
-            }
-            playlistDao.insertPlaylistSongs(crossRefs)
+                // Rebuild cross refs
+                playlistDao.clearPlaylistSongs(playlistId)
+                val crossRefs = songs.mapIndexed { index, song ->
+                    PlaylistSongCrossRef(
+                        playlistId = playlistId,
+                        songId = song.id,
+                        position = index,
+                        addedAt = now
+                    )
+                }
+                playlistDao.insertPlaylistSongs(crossRefs)
 
-            Result.success(playlistId)
+                playlistId
+            }
+            Result.success(savedId)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -264,7 +254,7 @@ class PlaylistRepositoryImpl @Inject constructor(
         )
     }
 
-    private fun PlaylistWithCount.toPlaylist(): Playlist {
+    private fun PlaylistWithCount.toPlaylist(songs: List<Song>): Playlist {
         return Playlist(
             id = id,
             name = name,
@@ -273,7 +263,7 @@ class PlaylistRepositoryImpl @Inject constructor(
             createdAt = createdAt,
             updatedAt = updatedAt,
             songCount = songCount,
-            songs = emptyList(),
+            songs = songs,
             isLocal = isLocal,
             remoteId = remoteId
         )

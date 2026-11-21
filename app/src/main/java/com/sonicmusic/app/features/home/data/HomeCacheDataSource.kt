@@ -1,141 +1,124 @@
 package com.sonicmusic.app.features.home.data
 
+import android.net.Uri
 import android.util.Log
+import android.util.LruCache
 import com.sonicmusic.app.data.local.dao.BrowseSectionDao
-import com.sonicmusic.app.data.local.entity.BrowseSectionEntity
+import com.sonicmusic.app.data.local.cache.YtmJsonCache
+import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.model.CachedHomeFeed
+import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.HomeContent
+import com.sonicmusic.app.domain.model.HomeShelf
+import com.sonicmusic.app.domain.model.HomeShelfItem
+import com.sonicmusic.app.domain.repository.HomeFeedScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Two-level cache for Home page recommendations (Memory + Room Disk Cache).
- *
- * Implements Cache-First + Background Refresh architecture:
- * 1. Memory Cache (< 1ms read) for hot navigation
- * 2. Disk Cache (< 15ms read) persisted across app restarts
- * 3. Configurable TTL (default 30 min) with stale-while-revalidate fallback
- */
 @Singleton
 class HomeCacheDataSource @Inject constructor(
-    private val browseSectionDao: BrowseSectionDao
+    private val dao: BrowseSectionDao,
+    private val youtubeMusic: YouTubeiService,
+    private val files: YtmJsonCache
 ) {
-    companion object {
-        private const val TAG = "HomeCacheDataSource"
-        private const val KEY_HOME_SNAPSHOT = "home_content_snapshot"
-        const val DEFAULT_CACHE_TTL_MS = 30 * 60 * 1000L // 30 minutes
+    internal data class Snapshot(val feed: CachedHomeFeed, val cachedAt: Long) {
+        val isFresh get() = feed.schemaVersion == CachedHomeFeed.CURRENT_VERSION &&
+            System.currentTimeMillis() - cachedAt in 0L until FRESHNESS_MS
     }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        encodeDefaults = true
-        prettyPrint = false
-    }
+    private val json = Json { ignoreUnknownKeys = true }
+    private val memory = LruCache<String, Snapshot>(2)
 
-    @Volatile
-    private var memoryCache: HomeContent? = null
+    private fun key(scope: HomeFeedScope) = "home_feed_v2:${scope.region}:${scope.language}:${scope.accountKey}"
 
-    @Volatile
-    private var memoryCacheTimestamp: Long = 0L
-
-    /**
-     * Get cached HomeContent immediately.
-     * Checks memory cache first, then disk cache.
-     *
-     * @param ignoreTtl If true, returns cached data even if expired (stale-while-revalidate)
-     * @return Cached [HomeContent] or null if no cache is available.
-     */
-    suspend fun getCachedHome(ignoreTtl: Boolean = true): HomeContent? = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-
-        // 1. Memory cache check
-        val mem = memoryCache
-        if (mem != null && (ignoreTtl || (now - memoryCacheTimestamp < DEFAULT_CACHE_TTL_MS))) {
-            Log.d(TAG, "Home memory cache hit (age: ${now - memoryCacheTimestamp}ms)")
-            return@withContext mem
-        }
-
-        // 2. Disk cache check via Room
-        try {
-            val entity = if (ignoreTtl) {
-                browseSectionDao.getCache(KEY_HOME_SNAPSHOT)
-            } else {
-                browseSectionDao.getValidCache(KEY_HOME_SNAPSHOT, now)
+    internal suspend fun read(scope: HomeFeedScope): Snapshot? {
+        val key = key(scope)
+        memory.get(key)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            try {
+                val saved = files.read(scope, "home", CachedHomeFeed.serializer())
+                if (saved != null) {
+                    val restored = Snapshot(restoreFeed(saved.data), saved.checkedAt)
+                    return@withContext keepNewest(key, restored)
+                }
+                val row = dao.getCache(key)?.takeIf { it.expiresAt > System.currentTimeMillis() }
+                    ?: return@withContext null
+                val feed = try {
+                    json.decodeFromString(CachedHomeFeed.serializer(), row.jsonData)
+                } catch (_: SerializationException) {
+                    // The previous cache format stored only the first page.
+                    val firstPage = json.decodeFromString(HomeContent.serializer(), row.jsonData)
+                    if (firstPage.shelves.isEmpty() && firstPage.continuation == null) return@withContext null
+                    CachedHomeFeed(firstPage)
+                }
+                val restored = Snapshot(restoreFeed(feed), row.cachedAt)
+                try {
+                    files.write(scope, "home", CachedHomeFeed.serializer(), restored.feed, row.cachedAt)
+                } catch (e: java.io.IOException) {
+                    Log.w(TAG, "Home cache migration could not be saved")
+                }
+                keepNewest(key, restored)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Home cache could not be read", e)
+                null
             }
+        }
+    }
 
-            if (entity != null && entity.jsonData.isNotBlank()) {
-                val deserialized = json.decodeFromString<HomeContent>(entity.jsonData)
-                if (deserialized.hasAnyContent()) {
-                    memoryCache = deserialized
-                    memoryCacheTimestamp = entity.cachedAt
-                    Log.d(TAG, "Home disk cache hit from Room (cachedAt: ${entity.cachedAt})")
-                    return@withContext deserialized
+    private fun keepNewest(key: String, restored: Snapshot): Snapshot = synchronized(memory) {
+        memory.get(key)?.takeIf { it.cachedAt >= restored.cachedAt }
+            ?: restored.also { memory.put(key, it) }
+    }
+
+    private fun restoreFeed(feed: CachedHomeFeed): CachedHomeFeed {
+        if (feed.schemaVersion == CachedHomeFeed.CURRENT_VERSION) return feed
+        fun HomeContent.keepAudioTracks() = copy(shelves = shelves.mapNotNull { shelf ->
+            val items = if (feed.schemaVersion >= 1) shelf.items else shelf.items.filter { item ->
+                val song = (item as? HomeShelfItem.Media)?.song ?: return@filter true
+                when (song.contentType) {
+                    // Legacy caches did not retain the source track type.
+                    ContentType.SONG -> song.albumBrowseId?.startsWith("MPRE") == true ||
+                        Uri.parse(song.thumbnailUrl).host in LEGACY_ARTWORK_HOSTS
+                    ContentType.ARTIST, ContentType.ALBUM -> true
+                    else -> false
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error reading Home disk cache", e)
-        }
-
-        return@withContext null
+            items.takeIf { it.isNotEmpty() }?.let {
+                val kind = youtubeMusic.homeShelfKind(shelf.title)
+                val layout = if (kind == HomeShelf.Kind.ListenAgain) HomeShelf.Layout.Grid else shelf.layout
+                shelf.copy(items = it, kind = kind, layout = layout)
+            }
+        })
+        return feed.copy(
+            firstPage = feed.firstPage.keepAudioTracks(),
+            loadedPages = feed.loadedPages.map { it.copy(content = it.content.keepAudioTracks()) }
+        )
     }
 
-    /**
-     * Check if the currently available cache is fresh according to TTL.
-     */
-    suspend fun isCacheValid(): Boolean = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        if (memoryCache != null && (now - memoryCacheTimestamp < DEFAULT_CACHE_TTL_MS)) {
-            return@withContext true
-        }
-
-        try {
-            val validEntity = browseSectionDao.getValidCache(KEY_HOME_SNAPSHOT, now)
-            return@withContext validEntity != null
-        } catch (e: Exception) {
-            return@withContext false
-        }
-    }
-
-    /**
-     * Persist HomeContent to both Memory and Room Disk Cache.
-     */
-    suspend fun saveHomeCache(content: HomeContent, ttlMs: Long = DEFAULT_CACHE_TTL_MS) = withContext(Dispatchers.IO) {
-        if (!content.hasAnyContent()) return@withContext
-
-        val now = System.currentTimeMillis()
-        memoryCache = content
-        memoryCacheTimestamp = now
-
-        try {
-            val serialized = json.encodeToString(content)
-            val entity = BrowseSectionEntity(
-                sectionKey = KEY_HOME_SNAPSHOT,
-                jsonData = serialized,
-                cachedAt = now,
-                expiresAt = now + ttlMs
-            )
-            browseSectionDao.insertOrReplace(entity)
-            Log.d(TAG, "Saved HomeContent to memory and disk cache successfully.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error persisting HomeContent to Room cache", e)
+    internal suspend fun save(scope: HomeFeedScope, feed: CachedHomeFeed, cachedAt: Long = System.currentTimeMillis()) {
+        val key = key(scope)
+        synchronized(memory) { memory.put(key, Snapshot(feed, cachedAt)) }
+        withContext(Dispatchers.IO) {
+            try {
+                files.write(scope, "home", CachedHomeFeed.serializer(), feed, cachedAt)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Home cache could not be saved", e)
+            }
         }
     }
 
-    /**
-     * Clear both memory and disk caches.
-     */
-    suspend fun clearCache() = withContext(Dispatchers.IO) {
-        memoryCache = null
-        memoryCacheTimestamp = 0L
-        try {
-            browseSectionDao.clearSection(KEY_HOME_SNAPSHOT)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error clearing Home disk cache", e)
-        }
+    private companion object {
+        const val TAG = "HomeCache"
+        const val FRESHNESS_MS = 20 * 60 * 1000L
+        val LEGACY_ARTWORK_HOSTS = setOf("lh3.googleusercontent.com", "yt3.googleusercontent.com")
     }
 }

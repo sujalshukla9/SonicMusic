@@ -2,27 +2,30 @@ package com.sonicmusic.app.data.local.dao
 
 import androidx.room.Dao
 import androidx.room.Delete
+import androidx.room.Embedded
 import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.sonicmusic.app.data.local.entity.PlaylistEntity
 import com.sonicmusic.app.data.local.entity.PlaylistSongCrossRef
+import com.sonicmusic.app.data.local.entity.SongEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PlaylistDao {
-    @Query("SELECT * FROM playlists ORDER BY updatedAt DESC")
-    fun getAllPlaylists(): Flow<List<PlaylistEntity>>
-
     @Query("""
-        SELECT p.*, COUNT(ps.songId) as songCount 
-        FROM playlists p 
-        LEFT JOIN playlist_songs ps ON p.id = ps.playlistId 
-        GROUP BY p.id 
-        ORDER BY p.updatedAt DESC
+        SELECT p.*, (SELECT COUNT(*) FROM playlist_songs WHERE playlistId = p.id) AS songCount,
+            s.id AS preview_id, s.title AS preview_title, s.artist AS preview_artist,
+            s.duration AS preview_duration, s.thumbnailUrl AS preview_thumbnailUrl
+        FROM playlists p
+        LEFT JOIN playlist_songs ps ON ps.id IN (
+            SELECT id FROM playlist_songs WHERE playlistId = p.id ORDER BY position, id LIMIT 4
+        )
+        LEFT JOIN songs s ON s.id = ps.songId
+        ORDER BY p.updatedAt DESC, p.id DESC, ps.position, ps.id
     """)
-    fun getPlaylistsWithSongCount(): Flow<List<PlaylistWithCount>>
+    fun observePlaylistPreviews(): Flow<List<PlaylistPreviewRow>>
 
     @Query("SELECT * FROM playlists WHERE id = :playlistId")
     suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
@@ -48,14 +51,23 @@ interface PlaylistDao {
     @Update
     suspend fun updatePlaylist(playlist: PlaylistEntity)
 
-    @Query("SELECT * FROM playlist_songs WHERE playlistId = :playlistId ORDER BY position ASC")
-    suspend fun getPlaylistSongs(playlistId: Long): List<PlaylistSongCrossRef>
+    @Query("""
+        SELECT s.* FROM playlist_songs ps JOIN songs s ON s.id = ps.songId
+        WHERE ps.playlistId = :playlistId ORDER BY ps.position, ps.id
+    """)
+    suspend fun getPlaylistSongs(playlistId: Long): List<SongEntity>
+
+    @Query("""
+        SELECT s.thumbnailUrl FROM playlist_songs ps LEFT JOIN songs s ON s.id = ps.songId
+        WHERE ps.playlistId = :playlistId ORDER BY ps.position, ps.id LIMIT 1
+    """)
+    suspend fun getFirstSongThumbnail(playlistId: Long): String?
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId")
     suspend fun clearPlaylistSongs(playlistId: Long)
 
-    @Query("SELECT COUNT(*) FROM playlist_songs WHERE playlistId = :playlistId")
-    suspend fun getSongCount(playlistId: Long): Int
+    @Query("SELECT COALESCE(MAX(position) + 1, 0) FROM playlist_songs WHERE playlistId = :playlistId")
+    suspend fun getNextSongPosition(playlistId: Long): Int
 
     @Transaction
     suspend fun updatePlaylistOrder(playlistId: Long, songIds: List<String>) {
@@ -71,9 +83,28 @@ interface PlaylistDao {
         insertPlaylistSongs(crossRefs)
     }
 
+    @Query("SELECT * FROM playlists WHERE remoteId LIKE :pattern")
+    suspend fun getPlaylistsByRemoteIdPattern(pattern: String): List<PlaylistEntity>
+
+    @Query("SELECT * FROM playlists WHERE remoteId LIKE :pattern LIMIT 1")
+    fun observePlaylistByRemoteIdPattern(pattern: String): Flow<PlaylistEntity?>
+
     @Query("SELECT * FROM playlists WHERE remoteId = :remoteId LIMIT 1")
     suspend fun getPlaylistByRemoteId(remoteId: String): PlaylistEntity?
 }
+
+data class PlaylistPreviewRow(
+    @Embedded val playlist: PlaylistWithCount,
+    @Embedded(prefix = "preview_") val song: PlaylistPreviewSong?
+)
+
+data class PlaylistPreviewSong(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val duration: Int,
+    val thumbnailUrl: String
+)
 
 data class PlaylistWithCount(
     val id: Long,

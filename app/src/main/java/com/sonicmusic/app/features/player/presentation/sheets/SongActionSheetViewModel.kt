@@ -6,7 +6,6 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
@@ -44,9 +43,6 @@ class SongActionSheetViewModel @Inject constructor(
 
     val activeDownloads = songDownloadManager.activeDownloads
 
-    val downloadedSongs = songDownloadManager.getDownloadedSongs()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
     val currentPlayingSong = playerServiceConnection.currentSong
     val currentStreamInfo: StateFlow<AudioStreamInfo?> = playerServiceConnection.currentStreamInfo
     val audioQualityUiState: StateFlow<com.sonicmusic.app.features.player.audio.AudioQualityUiState?> = playerServiceConnection.audioQualityUiState
@@ -59,9 +55,7 @@ class SongActionSheetViewModel @Inject constructor(
         emit(result.getOrNull()?.second)
     }.flowOn(Dispatchers.IO)
 
-    fun getDownloadedFileSize(songId: String): Flow<Long?> = flow {
-        emit(songDownloadManager.getDownloadedFileSize(songId))
-    }.flowOn(Dispatchers.IO)
+    fun getDownloadedFileSize(songId: String): Flow<Long?> = observeDownloadedFileSize(songId)
 
     /**
      * Play selected song immediately.
@@ -116,9 +110,7 @@ class SongActionSheetViewModel @Inject constructor(
 
     fun observeIsLiked(songId: String) = songRepository.observeIsLiked(songId)
 
-    fun isDownloaded(songId: String): Boolean {
-        return downloadedSongs.value.any { it.videoId == songId && it.status == DownloadStatus.COMPLETED }
-    }
+    fun observeDownloadedFileSize(songId: String) = songDownloadManager.observeDownloadedFileSize(songId)
 
     fun download(song: Song, context: Context) {
         songDownloadManager.downloadSong(song, StreamQuality.BEST)

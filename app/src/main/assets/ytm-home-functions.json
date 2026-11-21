@@ -1,0 +1,152 @@
+{
+  "meta": {
+    "name": "ytm-functions",
+    "version": 4
+  },
+  "baseUrl": "https://music.youtube.com/youtubei/v1/",
+  "homeShelfTypes": {
+    "listen_again": {
+      "titles": ["Listen again"]
+    },
+    "quick_picks": {
+      "titles": ["Quick picks"],
+      "shelfIds": ["0d1375f3-e635-403a-817b-9b18af32c6d4"]
+    }
+  },
+  "functions": {
+    "home": {
+      "screen": "Home",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_home"
+      },
+      "paths": {
+        "sections": "contents.singleColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents",
+        "sectionTitle": "musicCarouselShelfRenderer.header.musicCarouselShelfBasicHeaderRenderer.title.runs[0].text",
+        "items": "musicCarouselShelfRenderer.contents",
+        "item.title": "musicTwoRowItemRenderer.title.runs[0].text",
+        "item.thumbnail": "musicTwoRowItemRenderer.thumbnailRenderer.musicThumbnailRenderer.thumbnail.thumbnails[-1].url",
+        "item.videoId": "musicTwoRowItemRenderer.navigationEndpoint.watchEndpoint.videoId",
+        "item.browseId": "musicTwoRowItemRenderer.navigationEndpoint.browseEndpoint.browseId",
+        "sectionList": "contents.singleColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer",
+        "directSectionList": "contents.sectionListRenderer",
+        "twoColumnSectionList": "contents.twoColumnBrowseResultsRenderer.secondaryContents.sectionListRenderer"
+      },
+      "continuation": "contents.singleColumnBrowseResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.continuations[0].nextContinuationData.continuation"
+    },
+    "home_more": {
+      "screen": "Home",
+      "endpoint": "browse",
+      "body": {
+        "continuation": "{token}"
+      },
+      "paths": {
+        "sections": "continuationContents.sectionListContinuation.contents",
+        "sectionList": "continuationContents.sectionListContinuation"
+      }
+    },
+    "home_more_query": {
+      "screen": "Home",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_home"
+      },
+      "query": {
+        "ctoken": "{token}",
+        "continuation": "{token}"
+      }
+    },
+    "library": {
+      "endpoint": "browse",
+      "body": {"browseId": "FEmusic_liked_videos"}
+    },
+    "playlists": {
+      "endpoint": "browse",
+      "body": {"browseId": "FEmusic_liked_playlists"}
+    },
+    "liked_songs": {
+      "endpoint": "browse",
+      "body": {"browseId": "VLLM"}
+    },
+    "history": {
+      "endpoint": "browse",
+      "body": {"browseId": "FEmusic_history"}
+    },
+    "albums": {
+      "endpoint": "browse",
+      "body": {"browseId": "FEmusic_liked_albums"}
+    },
+    "artists": {
+      "endpoint": "browse",
+      "body": {"browseId": "FEmusic_library_corpus_track_artists"}
+    },
+    "collection_more_query": {
+      "endpoint": "browse",
+      "body": {"browseId": "{browseId}"},
+      "query": {"ctoken": "{token}", "continuation": "{token}"}
+    },
+    "explore": {
+      "screen": "Explore",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_explore"
+      }
+    },
+    "charts": {
+      "screen": "Explore",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_charts"
+      }
+    },
+    "new_releases": {
+      "screen": "Explore",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_new_releases"
+      }
+    },
+    "moods_genres": {
+      "screen": "Explore",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_moods_and_genres"
+      }
+    },
+    "search": {
+      "screen": "Search",
+      "endpoint": "search",
+      "body": {
+        "query": "{query}"
+      },
+      "paths": {
+        "sections": "contents.tabbedSearchResultsRenderer.tabs[0].tabRenderer.content.sectionListRenderer.contents",
+        "items": "musicShelfRenderer.contents",
+        "item.title": "musicResponsiveListItemRenderer.flexColumns[0].musicResponsiveListItemFlexColumnRenderer.text.runs[0].text",
+        "item.subtitle": "musicResponsiveListItemRenderer.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs",
+        "item.videoId": "musicResponsiveListItemRenderer.playlistItemData.videoId",
+        "item.thumbnail": "musicResponsiveListItemRenderer.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails[-1].url"
+      }
+    },
+    "playlist": {
+      "screen": "Playlist",
+      "endpoint": "browse",
+      "body": {
+        "browseId": "VL{playlistId}"
+      }
+    },
+    "new_release_albums": {
+      "endpoint": "browse",
+      "body": {
+        "browseId": "FEmusic_new_releases_albums"
+      }
+    },
+    "community_playlists": {
+      "endpoint": "search",
+      "body": {
+        "query": "{query}",
+        "params": "EgeKAQQoAEABag4QAxAEEAkQChAFEBAQFQ=="
+      }
+    }
+  }
+}

@@ -18,16 +18,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AudioFile
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.QueryStats
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SdStorage
 import androidx.compose.material.icons.rounded.SurroundSound
 import androidx.compose.material.icons.rounded.Tune
+import com.sonicmusic.app.domain.model.SourceType
 import java.util.Locale
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -292,8 +296,9 @@ fun SongDetailsSheet(
                                     )
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
-                                val liveBadge = streamInfo?.qualityBadge?.takeIf { it != "Audio" }
-                                    ?: audioQualityUiState?.toAudioStreamInfo()?.qualityBadge?.takeIf { it != "Audio" }
+                                val liveBadge = streamInfo?.verifiedQualityBadge?.takeIf { it != "Quality Unknown" }
+                                    ?: audioQualityUiState?.toAudioStreamInfo()?.verifiedQualityBadge?.takeIf { it != "Quality Unknown" }
+                                    ?: streamInfo?.qualityBadge?.takeIf { it != "Audio" }
                                     ?: (if (effectiveCodec != "Unknown") effectiveCodec.uppercase() else "Auto")
                                 Text(
                                     text = liveBadge,
@@ -335,6 +340,24 @@ fun SongDetailsSheet(
                             icon = Icons.Rounded.Tune,
                             label = "Quality Mode",
                             value = audioQualityUiState?.selectionMode ?: "Automatic (Best Available)"
+                        )
+
+                        // Source Provenance
+                        val effectiveSourceType = audioQualityUiState?.sourceType
+                            ?: streamInfo?.sourceType
+                            ?: if (streamInfo?.isLocal == true) SourceType.LOCAL_FILE else SourceType.INNERTUBE
+                        val sourceLabel = when (effectiveSourceType) {
+                            SourceType.LOCAL_FILE -> "Local Storage"
+                            SourceType.INNERTUBE -> "YouTube Music"
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            color = colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        )
+                        SongDetailsRow(
+                            icon = Icons.Rounded.Public,
+                            label = "Source",
+                            value = sourceLabel
                         )
 
                         // Format ID (itag) if known

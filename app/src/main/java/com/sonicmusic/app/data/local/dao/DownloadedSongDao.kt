@@ -17,6 +17,9 @@ interface DownloadedSongDao {
     @Query("SELECT * FROM downloaded_songs_v2 WHERE videoId = :videoId")
     suspend fun getDownloadedSong(videoId: String): DownloadedSong?
 
+    @Query("SELECT * FROM downloaded_songs_v2 WHERE videoId = :videoId")
+    fun observeDownloadedSong(videoId: String): Flow<DownloadedSong?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDownloadedSong(song: DownloadedSong)
 
@@ -41,11 +44,17 @@ interface DownloadedSongDao {
     @Query("UPDATE downloaded_songs_v2 SET status = :status WHERE videoId = :videoId")
     suspend fun updateStatus(videoId: String, status: DownloadStatus)
 
-    @Query("UPDATE downloaded_songs_v2 SET status = :status, fileSizeBytes = :fileSizeBytes WHERE videoId = :videoId")
+    @Query("UPDATE downloaded_songs_v2 SET status = :status, fileSizeBytes = :fileSizeBytes WHERE videoId = :videoId AND status != 'COMPLETED'")
     suspend fun updateStatusAndSize(videoId: String, status: DownloadStatus, fileSizeBytes: Long)
 
-    @Query("UPDATE downloaded_songs_v2 SET localFilePath = :filePath, status = :status WHERE videoId = :videoId")
-    suspend fun updateFilePathAndStatus(videoId: String, filePath: String, status: DownloadStatus)
+    @Query("UPDATE downloaded_songs_v2 SET status = :status WHERE videoId = :videoId AND status != 'COMPLETED'")
+    suspend fun updateIncompleteStatus(videoId: String, status: DownloadStatus)
+
+    @Query("UPDATE downloaded_songs_v2 SET localFilePath = :filePath, fileSizeBytes = :size, status = 'COMPLETED' WHERE videoId = :videoId")
+    suspend fun markCompleted(videoId: String, filePath: String, size: Long): Int
+
+    @Query("UPDATE downloaded_songs_v2 SET localThumbnailPath = :path WHERE videoId = :videoId")
+    suspend fun updateLocalThumbnail(videoId: String, path: String)
 
     @Query("DELETE FROM downloaded_songs_v2 WHERE status = :status")
     suspend fun deleteByStatus(status: DownloadStatus)

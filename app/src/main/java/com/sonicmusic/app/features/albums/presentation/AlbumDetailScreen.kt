@@ -1,8 +1,13 @@
 package com.sonicmusic.app.features.albums.presentation
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -43,6 +48,8 @@ import com.sonicmusic.app.shared.state.UiState
 import com.sonicmusic.app.shared.components.SongListSkeleton
 import com.sonicmusic.app.shared.components.SongRowSkeleton
 import com.sonicmusic.app.theme.LocalThumbnailShape
+import com.sonicmusic.app.theme.MotionTokens
+import com.sonicmusic.app.theme.shouldReduceMotion
 import com.sonicmusic.app.theme.toComposeShape
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.albums.presentation.AlbumDetailViewModel
@@ -61,9 +68,12 @@ fun AlbumDetailScreen(
     viewModel: AlbumDetailViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val loadingMore by viewModel.loadingMore.collectAsStateWithLifecycle()
+    val paginationError by viewModel.paginationError.collectAsStateWithLifecycle()
+    val reduceMotion = shouldReduceMotion()
 
-    LaunchedEffect(albumId) {
-        viewModel.loadAlbum(albumId = albumId)
+    LaunchedEffect(albumId, thumbnailUrl) {
+        viewModel.loadAlbum(albumId = albumId, fallbackArtwork = thumbnailUrl, fallbackTitle = albumTitle)
     }
 
     Scaffold(
@@ -95,12 +105,21 @@ fun AlbumDetailScreen(
             )
         }
     ) { paddingValues ->
-        Box(
+        AnimatedContent(
+            targetState = uiState,
+            contentKey = { it::class },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = paddingValues.calculateTopPadding())
-        ) {
-            when (val state = uiState) {
+                .padding(paddingValues),
+            contentAlignment = Alignment.Center,
+            transitionSpec = {
+                if (reduceMotion) EnterTransition.None togetherWith ExitTransition.None
+                else (fadeIn(MotionTokens.standardTween()) + slideInVertically(MotionTokens.standardTween()) { it / 24 })
+                    .togetherWith(fadeOut(MotionTokens.fastTween()))
+            },
+            label = "album_content"
+        ) { state ->
+            when (state) {
                 is UiState.Loading -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         AlbumHeaderSkeleton(
@@ -116,15 +135,15 @@ fun AlbumDetailScreen(
                 is UiState.Error -> {
                     ErrorStateView(
                         message = state.message,
-                        onRetry = { viewModel.loadAlbum(albumId = albumId, forceRefresh = true) },
-                        modifier = Modifier.align(Alignment.Center)
+                        onRetry = { viewModel.loadAlbum(albumId, thumbnailUrl, forceRefresh = true, fallbackTitle = albumTitle) }
                     )
                 }
                 is UiState.Success -> {
                     val details = state.data
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp)
+                        contentPadding = PaddingValues(bottom = bottomPadding + 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         item(key = "album_header") {
                             AlbumHeader(
@@ -173,7 +192,8 @@ fun AlbumDetailScreen(
 
                             items(
                                 items = details.songs,
-                                key = { it.videoId }
+                                key = { it.videoId },
+                                contentType = { "album_track" }
                             ) { track ->
                                 AlbumSongItem(
                                     track = track,
@@ -186,9 +206,17 @@ fun AlbumDetailScreen(
                             }
                         }
 
+                        if (details.hasMoreTracks) {
+                            item(key = "more_account_tracks") {
+                                androidx.compose.material3.TextButton(onClick = viewModel::loadMoreTracks, enabled = !loadingMore) {
+                                    Text(if (loadingMore) "Loading…" else if (paginationError) "Retry" else "Load more")
+                                }
+                            }
+                        }
+
                         // Render Videos Section if present
                         if (details.videos.isNotEmpty()) {
-                            item(key = "videos_header") {
+                            item(key = "videos_header", contentType = "header") {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
                                     text = "Videos",
@@ -198,7 +226,7 @@ fun AlbumDetailScreen(
                                 )
                             }
 
-                            item(key = "videos_carousel") {
+                            item(key = "videos_carousel", contentType = "carousel") {
                                 LazyRow(
                                     contentPadding = PaddingValues(horizontal = 16.dp),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -206,7 +234,8 @@ fun AlbumDetailScreen(
                                 ) {
                                     items(
                                         items = details.videos,
-                                        key = { it.videoId }
+                                        key = { it.videoId },
+                                        contentType = { "album_video" }
                                     ) { video ->
                                         VideoCard(
                                             video = video,
@@ -227,6 +256,7 @@ fun AlbumDetailScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AlbumHeader(
     details: AlbumDetails,
@@ -238,7 +268,10 @@ private fun AlbumHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clip(MaterialTheme.shapes.extraLarge)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Surface(
@@ -276,7 +309,7 @@ private fun AlbumHeader(
 
         Text(
             text = details.title,
-            style = MaterialTheme.typography.headlineSmall,
+            style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
@@ -293,29 +326,14 @@ private fun AlbumHeader(
                 com.sonicmusic.app.domain.model.ArtistRef(name, if (index == 0) details.artistBrowseId else null)
             }
         }
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
         ) {
-            effectiveArtistRefs.forEachIndexed { index, ref ->
-                Text(
-                    text = ref.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(4.dp))
-                        .clickable { onNavigateToArtist(ref.name, ref.browseId) }
-                )
-                if (index < effectiveArtistRefs.size - 1) {
-                    Text(
-                        text = ", ",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            effectiveArtistRefs.filter { it.name.isNotBlank() && !it.name.equals("Unknown artist", ignoreCase = true) }
+                .forEach { ref ->
+                    AssistChip(onClick = { onNavigateToArtist(ref.name, ref.browseId) }, label = { Text(ref.name) })
                 }
-            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -325,13 +343,13 @@ private fun AlbumHeader(
             verticalAlignment = Alignment.CenterVertically
         ) {
             details.albumType?.let { type ->
-                SuggestionChip(
-                    onClick = {},
-                    label = { Text(type) },
-                    colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        labelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                Text(
+                    text = type,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.clip(MaterialTheme.shapes.extraLarge)
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 )
             }
 
@@ -370,7 +388,7 @@ private fun AlbumHeader(
                 Text("Play All")
             }
 
-            OutlinedButton(
+            FilledTonalButton(
                 onClick = onShuffle,
                 enabled = details.songs.isNotEmpty(),
                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
@@ -398,12 +416,16 @@ private fun AlbumSongItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .songCombinedClickable(
+            .padding(horizontal = 16.dp)
+            .clip(MaterialTheme.shapes.large)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .songPressable(
                 song = song,
                 source = SongActionSource.ALBUM,
+                targetScale = 0.985f,
                 onClick = onClick
             )
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -418,9 +440,9 @@ private fun AlbumSongItem(
         Spacer(modifier = Modifier.width(8.dp))
 
         SongThumbnail(
-            artworkUrl = albumArtUrl.takeIf { !it.isNullOrBlank() } ?: "https://i.ytimg.com/vi/${track.videoId}/hqdefault.jpg",
+            artworkUrl = song.thumbnailUrl,
             modifier = Modifier
-                .size(40.dp)
+                .size(48.dp)
                 .clip(LocalThumbnailShape.current.toComposeShape()),
             contentDescription = track.title,
             contentScale = ContentScale.Crop
@@ -446,13 +468,14 @@ private fun AlbumSongItem(
             )
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
-
-        Text(
-            text = track.durationText,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (song.duration > 0) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = song.formattedDuration(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

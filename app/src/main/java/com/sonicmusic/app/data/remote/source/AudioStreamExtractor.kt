@@ -1,17 +1,27 @@
 package com.sonicmusic.app.data.remote.source
 
 import android.util.Log
+import com.sonicmusic.app.core.network.HttpStatusException
 import com.sonicmusic.app.BuildConfig
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.core.network.awaitSuccessfulBody
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
 import java.net.URLDecoder
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -19,9 +29,6 @@ import javax.inject.Singleton
 
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.features.player.audio.AudioQualitySelector
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * YouTube audio stream extractor with automatic best-quality selection.
@@ -32,35 +39,35 @@ import java.util.concurrent.ConcurrentHashMap
  *    against actual device decoder capabilities and genuine technical properties.
  * 3. Fallback: Direct Innertube extraction across supported client identities when cipher
  *    recovery or alternative formats are needed.
- * 4. Deduplication & Caching: Deduplicates concurrent requests for the same track and
+ * 4. Caching: Reuses discovered candidates and
  *    respects genuine URL expiration timestamps.
  */
 @Singleton
 class AudioStreamExtractor @Inject constructor(
     private val newPipeService: NewPipeService,
     private val okHttpClient: OkHttpClient,
-    private val audioQualitySelector: AudioQualitySelector = AudioQualitySelector()
+    private val audioQualitySelector: AudioQualitySelector,
+    private val accountClient: YouTubeMusicAccountClient
 ) {
 
     private val client = okHttpClient.newBuilder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
 
-    // Ephemeral in-memory stream cache
-    data class CachedStreamCandidate(
-        val candidate: AudioStreamCandidate,
-        val allCandidates: List<AudioStreamCandidate>,
-        val info: AudioStreamInfo,
-        val quality: StreamQuality,
+    private data class CachedCandidates(
+        val streams: List<AudioStreamCandidate>,
         val expiresAtMs: Long
     )
 
-    private val streamCache = ConcurrentHashMap<String, CachedStreamCandidate>()
-    private val requestMutex = Mutex()
-    private val inFlightRequests = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Result<Pair<AudioStreamCandidate, AudioStreamInfo>>>>()
+    private val streamCache = android.util.LruCache<String, CachedCandidates>(128)
+    private val extractionLocks = Array(64) { Mutex() }
+    private val fallbackClients = listOf(
+        ClientType.IOS, ClientType.ANDROID_VR, ClientType.WEB_REMIX, ClientType.WEB,
+        ClientType.MWEB, ClientType.ANDROID_MUSIC, ClientType.ANDROID
+    )
 
     companion object {
         private const val TAG = "SonicStream"
@@ -90,7 +97,7 @@ class AudioStreamExtractor @Inject constructor(
         if (videoId != null) {
             streamCache.remove(videoId)
         } else {
-            streamCache.clear()
+            streamCache.evictAll()
         }
     }
 
@@ -126,102 +133,57 @@ class AudioStreamExtractor @Inject constructor(
         quality: StreamQuality = StreamQuality.BEST,
         forceRefresh: Boolean = false,
         excludeUrls: Set<String> = emptySet(),
-    ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> = withContext(Dispatchers.IO) {
-        // 1. Check cache if not forcing refresh
-        if (!forceRefresh) {
-            val cached = streamCache[videoId]
-            if (cached != null) {
-                // If the selected candidate is still valid and not excluded
-                if (!cached.candidate.isExpired() && cached.quality == quality && !excludeUrls.contains(cached.candidate.url)) {
-                    Log.d(TAG, "Serving cached stream for $videoId: ${cached.info.fullDescription}")
-                    return@withContext Result.success(Pair(cached.candidate, cached.info))
+    ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> =
+        extractAllCandidates(videoId, forceRefresh, excludeUrls).mapCatching { candidates ->
+            val selected = checkNotNull(audioQualitySelector.selectBestCandidate(candidates, quality, excludeUrls))
+            selected.candidate to selected.candidate.toAudioStreamInfo(quality)
+        }
+
+    /** Compare both providers before selecting a format. Concurrent requests share discovery. */
+    suspend fun extractAllCandidates(
+        videoId: String,
+        forceRefresh: Boolean = false,
+        excludeUrls: Set<String> = emptySet()
+    ): Result<List<AudioStreamCandidate>> = withContext(Dispatchers.IO) {
+        val observed = streamCache.get(videoId)
+        val lock = extractionLocks[(videoId.hashCode() and Int.MAX_VALUE) % extractionLocks.size]
+        lock.withLock {
+            val cached = streamCache.get(videoId)
+            if (cached != null && (!forceRefresh || cached !== observed) &&
+                cached.expiresAtMs > System.currentTimeMillis() &&
+                cached.streams.any { audioQualitySelector.isCandidateUsable(it, excludeUrls) }
+            ) {
+                return@withLock Result.success(cached.streams)
+            }
+
+            val (primary, alternatives) = coroutineScope {
+                val alternatives = async { probeAlternatives(videoId) }
+                newPipeService.extractAudioCandidates(videoId) to alternatives.await()
+            }
+            val discovered = (primary.getOrNull().orEmpty() + alternatives.flatMap { it.getOrNull().orEmpty() })
+                .filter { audioQualitySelector.isCandidateUsable(it, emptySet()) }
+                .groupBy { it.url }
+                .values.map { duplicates ->
+                    val strongest = duplicates.maxWith(compareBy<AudioStreamCandidate> { it.bitrateBps > 0 }
+                        .thenBy { it.codecProfile != null }
+                        .thenBy { it.sampleRate > 0 }
+                        .thenBy { it.channelCount > 0 })
+                    strongest.copy(loudnessDb = strongest.loudnessDb ?: duplicates.firstNotNullOfOrNull { it.loudnessDb })
                 }
-                // Try fallback among previously cached candidates
-                if (cached.allCandidates.isNotEmpty()) {
-                    val fallback = audioQualitySelector.selectFallbackCandidate(cached.allCandidates, excludeUrls, quality)
-                    if (fallback != null && !fallback.isExpired()) {
-                        val info = fallback.toAudioStreamInfo(quality)
-                        Log.d(TAG, "Serving cached fallback stream for $videoId: ${info.fullDescription}")
-                        return@withContext Result.success(Pair(fallback, info))
-                    }
-                }
+            if (discovered.isEmpty()) {
+                return@withLock Result.failure(
+                    primary.exceptionOrNull() ?: IllegalStateException("No playable audio streams for $videoId")
+                )
             }
+
+            val cacheLifetime = if (alternatives.any { it.isSuccess }) 900_000L else 60_000L
+            streamCache.put(videoId, CachedCandidates(discovered, System.currentTimeMillis() + cacheLifetime))
+            Result.success(discovered)
         }
+    }
 
-        Log.d(TAG, "Extracting audio candidate for: $videoId (requested=${quality.displayName}, forceRefresh=$forceRefresh)")
-
-        // 2. Try NewPipe Extractor as primary source
-        val allDiscoveredCandidates = mutableListOf<AudioStreamCandidate>()
-        val newPipeResult = newPipeService.extractAudioCandidates(videoId)
-        var newPipeError: Throwable? = null
-
-        if (newPipeResult.isSuccess) {
-            val npCandidates = newPipeResult.getOrThrow()
-            allDiscoveredCandidates.addAll(npCandidates)
-            val selection = audioQualitySelector.selectBestCandidate(npCandidates, quality, excludeUrls)
-            if (selection != null) {
-                val candidate = selection.candidate
-                val info = candidate.toAudioStreamInfo(quality)
-                val expiry = candidate.expiresAtMs ?: (System.currentTimeMillis() + 15 * 60 * 1000L)
-                streamCache[videoId] = CachedStreamCandidate(candidate, npCandidates, info, quality, expiry)
-                Log.d(TAG, "NewPipe selection successful for $videoId: ${info.fullDescription}")
-                return@withContext Result.success(Pair(candidate, info))
-            }
-        } else {
-            newPipeError = newPipeResult.exceptionOrNull()
-            Log.w(TAG, "NewPipe extraction failed for $videoId: ${newPipeError?.message}. Falling back to Innertube clients...")
-        }
-
-        // 3. Fallback: Direct Innertube extraction across client identities
-        val clients = listOf(
-            ClientType.IOS,
-            ClientType.ANDROID_VR,
-            ClientType.WEB_REMIX,
-            ClientType.WEB,
-            ClientType.MWEB,
-            ClientType.ANDROID_MUSIC,
-            ClientType.ANDROID,
-        )
-        var lastInnertubeError: Throwable? = null
-
-        for (clientType in clients) {
-            val result = extractCandidatesWithClient(videoId, clientType)
-            if (result.isSuccess) {
-                val candidates = result.getOrThrow()
-                allDiscoveredCandidates.addAll(candidates)
-                val selection = audioQualitySelector.selectBestCandidate(candidates, quality, excludeUrls)
-                if (selection != null) {
-                    val candidate = selection.candidate
-                    val info = candidate.toAudioStreamInfo(quality)
-                    val expiry = candidate.expiresAtMs ?: (System.currentTimeMillis() + 15 * 60 * 1000L)
-                    streamCache[videoId] = CachedStreamCandidate(candidate, allDiscoveredCandidates, info, quality, expiry)
-                    Log.d(TAG, "Innertube client ${clientType.name} succeeded for $videoId: ${info.fullDescription}")
-                    return@withContext Result.success(Pair(candidate, info))
-                }
-            }
-            lastInnertubeError = result.exceptionOrNull()
-            Log.w(TAG, "Innertube ${clientType.name} client failed for $videoId: ${lastInnertubeError?.message}")
-        }
-
-        // If any candidates were discovered across all attempts, try selecting a fallback
-        if (allDiscoveredCandidates.isNotEmpty()) {
-            val fallbackSelection = audioQualitySelector.selectBestCandidate(allDiscoveredCandidates, quality, excludeUrls)
-            if (fallbackSelection != null) {
-                val candidate = fallbackSelection.candidate
-                val info = candidate.toAudioStreamInfo(quality)
-                val expiry = candidate.expiresAtMs ?: (System.currentTimeMillis() + 15 * 60 * 1000L)
-                streamCache[videoId] = CachedStreamCandidate(candidate, allDiscoveredCandidates, info, quality, expiry)
-                Log.d(TAG, "Fallback selection succeeded across accumulated candidates for $videoId: ${info.fullDescription}")
-                return@withContext Result.success(Pair(candidate, info))
-            }
-        }
-
-        Log.e(
-            TAG,
-            "All audio extraction strategies failed for $videoId. " +
-                "NewPipe=${newPipeError?.message}, Innertube=${lastInnertubeError?.message}"
-        )
-        Result.failure(newPipeError ?: lastInnertubeError ?: Exception("Failed to extract audio stream for $videoId"))
+    private suspend fun probeAlternatives(videoId: String): List<Result<List<AudioStreamCandidate>>> = coroutineScope {
+        fallbackClients.map { client -> async { extractCandidatesWithClient(videoId, client) } }.awaitAll()
     }
 
     /**
@@ -274,12 +236,7 @@ class AudioStreamExtractor @Inject constructor(
                 }
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("HTTP ${response.code} from Innertube client ${clientType.name}"))
-            }
-
-            val json = JSONObject(response.body?.string() ?: "")
+            val json = JSONObject(client.newCall(request).awaitSuccessfulBody().orEmpty())
             val playability = json.optJSONObject("playabilityStatus")
             val status = playability?.optString("status", "")
             if (status != "OK") {
@@ -287,56 +244,149 @@ class AudioStreamExtractor @Inject constructor(
                 return@withContext Result.failure(Exception("$status: $reason"))
             }
 
-            val streamingData = json.optJSONObject("streamingData")
-                ?: return@withContext Result.failure(Exception("No streamingData in ${clientType.name} response"))
-
-            val parsedFormats = mutableListOf<AudioFormat>()
-            parseFormatArray(streamingData.optJSONArray("adaptiveFormats"), parsedFormats)
-            parseFormatArray(streamingData.optJSONArray("formats"), parsedFormats)
-
-            if (parsedFormats.isEmpty()) {
+            val candidates = parsePlayerCandidates(json, "Innertube-${clientType.name}")
+            if (candidates.isEmpty()) {
                 return@withContext Result.failure(Exception("No audio formats in ${clientType.name} response"))
             }
-
-            val audioConfig = json.optJSONObject("playerConfig")?.optJSONObject("audioConfig")
-            val playerLoudnessDb = if (audioConfig != null && audioConfig.has("perceptualLoudnessDb")) {
-                audioConfig.optDouble("perceptualLoudnessDb")
-            } else if (audioConfig != null && audioConfig.has("loudnessDb")) {
-                audioConfig.optDouble("loudnessDb")
-            } else null
-
-            val candidates = parsedFormats.map { fmt ->
-                AudioStreamCandidate(
-                    url = fmt.url,
-                    mimeType = fmt.mimeType,
-                    itag = fmt.itag,
-                    codec = fmt.codec,
-                    container = fmt.container,
-                    bitrate = fmt.bitrate,
-                    bitrateKbps = fmt.bitrateKbps,
-                    sampleRate = fmt.sampleRate,
-                    channelCount = fmt.channelCount,
-                    isAudioOnly = fmt.isAudioOnly,
-                    contentLength = fmt.contentLength,
-                    durationMs = fmt.approxDurationMs,
-                    loudnessDb = fmt.loudnessDb ?: playerLoudnessDb,
-                    sourceName = "Innertube-${clientType.name}",
-                    expiresAtMs = AudioStreamCandidate.extractExpiryFromUrl(fmt.url)
-                )
-            }
-
             Result.success(candidates)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
-    /**
-     * Parse audio formats dynamically from Innertube JSON arrays.
-     */
+    internal suspend fun verifyPlaybackSession(session: YouTubePlaybackSession): Boolean {
+        val locale = java.util.Locale.getDefault()
+        return accountClient.verifySession(
+            session,
+            locale.language.ifBlank { "en" },
+            locale.country.ifBlank { "US" },
+            locale.toLanguageTag()
+        )
+    }
+
+    internal suspend fun extractAuthenticatedCandidates(
+        videoId: String,
+        session: YouTubePlaybackSession,
+    ): List<AudioStreamCandidate> {
+        return try {
+            val signatureTimestamp = withContext(Dispatchers.IO) {
+                runCatching { YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId) }.getOrNull()
+            }
+            val json = authenticatedMusicRequest("player", session) {
+                put("videoId", videoId)
+                val playback = JSONObject().put("html5Preference", "HTML5_PREF_WANTS")
+                signatureTimestamp?.let { playback.put("signatureTimestamp", it) }
+                put("playbackContext", JSONObject().put("contentPlaybackContext", playback))
+            }
+            val candidates = withContext(Dispatchers.IO) {
+                parseAuthenticatedPlayerCandidates(
+                    json,
+                    decodeSignature = { YoutubeJavaScriptPlayerManager.deobfuscateSignature(videoId, it) },
+                    normalizeUrl = { YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, it) }
+                )
+            }
+            val data = json.optJSONObject("streamingData")
+            val status = json.optJSONObject("playabilityStatus")?.optString("status")
+                ?.takeIf { it.matches(Regex("[A-Z_]{1,40}")) }
+            Log.d(TAG, "Authenticated player status=${status ?: "unknown"}, " +
+                "adaptive=${data?.optJSONArray("adaptiveFormats")?.length() ?: 0}, " +
+                "serverAbr=${!data?.optString("serverAbrStreamingUrl").isNullOrBlank()}, " +
+                "usable=${candidates.size}, maxKbps=${candidates.maxOfOrNull { it.bitrateKbps } ?: 0}")
+            candidates
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpStatusException) {
+            Log.d(TAG, "Authenticated player HTTP ${e.code}")
+            emptyList()
+        } catch (_: Exception) {
+            Log.d(TAG, "Authenticated player request or response failed")
+            emptyList()
+        }
+    }
+
+    internal fun parseAuthenticatedPlayerCandidates(
+        json: JSONObject,
+        decodeSignature: ((String) -> String)? = null,
+        normalizeUrl: (String) -> String = { it },
+    ): List<AudioStreamCandidate> {
+        val playability = json.optJSONObject("playabilityStatus")
+        val status = playability?.optString("status")
+        val audioAvailability = playability?.optJSONObject("audioOnlyPlayability")
+            ?.optJSONObject("audioOnlyPlayabilityRenderer")?.optString("audioOnlyAvailability").orEmpty()
+        val loggedOut = json.optJSONObject("responseContext")
+            ?.optJSONObject("mainAppWebResponseContext")?.optBoolean("loggedOut") == true
+        if (status != "OK" || loggedOut ||
+            (audioAvailability.isNotEmpty() && audioAvailability != "FEATURE_AVAILABILITY_ALLOWED")
+        ) return emptyList()
+
+        return parsePlayerCandidates(json, "Innertube-YouTubeMusic", adaptiveAudioOnly = true) { format ->
+            runCatching {
+                val url = resolveFormatUrl(format, decodeSignature) ?: return@runCatching null
+                if (isYouTubeAudioUrl(url)) normalizeUrl(url).takeIf(::isYouTubeAudioUrl) else null
+            }.getOrNull()
+        }.filter { audioQualitySelector.isCandidateUsable(it, emptySet()) }
+    }
+
+    private suspend fun authenticatedMusicRequest(
+        endpoint: String,
+        session: YouTubePlaybackSession,
+        body: JSONObject.() -> Unit = {},
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val locale = java.util.Locale.getDefault()
+        accountClient.post(
+            "/youtubei/v1/$endpoint",
+            session,
+            locale.language.ifBlank { "en" },
+            locale.country.ifBlank { "US" },
+            locale.toLanguageTag(),
+            body
+        )
+    }
+
+    private fun parsePlayerCandidates(
+        json: JSONObject,
+        source: String,
+        adaptiveAudioOnly: Boolean = false,
+        resolveUrl: (JSONObject) -> String? = { resolveFormatUrl(it) },
+    ): List<AudioStreamCandidate> {
+        val streamingData = json.optJSONObject("streamingData") ?: return emptyList()
+        val formats = mutableListOf<AudioFormat>()
+        parseFormatArray(streamingData.optJSONArray("adaptiveFormats"), formats, adaptiveAudioOnly, resolveUrl)
+        if (!adaptiveAudioOnly) parseFormatArray(streamingData.optJSONArray("formats"), formats, false, resolveUrl)
+
+        val audioConfig = json.optJSONObject("playerConfig")?.optJSONObject("audioConfig")
+        val loudness = audioConfig?.optDouble("loudnessDb")?.takeIf(Double::isFinite)
+            ?: audioConfig?.optDouble("perceptualLoudnessDb")?.takeIf(Double::isFinite)
+        return formats.map { it.toCandidate(source, loudness) }
+    }
+
+    private fun isYouTubeAudioUrl(value: String): Boolean {
+        val url = value.toHttpUrlOrNull() ?: return false
+        return url.isHttps && (url.host == "googlevideo.com" || url.host.endsWith(".googlevideo.com"))
+    }
+
+    private fun resolveFormatUrl(format: JSONObject, decodeSignature: ((String) -> String)? = null): String? {
+        format.optString("url").takeIf { it.isNotBlank() }?.let { return it }
+        val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
+        if (cipher.isBlank()) return null
+        val parameters = cipher.split('&').associate { pair ->
+            pair.substringBefore('=') to URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
+        }
+        val url = parameters["url"]?.takeIf { it.isNotBlank() } ?: return null
+        val obfuscatedSignature = parameters["s"] ?: return url
+        if (decodeSignature == null || !isYouTubeAudioUrl(url)) return null
+        val signature = decodeSignature(obfuscatedSignature).takeIf { it.isNotBlank() } ?: return null
+        val parameter = parameters["sp"]?.takeIf { it.isNotBlank() } ?: "signature"
+        return url.toHttpUrlOrNull()?.newBuilder()?.setQueryParameter(parameter, signature)?.build()?.toString()
+    }
+
     private fun parseFormatArray(
         jsonArray: JSONArray?,
-        outList: MutableList<AudioFormat>
+        outList: MutableList<AudioFormat>,
+        audioOnly: Boolean,
+        resolveUrl: (JSONObject) -> String?,
     ) {
         if (jsonArray == null) return
 
@@ -344,52 +394,30 @@ class AudioStreamExtractor @Inject constructor(
             val format = jsonArray.optJSONObject(i) ?: continue
             val mimeType = format.optString("mimeType", "")
             val isAudioOnly = mimeType.startsWith("audio/")
+            if (audioOnly && (!isAudioOnly || format.optJSONArray("drmFamilies")?.length()?.let { it > 0 } == true)) {
+                continue
+            }
             val hasAudio = isAudioOnly || format.has("audioQuality") || format.has("audioSampleRate")
 
             if (!hasAudio) continue
 
-            // Check URL and cipher
-            var url = format.optString("url", "")
-            if (url.isEmpty()) {
-                val cipher = format.optString("signatureCipher", "").ifEmpty {
-                    format.optString("cipher", "")
-                }
-                if (cipher.isNotEmpty()) {
-                    val params = cipher.split("&").associate {
-                        val parts = it.split("=", limit = 2)
-                        parts[0] to (parts.getOrNull(1)?.let { v -> URLDecoder.decode(v, "UTF-8") } ?: "")
-                    }
-                    // If no signature decryption is needed (no 's' parameter)
-                    if (!params.containsKey("s") && params.containsKey("url")) {
-                        url = params["url"].orEmpty()
-                    }
-                }
-            }
-
-            if (url.isEmpty()) {
-                // Cipher-protected or unresolvable directly, skip for direct client
-                continue
-            }
+            val url = resolveUrl(format) ?: continue
 
             val itag = format.optInt("itag", 0).takeIf { it > 0 }
-            val rawBitrate = format.optLong("averageBitrate", 0L).takeIf { it > 0 }
-                ?: format.optLong("bitrate", 0L).takeIf { it > 0 }
-                ?: (AudioStreamInfo.nominalBitrateForItag(itag)?.toLong()?.times(1000L) ?: 0L)
-            val bitrateKbps = if (rawBitrate > 0) Math.round(rawBitrate / 1000.0).toInt() else 0
-
-            val sampleRateStr = format.optString("audioSampleRate", "")
-            val sampleRate = sampleRateStr.toIntOrNull()
-                ?: format.optInt("audioSampleRate", 0).takeIf { it > 0 }
-                ?: (AudioStreamInfo.nominalSampleRateForItag(itag) ?: 0)
-
-            val channels = format.optInt("audioChannels", 0).takeIf { it > 0 } ?: 2
+            val contentLength = format.optLong("contentLength").takeIf { it > 0 }
+            val durationMs = format.optLong("approxDurationMs").takeIf { it > 0 }
+            val rawBitrate = if (isAudioOnly) {
+                format.optLong("averageBitrate").takeIf { it > 0 }
+                    ?: audioBitrateBps(contentLength, durationMs)
+                    ?: format.optLong("bitrate").coerceAtLeast(0L)
+            } else 0L
+            val bitrateKbps = Math.round(rawBitrate / 1000.0).toInt()
+            val sampleRate = format.optInt("audioSampleRate").coerceAtLeast(0)
+            val channels = format.optInt("audioChannels").coerceAtLeast(0)
             val codec = AudioStreamInfo.codecFromMimeType(mimeType)
+            if (codec == "Unknown") continue
             val container = AudioStreamInfo.containerFromMimeType(mimeType)
-            val loudnessDb = if (format.has("loudnessDb")) format.optDouble("loudnessDb") else null
-            val contentLength = format.optString("contentLength", "").toLongOrNull()
-                ?: format.optLong("contentLength", 0L).takeIf { it > 0 }
-            val approxDurationMs = format.optString("approxDurationMs", "").toLongOrNull()
-                ?: format.optLong("approxDurationMs", 0L).takeIf { it > 0 }
+            val loudnessDb = format.optDouble("loudnessDb").takeIf(Double::isFinite)
             val audioQuality = format.optString("audioQuality", "")
 
             outList.add(
@@ -407,104 +435,20 @@ class AudioStreamExtractor @Inject constructor(
                     isAudioOnly = isAudioOnly,
                     loudnessDb = loudnessDb,
                     contentLength = contentLength,
-                    approxDurationMs = approxDurationMs,
+                    approxDurationMs = durationMs,
                 )
             )
         }
     }
 
-    /**
-     * Dynamically select the best audio format based on acoustic fidelity and compatibility.
-     * Logs candidate formats, scores, and selection rationale.
-     */
-    fun selectBestFormat(
+    internal fun selectBestFormat(
         formats: List<AudioFormat>,
-        requestedQuality: StreamQuality,
+        requestedQuality: StreamQuality
     ): Pair<AudioFormat, String>? {
-        if (formats.isEmpty()) return null
-
-        val playable = formats.filter { it.url.isNotBlank() }
-        if (playable.isEmpty()) return null
-
-        Log.d(TAG, "Evaluating ${playable.size} candidates for quality tier: ${requestedQuality.displayName}")
-        playable.forEach { f ->
-            val score = computeFormatScore(f, requestedQuality)
-            Log.d(
-                TAG,
-                "  Candidate format: itag=${f.itag ?: "N/A"}, codec=${f.codec}, container=${f.container}, " +
-                    "bitrate=${f.bitrateKbps}kbps, sr=${if (f.sampleRate > 0) "${f.sampleRate}Hz" else "unknown"}, " +
-                    "ch=${if (f.channelCount > 0) "${f.channelCount}ch" else "unknown"}, audioOnly=${f.isAudioOnly}, score=$score"
-            )
-        }
-
-        val best = playable.maxWithOrNull(
-            compareBy<AudioFormat> { computeFormatScore(it, requestedQuality) }
-                .thenBy { it.isAudioOnly }
-                .thenBy { it.bitrateKbps }
-                .thenBy { it.sampleRate }
-        ) ?: return null
-
-        val rationale = "Selected itag=${best.itag ?: "N/A"} (${best.codec} ${if (best.bitrateKbps > 0) "${best.bitrateKbps}kbps" else ""}, " +
-            "sr=${if (best.sampleRate > 0) "${best.sampleRate}Hz" else "unknown"}, ${if (best.isAudioOnly) "audio-only" else "muxed"}) " +
-            "as highest fidelity format among ${playable.size} candidates for ${requestedQuality.displayName}."
-
-        return Pair(best, rationale)
-    }
-
-    /**
-     * Compute objective perceptual acoustic fidelity score for a format.
-     *
-     * Principles:
-     * - Audio-only streams (adaptiveFormats) are prioritized over muxed audio+video streams
-     *   to prevent video download overhead and buffering stalls.
-     * - Opus achieves fullband 20kHz frequency response at 48kHz sample rate, providing
-     *   transparent CD-grade acoustic quality at ~128-160 kbps (itag 251), significantly
-     *   outperforming standard 128 kbps AAC (itag 140) which has a 15.5kHz lowpass filter cutoff.
-     * - AAC-LC at ≥256 kbps (itag 141) achieves top-tier acoustic fidelity.
-     * - Higher sample rate (48000 Hz vs 44100 Hz vs 22050 Hz) and multi-channel capability are rewarded.
-     * - Respects user StreamQuality settings (LOW for Data Saver, MEDIUM for cellular balance,
-     *   HIGH/BEST for maximum fidelity).
-     */
-    fun computeFormatScore(format: AudioFormat, requestedQuality: StreamQuality): Long {
-        val isOpus = format.codec.equals("OPUS", true)
-        val isAac = format.codec.contains("AAC", true)
-        val isAacHe = format.codec.equals("AAC-HE", true)
-        val bitrate = format.bitrateKbps
-        val isAudioOnly = format.isAudioOnly
-
-        return when (requestedQuality) {
-            StreamQuality.LOW -> {
-                // Data Saver: prefer low bitrate streams (~50-70 kbps)
-                val distance = kotlin.math.abs(bitrate - requestedQuality.bitrate)
-                val base = (10_000L - distance * 100L).coerceAtLeast(0L)
-                val codecBonus = if (isOpus) 500L else if (isAacHe) 300L else 0L
-                val audioBonus = if (isAudioOnly) 5_000L else 0L
-                base + codecBonus + audioBonus
-            }
-            StreamQuality.MEDIUM -> {
-                // Balanced: prefer streams closest to 128 kbps
-                val distance = kotlin.math.abs(bitrate - requestedQuality.bitrate)
-                val base = (10_000L - distance * 100L).coerceAtLeast(0L)
-                val codecBonus = if (isOpus) 500L else 0L
-                val audioBonus = if (isAudioOnly) 5_000L else 0L
-                base + codecBonus + audioBonus
-            }
-            StreamQuality.HIGH, StreamQuality.BEST -> {
-                // Highest available acoustic fidelity
-                val effectiveBitrate = when {
-                    isAac && bitrate >= 256 -> (bitrate.toLong() * 1_250L)
-                    isOpus && bitrate >= 120 -> (bitrate.toLong() * 1_400L)
-                    isOpus -> (bitrate.toLong() * 1_300L)
-                    isAac && !isAacHe -> (bitrate.toLong() * 1_000L)
-                    isAacHe -> (bitrate.toLong() * 850L)
-                    else -> (bitrate.toLong() * 900L)
-                }
-                val sampleRateBonus = format.sampleRate.toLong().coerceAtLeast(0L)
-                val channelBonus = if (format.channelCount >= 2) 1_000L else 0L
-                val audioBonus = if (isAudioOnly) 50_000L else 0L
-                effectiveBitrate + sampleRateBonus + channelBonus + audioBonus
-            }
-        }
+        val candidates = formats.associateBy { it.toCandidate("Innertube") }
+        val selected = audioQualitySelector.selectBestCandidate(candidates.keys.toList(), requestedQuality)
+            ?: return null
+        return candidates.getValue(selected.candidate) to selected.rationale
     }
 
     /**
@@ -614,6 +558,29 @@ data class AudioFormat(
     val contentLength: Long? = null,
     val approxDurationMs: Long? = null,
 ) {
-    fun isOpus(): Boolean = codec.equals("OPUS", true)
-    fun isAac(): Boolean = codec.contains("AAC", true)
+    fun toCandidate(source: String, defaultLoudness: Double? = null) = AudioStreamCandidate(
+        url = url,
+        mimeType = mimeType,
+        itag = itag,
+        codec = codec,
+        codecProfile = AUDIO_CODEC_TOKEN.find(mimeType)?.value,
+        container = container,
+        bitrate = bitrate,
+        bitrateKbps = bitrateKbps,
+        sampleRate = sampleRate,
+        channelCount = channelCount,
+        isAudioOnly = isAudioOnly,
+        contentLength = contentLength,
+        durationMs = approxDurationMs,
+        loudnessDb = loudnessDb ?: defaultLoudness,
+        sourceName = source,
+        expiresAtMs = AudioStreamCandidate.extractExpiryFromUrl(url)
+    )
+}
+
+private val AUDIO_CODEC_TOKEN = Regex("(?i)mp4a\\.[a-z0-9.]+|opus|vorbis|flac|alac")
+
+internal fun audioBitrateBps(contentLength: Long?, durationMs: Long?): Long? {
+    if (contentLength == null || durationMs == null || durationMs <= 0) return null
+    return (contentLength * 8000.0 / durationMs).toLong().takeIf { it > 0 }
 }

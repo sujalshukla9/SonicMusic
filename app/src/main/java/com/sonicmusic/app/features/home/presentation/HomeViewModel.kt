@@ -1,47 +1,48 @@
 package com.sonicmusic.app.features.home.presentation
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
-import com.sonicmusic.app.data.repository.RegionRepository
-import com.sonicmusic.app.data.repository.SettingsRepository
-import com.sonicmusic.app.domain.model.HomeContent
+import com.sonicmusic.app.R
+import com.sonicmusic.app.core.network.NetworkMonitor
+import com.sonicmusic.app.data.local.entity.DownloadStatus
+import com.sonicmusic.app.domain.model.CachedHomeFeed
 import com.sonicmusic.app.domain.model.CommunityPlaylist
+import com.sonicmusic.app.domain.model.HomeContent
+import com.sonicmusic.app.domain.model.HomeShelf
+import com.sonicmusic.app.domain.model.HomeShelfItem
 import com.sonicmusic.app.domain.model.Song
-import com.sonicmusic.app.domain.repository.SongRepository
+import com.sonicmusic.app.domain.model.deviceLocalSongId
 import com.sonicmusic.app.domain.repository.BrowseRepository
-import com.sonicmusic.app.domain.repository.ArtistRepository
+import com.sonicmusic.app.domain.repository.HomeFeedScope
+import com.sonicmusic.app.domain.repository.HomeSessionRejectedException
 import com.sonicmusic.app.domain.repository.PlaylistRepository
+import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.home.domain.GetHomeContentUseCase
-import com.sonicmusic.app.shared.components.pullrefresh.RefreshResult
+import com.sonicmusic.app.features.library.data.DownloadRepository
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
+import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
+import com.sonicmusic.app.shared.components.pullrefresh.RefreshResult
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import javax.inject.Inject
-
-/**
- * Home ViewModel - Enhanced with ViTune-style Queue Management
- *
- * Improvements:
- * - Context-aware playback (plays song + adds rest of section to queue)
- * - Play All functionality for sections
- * - Better error handling with retry logic
- * - Queue management integration
- * - Shuffle and Play support
- */
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.collect
-import com.sonicmusic.app.data.local.entity.DownloadStatus
-import com.sonicmusic.app.features.home.data.HomeRefreshManager
-import com.sonicmusic.app.domain.model.ContentType
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -49,387 +50,369 @@ class HomeViewModel @Inject constructor(
     private val playerServiceConnection: PlayerServiceConnection,
     private val songRepository: SongRepository,
     private val queueRepository: QueueRepositoryImpl,
-    private val regionRepository: RegionRepository,
-    private val settingsRepository: SettingsRepository,
     private val browseRepository: BrowseRepository,
-    private val artistRepository: ArtistRepository,
-    private val networkMonitor: com.sonicmusic.app.core.network.NetworkMonitor,
-    private val downloadRepository: com.sonicmusic.app.features.library.data.DownloadRepository,
+    networkMonitor: NetworkMonitor,
+    downloadRepository: DownloadRepository,
     private val playlistRepository: PlaylistRepository,
-    private val homeRefreshManager: HomeRefreshManager
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
+    data class AccountNotice(val reconnect: Boolean, val showingPublicFeed: Boolean)
 
-    companion object {
-        private const val TAG = "SonicHome"
-        private const val SECTION_LIMIT = 100
-        private const val SECTION_ARTIST_PREFIX = "artist:"
-
-        const val SECTION_LISTEN_AGAIN = "listen_again"
-        const val SECTION_QUICK_PICKS = "quick_picks"
-        const val SECTION_ENGLISH_HITS = "english_hits"
-        const val SECTION_FORGOTTEN_FAVORITES = "forgotten_favorites"
-        // YTMusic Browse sections
-        const val SECTION_TRENDING_ALBUMS = "trending_albums"
-        const val SECTION_CHARTS = "charts"
-        const val SECTION_RECENTLY_PLAYED = "recently_played"
-        const val SECTION_MIXED_FOR_YOU = "mixed_for_you"
-
-        fun artistSectionKey(artistId: String): String = "$SECTION_ARTIST_PREFIX$artistId"
-    }
-
-    private val _homeUiState = MutableStateFlow(HomeUiState())
-    val homeUiState: StateFlow<HomeUiState> = _homeUiState.asStateFlow()
-
-    private val _homeContent = MutableStateFlow<HomeContent>(HomeContent())
-    val homeContent: StateFlow<HomeContent> = _homeContent.asStateFlow()
-
+    private val _homeContent = MutableStateFlow(HomeContent())
+    private val playlistPicks = MutableStateFlow<List<Song>>(emptyList())
     private val _isLoading = MutableStateFlow(true)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-
+    val isLoading = _isLoading.asStateFlow()
+    private val _feedUnavailable = MutableStateFlow(false)
+    val feedUnavailable = _feedUnavailable.asStateFlow()
+    private val _accountNotice = MutableStateFlow<AccountNotice?>(null)
+    val accountNotice = _accountNotice.asStateFlow()
     private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-
+    val error = _error.asStateFlow()
     private val _isRefreshing = MutableStateFlow(false)
-    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
-
+    val isRefreshing = _isRefreshing.asStateFlow()
     private val _refreshResult = MutableStateFlow<RefreshResult?>(null)
-    val refreshResult: StateFlow<RefreshResult?> = _refreshResult.asStateFlow()
-
-    private val _followedArtistIds = MutableStateFlow<Set<String>>(emptySet())
-    val followedArtistIds: StateFlow<Set<String>> = _followedArtistIds.asStateFlow()
-
-
-
+    val refreshResult = _refreshResult.asStateFlow()
     private val _isLoadingMore = MutableStateFlow(false)
-    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+    val isLoadingMore = _isLoadingMore.asStateFlow()
+    private val _manualPagination = MutableStateFlow(false)
+    val manualPagination = _manualPagination.asStateFlow()
 
-    private val _visibleSections = MutableStateFlow<Set<Any>>(emptySet())
-
-
-    private var isScrollInProgress = false
-
-    /** Prevents concurrent load / refresh from racing. */
+    private var scope: HomeFeedScope? = null
+    private var firstPage: HomeContent? = null
+    private var showingPublicFeed = false
+    private var deferredRefresh: HomeContent? = null
+    private var scrolling = false
+    private var atTop = true
     private var loadJob: Job? = null
-    private var moreJob: Job? = null
+    private var pageJob: Job? = null
+    private var picksJob: Job? = null
+    private var picksSourceId: String? = null
+    private val consumedTokens = mutableSetOf<String>()
 
-    val countryName: StateFlow<String?> = regionRepository.countryName
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    val isOnline = networkMonitor.isOnlineState
+    val playbackCompleted = getHomeContentUseCase.playbackCompleted
+    val recentlyPlayed = getHomeContentUseCase.recentlyPlayed
+        .catch { Log.w(TAG, "Unable to read listening history", it) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val isOnline: StateFlow<Boolean> = networkMonitor.isOnlineState
+    private val allowGuestPicks = MutableStateFlow(false)
+    val homeContent = combine(_homeContent, recentlyPlayed, playlistPicks, allowGuestPicks) { feed, history, picks, guest ->
+        if (guest) withQuickPicks(feed, history, picks) else feed
+    }.distinctUntilChanged()
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, HomeContent())
 
-    val downloadedSongIds: StateFlow<Set<String>> = downloadRepository.getDownloadedSongs()
-        .map { list -> list.filter { it.status == DownloadStatus.COMPLETED }.map { it.videoId }.toSet() }
+    val downloadedSongIds = downloadRepository.getDownloadedSongs()
+        .map { rows ->
+            buildSet {
+                for (row in rows) {
+                    if (row.status == DownloadStatus.COMPLETED) add(row.videoId)
+                }
+            }
+        }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
-    val savedPlaylistRemoteIds: StateFlow<Set<String>> = playlistRepository.getAllPlaylists()
-        .map { list -> list.mapNotNull { it.remoteId }.toSet() }
+    val savedPlaylistRemoteIds = playlistRepository.getAllPlaylists()
+        .map { rows -> buildSet { rows.mapNotNullTo(this) { it.remoteId } } }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
     init {
-        loadHomeContent()
-        observeFollowedArtists()
-        observeHomeRefreshes()
-    }
-
-    private var pendingQuickPicks: List<Song>? = null
-    private var pendingListenAgain: List<Song>? = null
-    private var pendingForgottenFavorites: List<Song>? = null
-
-    private fun applyPendingQuickPicks() {
-        pendingQuickPicks?.let { songs ->
-            _homeContent.value = _homeContent.value.copy(quickPicks = songs)
-            pendingQuickPicks = null
-            Log.d(TAG, "Applied pending Quick Picks update")
+        viewModelScope.launch {
+            getHomeContentUseCase.scopes.collect { newScope ->
+                loadJob?.cancel()
+                pageJob?.cancel()
+                resetFallbackPicks()
+                loadJob = null
+                pageJob = null
+                scope = newScope
+                firstPage = null
+                showingPublicFeed = false
+                _accountNotice.value = null
+                deferredRefresh = null
+                consumedTokens.clear()
+                _homeContent.value = HomeContent()
+                allowGuestPicks.value = !newScope.isPersonalized
+                _isLoadingMore.value = false
+                _manualPagination.value = false
+                _isRefreshing.value = false
+                _refreshResult.value = null
+                _error.value = null
+                loadHomeContent()
+            }
+        }
+        viewModelScope.launch {
+            isOnline.drop(1).collect { if (it) loadHomeContent() }
         }
     }
 
-    private fun applyPendingListenAgain() {
-        pendingListenAgain?.let { songs ->
-            _homeContent.value = _homeContent.value.copy(listenAgain = songs)
-            pendingListenAgain = null
-            Log.d(TAG, "Applied pending Listen Again update")
-        }
+    fun onFeedScrollChanged(isScrolling: Boolean, isAtTop: Boolean) {
+        scrolling = isScrolling
+        atTop = isAtTop
+        if (canApplyRefresh()) deferredRefresh?.let(::publishFirstPage)
     }
 
-    private fun applyPendingForgottenFavorites() {
-        pendingForgottenFavorites?.let { songs ->
-            _homeContent.value = _homeContent.value.copy(forgottenFavorites = songs)
-            pendingForgottenFavorites = null
-            Log.d(TAG, "Applied pending Forgotten Favorites update")
-        }
-    }
+    private fun canApplyRefresh() = !scrolling && (atTop || consumedTokens.isEmpty())
 
-    private fun applyPendingUpdates() {
-        applyPendingQuickPicks()
-        applyPendingListenAgain()
-        applyPendingForgottenFavorites()
-    }
+    fun loadHomeContent() = load(force = false)
 
-    fun onVisibleSectionsChanged(visibleKeys: Set<Any>, isScrollInProgress: Boolean = false) {
-        this.isScrollInProgress = isScrollInProgress
-        _visibleSections.value = visibleKeys
-
-        if (!isScrollInProgress) {
-            applyPendingUpdates()
+    fun refreshHomeContent() {
+        if (_isRefreshing.value) return
+        _refreshResult.value = null
+        _isRefreshing.value = true
+        if (scope == null) {
+            _isRefreshing.value = false
+            _refreshResult.value = RefreshResult.ERROR
         } else {
-            if ("quick_picks" !in visibleKeys && "for_you" !in visibleKeys) {
-                applyPendingQuickPicks()
-            }
-            if ("listen_again_grid" !in visibleKeys && "continue_listening" !in visibleKeys) {
-                applyPendingListenAgain()
-            }
-            if ("forgotten_favorites" !in visibleKeys) {
-                applyPendingForgottenFavorites()
-            }
+            load(force = true)
         }
     }
 
-    private fun observeHomeRefreshes() {
-        viewModelScope.launch {
-            homeRefreshManager.refreshEvents.collect { (title, section) ->
-                Log.d(TAG, "HomeRefreshManager updated section: $title with ${section.songs.size} items")
-                val updatedSongs = section.songs.map { homeSong ->
-                    val resolvedRefs = when {
-                        homeSong.artistRefs.isNotEmpty() -> homeSong.artistRefs
-                        homeSong.artists.isNotEmpty() -> homeSong.artists.mapIndexed { index, name ->
-                            com.sonicmusic.app.domain.model.ArtistRef(
-                                name = name,
-                                browseId = homeSong.artistBrowseIds.getOrNull(index)
-                            )
-                        }
-                        else -> emptyList()
-                    }
-                    val artistDisplayName = resolvedRefs.joinToString(", ") { it.name }
-                        .ifBlank { "Unknown Artist" }
-                    val primaryArtistId = resolvedRefs.firstOrNull()?.browseId
-                        ?: homeSong.artistBrowseIds.firstOrNull()
-                    Song(
-                        id = homeSong.videoId,
-                        title = homeSong.title,
-                        artist = artistDisplayName,
-                        artistId = primaryArtistId,
-                        duration = 0,
-                        thumbnailUrl = homeSong.thumbnailUrl,
-                        album = homeSong.album,
-                        albumBrowseId = null,
-                        albumName = homeSong.album,
-                        contentType = ContentType.SONG,
-                        artists = resolvedRefs
-                    )
+    private fun load(force: Boolean) {
+        val activeScope = scope ?: return
+        if (loadJob?.isActive == true || (!force && pageJob?.isActive == true)) return
+        val previousPageJob = pageJob
+        loadJob = viewModelScope.launch {
+            _isLoading.value = firstPage == null
+            _feedUnavailable.value = false
+            var success = false
+            try {
+                previousPageJob?.cancelAndJoin()
+                if (firstPage == null) {
+                    getHomeContentUseCase.cached(activeScope)?.let { restoreCachedFeed(it) }
+                }
+                if (!isOnline.value) {
+                    if (activeScope.isPersonalized && firstPage == null) showAccountFallback(activeScope, reconnect = false)
+                    return@launch
                 }
 
-                val currentContent = _homeContent.value
-                val isQuickPicksVisible = "quick_picks" in _visibleSections.value || "for_you" in _visibleSections.value
-                val isListenAgainVisible = "listen_again_grid" in _visibleSections.value || "continue_listening" in _visibleSections.value
-                val isForgottenVisible = "forgotten_favorites" in _visibleSections.value
-
-                when (title.lowercase(java.util.Locale.US).trim()) {
-                    "quick picks", "quickpicks" -> {
-                        if (isQuickPicksVisible && isScrollInProgress) {
-                            pendingQuickPicks = updatedSongs
-                            Log.d(TAG, "Delaying Quick Picks update because section is currently visible and scrolling")
+                val fresh = getHomeContentUseCase.refresh(activeScope, force || _isRefreshing.value)
+                if (scope != activeScope) return@launch
+                success = fresh.shelves.isNotEmpty() || fresh.continuation != null
+                _feedUnavailable.value = !success
+                if (success) {
+                    val switchingToAccount = showingPublicFeed
+                    val previous = firstPage.takeUnless { switchingToAccount }
+                    val reconciled = withContext(Dispatchers.Default) {
+                        if (fresh == previous) null else reuseShelves(fresh, previous)
+                    }
+                    if (reconciled != null) {
+                        if (!switchingToAccount && !canApplyRefresh() && _homeContent.value.shelves.isNotEmpty()) {
+                            deferredRefresh = reconciled
                         } else {
-                            _homeContent.value = currentContent.copy(quickPicks = updatedSongs)
-                            pendingQuickPicks = null
-                            Log.d(TAG, "Applied Quick Picks update immediately")
+                            if (switchingToAccount) {
+                                resetFallbackPicks()
+                                showingPublicFeed = false
+                            }
+                            publishFirstPage(reconciled)
                         }
                     }
-                    "listen again" -> {
-                        if (isListenAgainVisible && isScrollInProgress) {
-                            pendingListenAgain = updatedSongs
-                            Log.d(TAG, "Delaying Listen Again update")
-                        } else {
-                            _homeContent.value = currentContent.copy(listenAgain = updatedSongs)
-                            pendingListenAgain = null
-                            Log.d(TAG, "Applied Listen Again update immediately")
-                        }
-                    }
-                    "forgotten favorites", "forgotten" -> {
-                        if (isForgottenVisible && isScrollInProgress) {
-                            pendingForgottenFavorites = updatedSongs
-                            Log.d(TAG, "Delaying Forgotten Favorites update")
-                        } else {
-                            _homeContent.value = currentContent.copy(forgottenFavorites = updatedSongs)
-                            pendingForgottenFavorites = null
-                            Log.d(TAG, "Applied Forgotten Favorites update immediately")
-                        }
+                    _accountNotice.value = null
+                    if (!activeScope.isPersonalized) loadFallbackPicks(activeScope, force)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (activeScope.isPersonalized) showAccountFallback(activeScope, e is HomeSessionRejectedException)
+                _feedUnavailable.value = _homeContent.value.shelves.isEmpty()
+                Log.w(TAG, "Unable to refresh Home", e)
+            } finally {
+                if (scope == activeScope) {
+                    _isLoading.value = false
+                    if (_isRefreshing.value) {
+                        _refreshResult.value = if (success) RefreshResult.SUCCESS else RefreshResult.ERROR
+                        _isRefreshing.value = false
                     }
                 }
             }
         }
     }
 
-    private fun observeFollowedArtists() {
-        viewModelScope.launch {
-            artistRepository.getFollowedArtists().collect { followedList ->
-                _followedArtistIds.value = followedList.map { it.browseId }.filterNotNull().toSet() + 
-                                           followedList.map { it.artistName.lowercase() }.toSet()
+    private suspend fun showAccountFallback(activeScope: HomeFeedScope, reconnect: Boolean) {
+        if (scope != activeScope) return
+        // A cached account page still belongs to the connected account, even if refresh fails.
+        if (_homeContent.value.shelves.isEmpty() && _homeContent.value.continuation == null) {
+            try {
+                val cached = getHomeContentUseCase.cached(activeScope.publicFeed())
+                val publicFeed = cached?.takeIf {
+                    it.firstPage.shelves.isNotEmpty() || it.firstPage.continuation != null
+                } ?: if (isOnline.value) {
+                    CachedHomeFeed(getHomeContentUseCase.refresh(activeScope, force = false, usePublicFeed = true))
+                } else null
+                if (scope != activeScope) return
+                if (publicFeed != null) {
+                    resetFallbackPicks()
+                    showingPublicFeed = true
+                    restoreCachedFeed(publicFeed)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Public Home fallback unavailable", e)
+            }
+        }
+        _accountNotice.value = AccountNotice(reconnect, showingPublicFeed)
+    }
+
+    private fun resetFallbackPicks() {
+        picksJob?.cancel()
+        picksJob = null
+        picksSourceId = null
+        playlistPicks.value = emptyList()
+    }
+
+    private fun withQuickPicks(feed: HomeContent, history: List<Song>, fallback: List<Song>): HomeContent {
+        if (feed.shelves.any { it.kind == HomeShelf.Kind.QuickPicks }) return feed
+        val heard = history.mapTo(hashSetOf(), Song::id)
+        val seen = hashSetOf<String>()
+        val candidates = feed.shelves.asSequence()
+            .flatMap { it.items.asSequence().mapNotNull(HomeShelfItem::playableSong) }
+            .plus(fallback.asSequence())
+            .filter { seen.add(it.id) }
+            .take(40)
+            .toList()
+        val fresh = candidates.filterNot { it.id in heard }
+        val songs = fresh.ifEmpty { candidates }.take(16)
+        if (songs.isEmpty()) return feed
+        val shelf = HomeShelf(
+            id = "home_quick_picks",
+            title = context.getString(R.string.home_quick_picks),
+            subtitle = context.getString(R.string.home_quick_picks_subtitle),
+            items = songs.map { HomeShelfItem.Media(it) },
+            kind = HomeShelf.Kind.QuickPicks
+        )
+        return feed.copy(shelves = listOf(shelf) + feed.shelves)
+    }
+
+    private fun loadFallbackPicks(activeScope: HomeFeedScope, force: Boolean) {
+        val shelves = _homeContent.value.shelves
+        if (shelves.any { shelf -> shelf.kind == HomeShelf.Kind.QuickPicks ||
+            shelf.items.any { it.playableSong != null }
+        }) return
+        val playlistId = shelves.asSequence().flatMap { it.items.asSequence() }
+            .filterIsInstance<HomeShelfItem.Playlist>()
+            .firstOrNull()?.playlist?.browseId ?: return
+        if (picksJob?.isActive == true || (!force && picksSourceId == playlistId)) return
+        picksSourceId = playlistId
+        val usePublicFeed = showingPublicFeed
+        picksJob = viewModelScope.launch {
+            try {
+                val tracks = getHomeContentUseCase.quickPicksFromPlaylist(activeScope, playlistId, usePublicFeed)
+                if (scope == activeScope && showingPublicFeed == usePublicFeed && tracks.isNotEmpty()) {
+                    playlistPicks.value = tracks.take(40)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to load tracks for Quick Picks", e)
             }
         }
     }
 
-    fun toggleFollowArtist(artist: Song) {
-        viewModelScope.launch {
-            val name = artist.artist.ifBlank { artist.title }
-            val browseId = artist.id.takeIf { it.isNotBlank() } ?: artist.artistId
-            val followedIds = _followedArtistIds.value
-            val isCurrentlyFollowed = (browseId != null && browseId in followedIds) || name.lowercase() in followedIds
-            if (isCurrentlyFollowed) {
-                artistRepository.unfollowArtist(name, browseId)
-            } else {
-                artistRepository.followArtist(name, browseId, artist.thumbnailUrl)
-            }
-        }
+    private fun reuseShelves(fresh: HomeContent, previous: HomeContent?): HomeContent {
+        if (previous == null) return fresh
+        val oldShelves = previous.shelves.associateBy { it.id }
+        return fresh.copy(shelves = fresh.shelves.map { shelf -> oldShelves[shelf.id]?.takeIf { it == shelf } ?: shelf })
     }
 
+    private fun publishFirstPage(content: HomeContent) {
+        firstPage = content
+        deferredRefresh = null
+        consumedTokens.clear()
+        _manualPagination.value = false
+        _homeContent.value = content
+        _isLoading.value = false
+    }
 
+    private suspend fun restoreCachedFeed(cached: CachedHomeFeed) {
+        val (content, tokens) = withContext(Dispatchers.Default) {
+            val visited = mutableSetOf<String>()
+            var visible = cached.firstPage
+            for (page in cached.loadedPages) {
+                if (visible.continuation?.token != page.requestToken || !visited.add(page.requestToken)) break
+                visible = appendPage(visible, page.content)
+            }
+            val next = visible.continuation?.takeUnless { it.token in visited }
+            visible.copy(continuation = next) to visited
+        }
+        firstPage = cached.firstPage
+        consumedTokens.clear()
+        consumedTokens.addAll(tokens)
+        _manualPagination.value = false
+        _homeContent.value = content
+        _isLoading.value = false
+    }
 
-    fun loadMoreHomeContent() {
-        val token = _homeContent.value.continuationToken
-        if (token.isNullOrBlank() || _isLoadingMore.value) return
+    fun loadMoreHomeContent(userRequested: Boolean = false) {
+        val activeScope = scope ?: return
+        if (pageJob?.isActive == true || _isRefreshing.value || !isOnline.value) return
+        if (_manualPagination.value && !userRequested) return
+        if (_homeContent.value.continuation == null) return
+        val initialLoad = loadJob
 
-        moreJob?.cancel()
-        moreJob = viewModelScope.launch {
+        pageJob = viewModelScope.launch {
+            initialLoad?.join()
+            if (scope != activeScope || !isOnline.value) return@launch
             _isLoadingMore.value = true
             try {
-                browseRepository.getHomeContinuation(token)
-                    .onSuccess { (newShelves, nextToken) ->
-                        if (newShelves.isNotEmpty()) {
-                            val currentShelves = _homeContent.value.continuationShelves
-                            _homeContent.value = _homeContent.value.copy(
-                                continuationShelves = currentShelves + newShelves,
-                                continuationToken = nextToken
-                            )
-                        } else {
-                            _homeContent.value = _homeContent.value.copy(continuationToken = null)
-                        }
-                    }
-                    .onFailure { e ->
-                        Log.w(TAG, "Failed loading continuation home content", e)
-                        _homeContent.value = _homeContent.value.copy(continuationToken = null)
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in loadMoreHomeContent", e)
-            } finally {
-                _isLoadingMore.value = false
-            }
-        }
-    }
-
-
-    fun loadHomeContent() {
-        // In-flight request deduplication: if already loading, reuse existing request
-        if (loadJob?.isActive == true) {
-            Log.d(TAG, "Home load already in flight, skipping duplicate request")
-            return
-        }
-
-        loadJob = viewModelScope.launch {
-            val hasExisting = _homeContent.value.hasAnyContent()
-            _isLoading.value = !hasExisting
-            _homeUiState.value = _homeUiState.value.copy(
-                status = if (hasExisting) HomeStatus.CACHED else HomeStatus.LOADING,
-                isRefreshing = false
-            )
-            _error.value = null
-            try {
-                fetchHomeContent(forceRefresh = false)
-            } finally {
-                _isLoading.value = false
-            }
-        }
-    }
-
-    /** Pull-to-refresh handler — force reloads all sections while keeping existing content visible. */
-    fun refreshHomeContent() {
-        loadJob?.cancel()
-        loadJob = viewModelScope.launch {
-            _isRefreshing.value = true
-            _homeUiState.value = _homeUiState.value.copy(
-                status = HomeStatus.REFRESHING,
-                isRefreshing = true
-            )
-            _refreshResult.value = null
-            _error.value = null
-            try {
-                fetchHomeContent(forceRefresh = true)
-                val isSuccess = _error.value == null
-                _refreshResult.value = if (isSuccess) RefreshResult.SUCCESS else RefreshResult.ERROR
-                _homeUiState.value = _homeUiState.value.copy(
-                    status = if (isSuccess) HomeStatus.SUCCESS else HomeStatus.ERROR,
-                    isRefreshing = false,
-                    lastUpdated = if (isSuccess) System.currentTimeMillis() else _homeUiState.value.lastUpdated
-                )
-            } catch (e: Exception) {
-                _refreshResult.value = RefreshResult.ERROR
-                _homeUiState.value = _homeUiState.value.copy(
-                    status = HomeStatus.ERROR,
-                    isRefreshing = false,
-                    error = e.message
-                )
-            } finally {
-                _isRefreshing.value = false
-            }
-        }
-    }
-
-    /** Shared loader used by both initial load and refresh. */
-    private suspend fun fetchHomeContent(forceRefresh: Boolean) {
-        val startMs = System.currentTimeMillis()
-        try {
-            // Ensure IP-based region is initialized before home recommendations load.
-            runCatching { regionRepository.initializeRegion() }
-                .onFailure { error -> Log.w(TAG, "Region initialization failed before home load", error) }
-
-            getHomeContentUseCase(forceRefresh).collect { content ->
-                val mergedContent = if (forceRefresh) {
+                repeat(MAX_PAGES_PER_LOAD) {
                     val current = _homeContent.value
-                    content.copy(
-                        listenAgain = if (content.listenAgain.isNotEmpty()) content.listenAgain else current.listenAgain,
-                        recentlyPlayed = if (content.recentlyPlayed.isNotEmpty()) content.recentlyPlayed else current.recentlyPlayed,
-                        quickPicks = if (content.quickPicks.isNotEmpty()) content.quickPicks else current.quickPicks,
-                        englishHits = if (content.englishHits.isNotEmpty()) content.englishHits else current.englishHits,
-                        trendingAlbums = if (content.trendingAlbums.isNotEmpty()) content.trendingAlbums else current.trendingAlbums,
-                        charts = content.charts ?: current.charts,
-                        artists = if (content.artists.isNotEmpty()) content.artists else current.artists,
-                        mixedForYou = if (content.mixedForYou.isNotEmpty()) content.mixedForYou else current.mixedForYou,
-                        forgottenFavorites = if (content.forgottenFavorites.isNotEmpty()) content.forgottenFavorites else current.forgottenFavorites,
-                        continuationShelves = if (content.continuationShelves.isNotEmpty()) content.continuationShelves else current.continuationShelves,
-                        continuationToken = content.continuationToken ?: current.continuationToken
-                    )
-                } else {
-                    content
-                }
+                    val cursor = current.continuation ?: return@launch
+                    if (cursor.token in consumedTokens) return@launch
 
-                _homeContent.value = mergedContent
-                _homeUiState.value = _homeUiState.value.copy(
-                    status = if (forceRefresh) HomeStatus.REFRESHING else HomeStatus.SUCCESS,
-                    content = mergedContent,
-                    lastUpdated = System.currentTimeMillis()
-                )
-
-                // Dismiss loading indicator as soon as any content is ready
-                if (mergedContent.hasAnyContent()) {
-                    _isLoading.value = false
+                    val page = getHomeContentUseCase.loadMore(activeScope, cursor, showingPublicFeed)
+                    val (merged, changed) = withContext(Dispatchers.Default) {
+                        val result = appendPage(current, page)
+                        result to (result.shelves != current.shelves)
+                    }
+                    if (scope != activeScope || _homeContent.value !== current) return@launch
+                    consumedTokens += cursor.token
+                    val next = merged.continuation?.takeUnless { it.token in consumedTokens }
+                    _homeContent.value = merged.copy(continuation = next)
+                    if (changed || next == null) {
+                        _manualPagination.value = false
+                        return@launch
+                    }
                 }
+                _manualPagination.value = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _manualPagination.value = true
+                if (e is HomeSessionRejectedException) {
+                    _accountNotice.value = AccountNotice(reconnect = true, showingPublicFeed = false)
+                }
+                if (userRequested) _error.value = "Couldn’t load more from YouTube Music"
+                Log.w(TAG, "Unable to load the next Home page", e)
+            } finally {
+                if (scope == activeScope) _isLoadingMore.value = false
             }
-            _isLoading.value = false
-            Log.d(TAG, "Home content loaded in ${System.currentTimeMillis() - startMs}ms")
-        } catch (e: Exception) {
-            _isLoading.value = false
-            Log.e(TAG, "Error loading home content (${System.currentTimeMillis() - startMs}ms)", e)
-            _error.value = "Failed to load: ${e.message}"
-            _homeUiState.value = _homeUiState.value.copy(
-                status = if (_homeContent.value.hasAnyContent()) HomeStatus.CACHED else HomeStatus.ERROR,
-                error = e.message
-            )
         }
     }
 
-    /**
-     * Play a single song with dynamic recommendations - YouTube Music Style
-     * Plays the clicked song and generates fresh recommendations based on it (max 20 songs).
-     */
+    private fun appendPage(current: HomeContent, page: HomeContent): HomeContent {
+        val shelves = current.shelves.associateByTo(linkedMapOf()) { it.id }
+        for (shelf in page.shelves) {
+            val oldShelf = shelves[shelf.id]
+            if (oldShelf == null) {
+                shelves[shelf.id] = shelf
+            } else {
+                val knownItems = oldShelf.items.mapTo(hashSetOf(), HomeShelfItem::key)
+                val additions = shelf.items.filter { knownItems.add(it.key) }
+                if (additions.isNotEmpty()) shelves[shelf.id] = oldShelf.copy(items = oldShelf.items + additions)
+            }
+        }
+        return page.copy(shelves = shelves.values.toList())
+    }
+
+    companion object {
+        private const val TAG = "SonicHome"
+        private const val MAX_PAGES_PER_LOAD = 3
+        const val SECTION_RECENTLY_PLAYED = "recently_played"
+    }
+
+
     fun onSongClick(song: Song) {
         playerServiceConnection.playSongWithRadio(song)
     }
@@ -632,13 +615,13 @@ class HomeViewModel @Inject constructor(
             return null
         }
 
-        val songs = getSongsForSection(section)
-        if (songs.isEmpty()) {
-            _error.value = "No songs available in this section"
+        val items = getItemsForSection(section)
+        if (items.isEmpty()) {
+            _error.value = "Nothing is available in this section"
             return null
         }
 
-        Log.d(TAG, "See all clicked for section: $section (${songs.size} songs)")
+        Log.d(TAG, "See all clicked for section: $section (${items.size} items)")
         return section
     }
 
@@ -648,9 +631,9 @@ class HomeViewModel @Inject constructor(
      * @return true if a section had songs and playback was started.
      */
     fun playSection(section: String, shuffle: Boolean = false): Boolean {
-        val songs = getSongsForSection(section)
+        val songs = getSongsForSection(section).filter(::canPlay)
         if (songs.isEmpty()) {
-            _error.value = "No songs available in this section"
+            _error.value = "No playable songs available in this section"
             return false
         }
         playAllSongs(songs, shuffle = shuffle)
@@ -663,70 +646,33 @@ class HomeViewModel @Inject constructor(
      * Falls back to radio queue if the section cannot be resolved.
      */
     fun onSectionSongClick(@Suppress("UNUSED_PARAMETER") section: String, song: Song): Boolean {
-        onSongClickWithRadioQueue(song)
+        if (!canPlay(song)) {
+            _error.value = "This song is unavailable offline"
+            return false
+        }
+        // Play only the clicked song + fresh radio recommendations (not the entire section)
+        playerServiceConnection.playSongWithRadio(song)
         return true
     }
 
-    /**
-     * Get songs for a specific section
-     */
-    fun getSongsForSection(section: String): List<Song> {
-        val sectionSongs = when (section) {
-            SECTION_LISTEN_AGAIN -> _homeContent.value.listenAgain
-            SECTION_QUICK_PICKS -> _homeContent.value.quickPicks
-            SECTION_ENGLISH_HITS -> _homeContent.value.englishHits
-            SECTION_FORGOTTEN_FAVORITES -> _homeContent.value.forgottenFavorites
-            SECTION_TRENDING_ALBUMS -> _homeContent.value.trendingAlbums
-            SECTION_CHARTS -> _homeContent.value.charts?.songs.orEmpty()
-            SECTION_RECENTLY_PLAYED -> _homeContent.value.recentlyPlayed
-            SECTION_MIXED_FOR_YOU -> _homeContent.value.mixedForYou
-            else -> {
-                if (section.startsWith("continuation_")) {
-                    val shelfId = section.removePrefix("continuation_")
-                    _homeContent.value.continuationShelves.firstOrNull { it.id == shelfId }?.songs.orEmpty()
-                } else if (section.startsWith(SECTION_ARTIST_PREFIX)) {
-                    val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
-                    _homeContent.value.artists.firstOrNull { it.artist.id == artistId }?.songs.orEmpty()
-                } else {
-                    emptyList()
-                }
-            }
-        }
+    private fun canPlay(song: Song): Boolean = isOnline.value ||
+        song.id.deviceLocalSongId() != null || song.id in downloadedSongIds.value
 
-        return sectionSongs.take(SECTION_LIMIT)
-    }
+    fun getItemsForSection(section: String): List<HomeShelfItem> =
+        if (section == SECTION_RECENTLY_PLAYED) recentlyPlayed.value.map { HomeShelfItem.Media(it) }
+        else homeContent.value.shelves.firstOrNull { it.id == section }?.items.orEmpty()
 
-    fun getSectionTitle(section: String): String {
-        return when (section) {
-            SECTION_LISTEN_AGAIN -> "Listen Again"
-            SECTION_QUICK_PICKS -> "Quick Picks"
-            SECTION_ENGLISH_HITS -> "English Hits"
-            SECTION_FORGOTTEN_FAVORITES -> "Forgotten Favorites"
-            SECTION_TRENDING_ALBUMS -> "Trending Albums"
-            SECTION_CHARTS -> "Charts"
-            SECTION_RECENTLY_PLAYED -> "Recently Played"
-            SECTION_MIXED_FOR_YOU -> "Mixed For You"
-            else -> {
-                if (section.startsWith("continuation_")) {
-                    val shelfId = section.removePrefix("continuation_")
-                    _homeContent.value.continuationShelves.firstOrNull { it.id == shelfId }?.title ?: "Recommended"
-                } else if (section.startsWith(SECTION_ARTIST_PREFIX)) {
-                    val artistId = section.removePrefix(SECTION_ARTIST_PREFIX)
-                    val artistName = _homeContent.value.artists
-                        .firstOrNull { it.artist.id == artistId }
-                        ?.artist
-                        ?.name
-                    if (artistName.isNullOrBlank()) {
-                        "Artist Songs"
-                    } else {
-                        "More from $artistName"
-                    }
-                } else {
-                    "Songs"
-                }
-            }
-        }
-    }
+    fun getSongsForSection(section: String): List<Song> =
+        if (section == SECTION_RECENTLY_PLAYED) recentlyPlayed.value
+        else homeContent.value.shelves.firstOrNull { it.id == section }?.songs().orEmpty()
+
+    fun getSectionTitle(section: String): String =
+        if (section == SECTION_RECENTLY_PLAYED) {
+            if (homeContent.value.shelves.any { it.kind == HomeShelf.Kind.ListenAgain }) {
+                context.getString(R.string.home_recently_played)
+            } else context.getString(R.string.home_listen_again)
+        } else homeContent.value.shelves.firstOrNull { it.id == section }?.title.orEmpty()
+
 
     fun clearError() {
         _error.value = null

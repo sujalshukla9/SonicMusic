@@ -18,14 +18,21 @@ import com.sonicmusic.app.data.local.dao.DownloadedSongDao
 import com.sonicmusic.app.data.local.entity.DownloadedSong
 import com.sonicmusic.app.data.local.entity.DownloadStatus
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
+import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.deviceLocalSongId
 import coil.ImageLoader
 import coil.request.ImageRequest
+import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,8 +40,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -46,16 +59,17 @@ import javax.inject.Singleton
 @Singleton
 class SongDownloadManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val media3DownloadManager: DownloadManager,
-    private val simpleCache: SimpleCache,
+    media3Provider: Lazy<DownloadManager>,
+    private val cacheProvider: Lazy<SimpleCache>,
     private val downloadedSongDao: DownloadedSongDao,
     private val audioStreamExtractor: AudioStreamExtractor
 ) {
     companion object {
         private const val TAG = "SongDownloadManager"
+        private const val PROGRESS_INTERVAL_MS = 750L
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _activeDownloads = MutableStateFlow<Map<String, DownloadProgress>>(emptyMap())
     val activeDownloads: StateFlow<Map<String, DownloadProgress>> = _activeDownloads.asStateFlow()
@@ -66,58 +80,108 @@ class SongDownloadManager @Inject constructor(
 
     // Track download requests and their metadata in memory to handle completions and titles
     private val downloadMetadata = ConcurrentHashMap<String, DownloadMetadata>()
+    private val exporting = ConcurrentHashMap.newKeySet<String>()
+    private val preparing = ConcurrentHashMap<String, Any>()
+    private val filesMutex = Mutex()
+    // Accessed on Media3's application looper.
+    private var progressUpdates: Job? = null
+
+    private fun storageDirectory(name: String) = File(context.getExternalFilesDir(null) ?: context.filesDir, name)
 
     private data class DownloadMetadata(
         val videoId: String,
         val title: String,
         val artist: String,
-        val thumbnailUrl: String
+        val thumbnailUrl: String,
+        val quality: StreamQuality = StreamQuality.BEST
     )
 
+    private val downloadListener = object : DownloadManager.Listener {
+        override fun onInitialized(downloadManager: DownloadManager) {
+            observeTransferProgress(downloadManager)
+        }
+
+        override fun onDownloadChanged(
+            downloadManager: DownloadManager,
+            download: Download,
+            finalException: Exception?
+        ) {
+            handleDownloadStateChange(download, finalException)
+            if (download.state == Download.STATE_DOWNLOADING) observeTransferProgress(downloadManager)
+        }
+
+        override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+            Log.d(TAG, "Download removed in Media3: ${download.request.id}")
+            removeProgress(download.request.id)
+        }
+
+        override fun onIdle(downloadManager: DownloadManager) {
+            progressUpdates?.cancel()
+            progressUpdates = null
+        }
+    }
+
+    // Media3 state callbacks do not fire as more bytes arrive. Sample transfers without touching Room.
+    private fun observeTransferProgress(manager: DownloadManager) {
+        if (progressUpdates?.isActive == true) return
+        progressUpdates = scope.launch(Dispatchers.Main) {
+            while (true) {
+                val transfers = manager.currentDownloads.filter { it.state == Download.STATE_DOWNLOADING }
+                if (transfers.isEmpty()) break
+
+                _activeDownloads.update { tracked ->
+                    val updated = tracked.toMutableMap()
+                    for (transfer in transfers) {
+                        val id = transfer.request.id
+                        val previous = tracked[id] ?: continue
+                        if (!previous.isTransferring) continue
+                        updated[id] = previous.copy(status = DownloadStatus.DOWNLOADING).withTransferBytes(transfer)
+                    }
+                    updated
+                }
+                delay(PROGRESS_INTERVAL_MS)
+            }
+        }
+    }
+
+    private val media3 = scope.async(start = CoroutineStart.LAZY) {
+        // Resolve the cache directory before constructing the manager on its application looper.
+        cacheProvider.get()
+        withContext(Dispatchers.Main) {
+            media3Provider.get().apply {
+                addListener(downloadListener)
+                resumeDownloads()
+            }
+        }
+    }
+
     init {
-        // Ensure downloads are resumed in Media3 (since they are paused by default on initialization without a service wrapper)
-        media3DownloadManager.resumeDownloads()
-
-        // Observe Media3 download changes
-        media3DownloadManager.addListener(object : DownloadManager.Listener {
-            override fun onDownloadChanged(
-                downloadManager: DownloadManager,
-                download: Download,
-                finalException: Exception?
-            ) {
-                handleDownloadStateChange(download, finalException)
-            }
-
-            override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
-                Log.d(TAG, "Download removed in Media3: ${download.request.id}")
-                removeProgress(download.request.id)
-            }
-        })
-
         // Restore active downloads list from Media3 index on startup and clean up stale REMOVED records
         scope.launch {
-            delay(1000) // Allow DB/Media3 to settle
             try {
+                val manager = media3.await()
+                delay(1000) // Allow the Media3 index to settle.
                 // Clean up stale REMOVED records
                 downloadedSongDao.deleteByStatus(DownloadStatus.REMOVED)
                 Log.d(TAG, "Cleaned up stale REMOVED download records from DB")
 
-                media3DownloadManager.downloadIndex.getDownloads().use { cursor ->
+                manager.downloadIndex.getDownloads().use { cursor ->
                     while (cursor.moveToNext()) {
                         val download = cursor.download
                         val videoId = download.request.id
                         val entity = downloadedSongDao.getDownloadedSong(videoId)
-                        if (entity != null && download.state != Download.STATE_COMPLETED) {
+                        if (entity != null) {
                             downloadMetadata[videoId] = DownloadMetadata(
                                 videoId = videoId,
                                 title = entity.title,
                                 artist = entity.artists,
                                 thumbnailUrl = entity.thumbnailUrl
                             )
-                            // If it was downloading before crash, resume it
-                            if (download.state == Download.STATE_FAILED || download.state == Download.STATE_RESTARTING) {
+                            if (download.state == Download.STATE_COMPLETED) {
+                                scope.launch { exportCacheAndComplete(download) }
+                            } else if (download.state == Download.STATE_FAILED || download.state == Download.STATE_RESTARTING) {
                                 // Expired URL fallback on startup retry
-                                retryDownload(videoId)
+                                refreshDownload(download.request, retry = true)
                             } else {
                                 updateProgressFromDownload(download)
                             }
@@ -134,79 +198,66 @@ class SongDownloadManager @Inject constructor(
      * Download a song using Media3 DownloadManager.
      */
     fun downloadSong(song: Song, quality: StreamQuality = StreamQuality.BEST) {
+        val videoId = song.id
+        val preparation = Any()
+        if (song.id.deviceLocalSongId() != null || preparing.putIfAbsent(videoId, preparation) != null) return
         scope.launch {
-            val videoId = song.id
-            Log.d(TAG, "Requesting download: ${song.title}")
+            try {
+                val manager = media3.await()
+                val previous = downloadedSongDao.getDownloadedSong(videoId)
+                if (offlineFile(previous) != null) return@launch
+                val indexed = manager.downloadIndex.getDownload(videoId)
+                if (indexed?.state == Download.STATE_COMPLETED && previous != null) {
+                    exportCacheAndComplete(indexed)
+                    return@launch
+                }
+                if (indexed != null && indexed.state != Download.STATE_FAILED) return@launch
 
-            // 1. Check storage space
-            val destMusicDir = File(context.getExternalFilesDir(null), "Music").apply { mkdirs() }
-            if (destMusicDir.usableSpace < 104_857_600L) { // 100 MB
-                Log.w(TAG, "Disk space too low for download: ${destMusicDir.usableSpace} bytes available")
-                _downloadErrors.tryEmit("Storage space too low for downloads")
-                return@launch
-            }
+                val musicDir = storageDirectory("Music").apply { mkdirs() }
+                if (musicDir.usableSpace < 104_857_600L) {
+                    _downloadErrors.tryEmit("Storage space too low for downloads")
+                    return@launch
+                }
 
-            val localFilePath = File(destMusicDir, "$videoId.opus").absolutePath // default placeholder
-
-            val initialEntity = DownloadedSong(
-                videoId = videoId,
-                title = song.title,
-                artists = song.artist,
-                thumbnailUrl = song.thumbnailUrl,
-                localFilePath = localFilePath,
-                localThumbnailPath = "",
-                fileSizeBytes = 0L,
-                durationMs = 0L,
-                downloadedAt = System.currentTimeMillis(),
-                status = DownloadStatus.PENDING
-            )
-            downloadedSongDao.insertDownloadedSong(initialEntity)
-            downloadMetadata[videoId] = DownloadMetadata(videoId, song.title, song.artist, song.thumbnailUrl)
-
-            updateProgress(
-                videoId,
-                DownloadProgress(
-                    songId = videoId,
+                val initial = DownloadedSong(
+                    videoId = videoId,
                     title = song.title,
-                    progress = 0,
-                    bytesDownloaded = 0,
-                    bytesTotal = 0,
+                    artists = song.artist,
+                    thumbnailUrl = song.thumbnailUrl,
+                    localFilePath = "",
+                    localThumbnailPath = "",
+                    fileSizeBytes = 0L,
+                    durationMs = song.duration * 1000L,
+                    downloadedAt = System.currentTimeMillis(),
                     status = DownloadStatus.PENDING
                 )
-            )
+                filesMutex.withLock {
+                    if (preparing[videoId] !== preparation || offlineFile(downloadedSongDao.getDownloadedSong(videoId)) != null) return@launch
+                    downloadedSongDao.insertDownloadedSong(initial)
+                    downloadMetadata[videoId] = DownloadMetadata(videoId, song.title, song.artist, song.thumbnailUrl, quality)
+                    updateProgress(videoId, DownloadProgress(videoId, song.title, 0, 0, 0, DownloadStatus.PENDING))
+                }
 
-            // 2. Resolve Stream URL
-            val streamResult = audioStreamExtractor.extractAudioStream(videoId, quality)
-            if (streamResult.isFailure) {
-                Log.e(TAG, "Failed to extract stream URL for download: $videoId")
-                updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
-                return@launch
-            }
-
-            val (streamUrl, _) = streamResult.getOrThrow()
-            val bypassedUrl = applySpeedBypass(streamUrl)
-            
-            // 3. Download and compress thumbnail
-            val localThumbnailFile = downloadAndSaveThumbnail(videoId, song.thumbnailUrl)
-            val thumbnailPath = localThumbnailFile?.absolutePath ?: ""
-
-            // Update database with local thumbnail path and status = QUEUED
-            val queuedEntity = initialEntity.copy(
-                localThumbnailPath = thumbnailPath,
-                status = DownloadStatus.QUEUED,
-                durationMs = song.duration * 1000L
-            )
-            downloadedSongDao.insertDownloadedSong(queuedEntity)
-            updateDbAndProgressStatus(videoId, DownloadStatus.QUEUED)
-
-            // 4. Start Media3 Download
-            val downloadRequest = DownloadRequest.Builder(videoId, Uri.parse(bypassedUrl))
-                .setCustomCacheKey(videoId)
-                .build()
-
-            withContext(Dispatchers.Main) {
-                media3DownloadManager.addDownload(downloadRequest)
-                media3DownloadManager.resumeDownloads()
+                val (candidate, _) = audioStreamExtractor.extractBestCandidate(videoId, quality).getOrThrow()
+                filesMutex.withLock {
+                    if (preparing[videoId] !== preparation || downloadedSongDao.getDownloadedSong(videoId) != initial) return@launch
+                    downloadedSongDao.updateIncompleteStatus(videoId, DownloadStatus.QUEUED)
+                    val request = createRequest(videoId, candidate, quality)
+                    withContext(Dispatchers.Main) {
+                        manager.addDownload(request)
+                        manager.resumeDownloads()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not start download for $videoId", e)
+                if (preparing[videoId] === preparation) {
+                    updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+                    _downloadErrors.tryEmit("Could not download ${song.title}")
+                }
+            } finally {
+                preparing.remove(videoId, preparation)
             }
         }
     }
@@ -218,7 +269,7 @@ class SongDownloadManager @Inject constructor(
         scope.launch {
             Log.d(TAG, "Pausing download: $videoId")
             withContext(Dispatchers.Main) {
-                media3DownloadManager.setStopReason(videoId, 1) // Any non-zero stop reason pauses
+                media3.await().setStopReason(videoId, 1) // Any non-zero stop reason pauses
             }
             updateDbAndProgressStatus(videoId, DownloadStatus.PAUSED)
         }
@@ -230,29 +281,14 @@ class SongDownloadManager @Inject constructor(
     fun resumeDownload(videoId: String) {
         scope.launch {
             Log.d(TAG, "Resuming download: $videoId")
-            // Re-resolve URL to ensure it hasn't expired before resuming
-            updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
-            if (!downloadMetadata.containsKey(videoId)) return@launch
-            
-            val streamResult = audioStreamExtractor.extractAudioStream(videoId, StreamQuality.BEST)
-            if (streamResult.isFailure) {
-                Log.e(TAG, "Failed to re-resolve URL during resume for: $videoId")
-                updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+            val previous = media3.await().downloadIndex.getDownload(videoId)?.request
+            if (previous == null) {
+                val song = downloadedSongDao.getDownloadedSong(videoId) ?: return@launch
+                val quality = downloadMetadata[videoId]?.quality ?: StreamQuality.BEST
+                downloadSong(Song(videoId, song.title, song.artists, duration = 0, thumbnailUrl = song.thumbnailUrl), quality)
                 return@launch
             }
-
-            val (streamUrl, _) = streamResult.getOrThrow()
-            val bypassedUrl = applySpeedBypass(streamUrl)
-            
-            val downloadRequest = DownloadRequest.Builder(videoId, Uri.parse(bypassedUrl))
-                .setCustomCacheKey(videoId)
-                .build()
-
-            withContext(Dispatchers.Main) {
-                // Remove stop reasons to resume download with new URL
-                media3DownloadManager.addDownload(downloadRequest)
-                media3DownloadManager.setStopReason(videoId, Download.STOP_REASON_NONE)
-            }
+            refreshDownload(previous, retry = false)
         }
     }
 
@@ -262,9 +298,6 @@ class SongDownloadManager @Inject constructor(
     fun cancelDownload(videoId: String) {
         scope.launch {
             Log.d(TAG, "Cancelling download: $videoId")
-            withContext(Dispatchers.Main) {
-                media3DownloadManager.removeDownload(videoId)
-            }
             deleteDownload(videoId)
         }
     }
@@ -272,14 +305,20 @@ class SongDownloadManager @Inject constructor(
     /**
      * Check if a song is downloaded.
      */
-    suspend fun isDownloaded(songId: String): Boolean = withContext(Dispatchers.IO) {
-        val entity = downloadedSongDao.getDownloadedSong(songId)
-        if (entity != null && entity.status == DownloadStatus.COMPLETED) {
-            val file = File(entity.localFilePath)
-            file.exists()
-        } else {
-            false
-        }
+    suspend fun isDownloaded(songId: String): Boolean = getDownloadedFileSize(songId) != null
+
+    fun observeDownloadedFileSize(songId: String) = downloadedSongDao.observeDownloadedSong(songId)
+        .map { offlineFile(it)?.length() }
+        .distinctUntilChanged()
+        .flowOn(Dispatchers.IO)
+
+    private fun offlineFile(record: DownloadedSong?): File? {
+        if (record?.status != DownloadStatus.COMPLETED) return null
+        val stored = record.localFilePath.takeIf(String::isNotBlank)?.let(::File)
+        if (stored != null && stored.isFile && stored.length() > 0) return stored
+        return listOf("opus", "m4a", "webm", "aac", "mp3", "wav").asSequence()
+            .map { File(storageDirectory("Music"), "${record.videoId}.$it") }
+            .firstOrNull { it.isFile && it.length() > 0 }
     }
 
     /**
@@ -288,40 +327,21 @@ class SongDownloadManager @Inject constructor(
     fun getDownloadedSongs() = downloadedSongDao.getAllDownloadedSongs()
 
     /**
-     * Restore a previously deleted [DownloadedSong] by re-inserting its DB record.
-     * Used by the Undo action after a delete. The physical file is preserved if it
-     * hasn't been cleaned up yet — if the file is missing, the next play will fall
-     * back to streaming automatically.
-     */
-    suspend fun restoreDownloadedSong(song: DownloadedSong) = withContext(Dispatchers.IO) {
-        try {
-            downloadedSongDao.insertDownloadedSong(song)
-            Log.d(TAG, "↩️ Restored deleted download record: ${song.videoId}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to restore download record: ${song.videoId}", e)
-        }
-    }
-
-    /**
      * Delete downloaded files and DB records.
      */
     suspend fun deleteDownload(videoId: String): Boolean = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "Deleting download: $videoId")
-            val entity = downloadedSongDao.getDownloadedSong(videoId)
-            if (entity != null) {
-                if (entity.localFilePath.isNotEmpty()) {
-                    File(entity.localFilePath).delete()
-                }
-                if (entity.localThumbnailPath.isNotEmpty()) {
-                    File(entity.localThumbnailPath).delete()
-                }
-            }
-            downloadedSongDao.deleteBySongId(videoId)
-            downloadMetadata.remove(videoId)
-            removeProgress(videoId)
-            withContext(Dispatchers.Main) {
-                media3DownloadManager.removeDownload(videoId)
+            val manager = media3.await()
+            filesMutex.withLock {
+                preparing.remove(videoId)
+                val entity = downloadedSongDao.getDownloadedSong(videoId)
+                offlineFile(entity)?.delete()
+                entity?.localThumbnailPath?.takeIf(String::isNotBlank)?.let { File(it).delete() }
+                downloadedSongDao.deleteBySongId(videoId)
+                downloadMetadata.remove(videoId)
+                removeProgress(videoId)
+                withContext(Dispatchers.Main) { manager.removeDownload(videoId) }
             }
             true
         } catch (e: Exception) {
@@ -334,36 +354,12 @@ class SongDownloadManager @Inject constructor(
      * Get path of the downloaded file.
      */
     suspend fun getPlaybackFile(videoId: String): Result<File> = withContext(Dispatchers.IO) {
-        val entity = downloadedSongDao.getDownloadedSong(videoId)
-            ?: return@withContext Result.failure(Exception("Song not downloaded"))
-        
-        if (entity.status != DownloadStatus.COMPLETED) {
-            return@withContext Result.failure(Exception("Song download not completed"))
-        }
-
-        val file = File(entity.localFilePath)
-        if (file.exists()) {
-            Result.success(file)
-        } else {
-            // Edge case: file deleted from disk externally
-            downloadedSongDao.updateStatus(videoId, DownloadStatus.REMOVED)
-            Result.failure(Exception("Downloaded file not found on disk"))
-        }
+        val file = offlineFile(downloadedSongDao.getDownloadedSong(videoId))
+        if (file == null) Result.failure(IOException("Downloaded audio is unavailable")) else Result.success(file)
     }
 
-    /**
-     * Get downloaded file size on disk in bytes, or null if not downloaded.
-     */
     suspend fun getDownloadedFileSize(videoId: String): Long? = withContext(Dispatchers.IO) {
-        val entity = downloadedSongDao.getDownloadedSong(videoId)
-        if (entity?.status == DownloadStatus.COMPLETED) {
-            val file = File(entity.localFilePath)
-            if (file.exists() && file.length() > 0) {
-                file.length()
-            } else if (entity.fileSizeBytes > 0) {
-                entity.fileSizeBytes
-            } else null
-        } else null
+        offlineFile(downloadedSongDao.getDownloadedSong(videoId))?.length()
     }
 
     /**
@@ -371,17 +367,15 @@ class SongDownloadManager @Inject constructor(
      */
     suspend fun clearAllDownloads(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val context = this@SongDownloadManager.context
-            val musicDir = File(context.getExternalFilesDir(null), "Music")
-            musicDir.listFiles()?.forEach { it.delete() }
-            val thumbDir = File(context.getExternalFilesDir(null), "Thumbnails")
-            thumbDir.listFiles()?.forEach { it.delete() }
-
-            downloadedSongDao.deleteAll()
-            downloadMetadata.clear()
-            _activeDownloads.value = emptyMap()
-            withContext(Dispatchers.Main) {
-                media3DownloadManager.removeAllDownloads()
+            val manager = media3.await()
+            filesMutex.withLock {
+                preparing.clear()
+                storageDirectory("Music").listFiles()?.forEach { it.delete() }
+                storageDirectory("Thumbnails").listFiles()?.forEach { it.delete() }
+                downloadedSongDao.deleteAll()
+                downloadMetadata.clear()
+                _activeDownloads.value = emptyMap()
+                withContext(Dispatchers.Main) { manager.removeAllDownloads() }
             }
             true
         } catch (e: Exception) {
@@ -402,8 +396,9 @@ class SongDownloadManager @Inject constructor(
 
         scope.launch {
             val dbSong = downloadedSongDao.getDownloadedSong(videoId)
+            if (dbSong == null || state == Download.STATE_REMOVING) return@launch
             // If the song is already marked COMPLETED in the database, ignore subsequent removal/transition states
-            if (dbSong?.status == DownloadStatus.COMPLETED && state != Download.STATE_COMPLETED) {
+            if (dbSong.status == DownloadStatus.COMPLETED && state != Download.STATE_COMPLETED) {
                 Log.d(TAG, "onDownloadChanged: Ignoring state=$state for completed song $videoId")
                 return@launch
             }
@@ -420,7 +415,7 @@ class SongDownloadManager @Inject constructor(
                 
                 if (isHttpError) {
                     Log.w(TAG, "Download failed due to HTTP / Expired URL. Retrying URL resolution...")
-                    retryDownload(videoId)
+                    refreshDownload(download.request, retry = true)
                 } else {
                     updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
                 }
@@ -443,17 +438,14 @@ class SongDownloadManager @Inject constructor(
 
         val metadata = downloadMetadata[videoId]
         val title = metadata?.title ?: "Unknown Song"
-        val progress = download.percentDownloaded.toInt().coerceIn(0, 100)
-        val totalBytes = if (download.contentLength == C.LENGTH_UNSET.toLong()) -1L else download.contentLength
-
         val active = DownloadProgress(
             songId = videoId,
             title = title,
-            progress = progress,
-            bytesDownloaded = download.bytesDownloaded,
-            bytesTotal = totalBytes,
+            progress = 0,
+            bytesDownloaded = 0,
+            bytesTotal = -1,
             status = status
-        )
+        ).withTransferBytes(download)
 
         updateProgress(videoId, active)
         scope.launch {
@@ -464,112 +456,138 @@ class SongDownloadManager @Inject constructor(
         }
     }
 
-    private fun retryDownload(videoId: String) {
-        scope.launch {
-            updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
-            val streamResult = audioStreamExtractor.extractAudioStream(videoId, StreamQuality.BEST)
-            if (streamResult.isFailure) {
-                Log.e(TAG, "Failed to re-resolve URL during download retry for: $videoId")
-                updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
-                return@launch
-            }
+    private fun DownloadProgress.withTransferBytes(download: Download): DownloadProgress = copy(
+        progress = download.percentDownloaded.toInt().coerceIn(0, 100),
+        bytesDownloaded = download.bytesDownloaded,
+        bytesTotal = download.contentLength
+    )
 
-            val (streamUrl, _) = streamResult.getOrThrow()
-            val bypassedUrl = applySpeedBypass(streamUrl)
-            val downloadRequest = DownloadRequest.Builder(videoId, Uri.parse(bypassedUrl))
-                .setCustomCacheKey(videoId)
-                .build()
+    private fun createRequest(
+        videoId: String,
+        candidate: AudioStreamCandidate,
+        quality: StreamQuality,
+        attempt: Int = 0
+    ): DownloadRequest {
+        // A changed encoding must never be appended to another format's cached bytes.
+        val formatKey = if (candidate.itag != null && candidate.contentLength != null) {
+            "${candidate.itag}:${candidate.contentLength}"
+        } else {
+            java.util.UUID.randomUUID().toString()
+        }
+        return DownloadRequest.Builder(videoId, Uri.parse(candidate.url))
+            .setMimeType(candidate.mimeType.substringBefore(';'))
+            .setCustomCacheKey("$videoId:$formatKey")
+            .setData("${quality.name}:$attempt".toByteArray())
+            .build()
+    }
 
-            withContext(Dispatchers.Main) {
-                media3DownloadManager.addDownload(downloadRequest)
-                media3DownloadManager.resumeDownloads()
-            }
+    private suspend fun refreshDownload(previous: DownloadRequest, retry: Boolean) {
+        val videoId = previous.id
+        val data = previous.data.decodeToString()
+        val quality = StreamQuality.fromName(data.substringBefore(':'))
+        val previousAttempt = data.substringAfter(':', "0").toIntOrNull() ?: 0
+        val attempt = if (retry) previousAttempt + 1 else 0
+        if (attempt > 2) {
+            updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+            return
+        }
+
+        updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
+        val excluded = if (retry) setOf(previous.uri.toString()) else emptySet()
+        val result = audioStreamExtractor.extractBestCandidate(videoId, quality, forceRefresh = true, excludeUrls = excluded)
+        val candidate = result.getOrNull()?.first
+        if (candidate == null) {
+            updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+            return
+        }
+
+        val replacement = createRequest(videoId, candidate, quality, attempt)
+        val oldCacheKey = previous.customCacheKey ?: videoId
+        val media3DownloadManager = media3.await()
+        if (media3DownloadManager.downloadIndex.getDownload(videoId)?.request != previous) return
+        if (oldCacheKey != replacement.customCacheKey) {
+            cacheProvider.get().removeResource(oldCacheKey)
+        }
+        withContext(Dispatchers.Main) {
+            media3DownloadManager.addDownload(replacement, Download.STOP_REASON_NONE)
+            media3DownloadManager.resumeDownloads()
         }
     }
 
-    private fun exportCacheAndComplete(download: Download) {
+    private suspend fun exportCacheAndComplete(download: Download) {
         val videoId = download.request.id
-        scope.launch {
-            updateDbAndProgressStatus(videoId, DownloadStatus.DOWNLOADING) // Still processing
-            
-            try {
-                // Resolve extension from streamUrl or default to opus
-                val streamUrl = download.request.uri.toString()
-                val ext = if (streamUrl.contains("mime=audio%2Fmp4") || streamUrl.contains("mime=audio/mp4") || download.request.mimeType?.contains("mp4") == true) "m4a" else "opus"
-                
-                val destMusicDir = File(context.getExternalFilesDir(null), "Music").apply { mkdirs() }
-                val destFile = File(destMusicDir, "$videoId.$ext")
-
-                Log.d(TAG, "Exporting Media3 cache block stream to single progressive file: ${destFile.absolutePath}")
-
-                // Sequential cache read using CacheDataSource and save to local disk
-                exportCacheToFile(videoId, destFile)
-
-                // Save thumbnail if not already present
-                val metadata = downloadMetadata[videoId]
-                var thumbPath = ""
-                if (metadata != null) {
-                    val thumbFile = File(File(context.getExternalFilesDir(null), "Thumbnails"), "$videoId.webp")
-                    if (!thumbFile.exists()) {
-                        downloadAndSaveThumbnail(videoId, metadata.thumbnailUrl)
+        if (!exporting.add(videoId)) return
+        var temporaryFile: File? = null
+        try {
+            val manager = media3.await()
+            val record = downloadedSongDao.getDownloadedSong(videoId) ?: return
+            if (offlineFile(record) == null) {
+                val expectedBytes = download.contentLength.takeIf { it > 0 } ?: download.bytesDownloaded
+                val cacheKey = download.request.customCacheKey ?: videoId
+                if (expectedBytes <= 0 || !cacheProvider.get().isCached(cacheKey, 0, expectedBytes)) {
+                    filesMutex.withLock {
+                        val current = downloadedSongDao.getDownloadedSong(videoId)
+                        if (current?.downloadedAt != record.downloadedAt || offlineFile(current) != null) return
+                        downloadedSongDao.updateStatus(videoId, DownloadStatus.FAILED)
+                        withContext(Dispatchers.Main) { manager.removeDownload(videoId) }
                     }
-                    thumbPath = thumbFile.absolutePath
-                }
-
-                // Update Room entry on complete
-                val size = destFile.length()
-                
-                val entity = downloadedSongDao.getDownloadedSong(videoId)
-                if (entity != null) {
-                    val updatedEntity = entity.copy(
-                        localFilePath = destFile.absolutePath,
-                        localThumbnailPath = thumbPath,
-                        fileSizeBytes = size,
-                        status = DownloadStatus.COMPLETED
-                    )
-                    downloadedSongDao.insertDownloadedSong(updatedEntity)
-                }
-
-                // Remove from Media3 DownloadManager to free up the temporary Cache space
-                withContext(Dispatchers.Main) {
-                    media3DownloadManager.removeDownload(videoId)
-                }
-
-                updateProgress(
-                    videoId,
-                    DownloadProgress(
-                        songId = videoId,
-                        title = metadata?.title ?: "Unknown Song",
-                        progress = 100,
-                        bytesDownloaded = size,
-                        bytesTotal = size,
-                        status = DownloadStatus.COMPLETED
-                    )
-                )
-
-                scope.launch {
-                    delay(2000)
                     removeProgress(videoId)
+                    _downloadErrors.tryEmit("Offline audio is incomplete. Download it again.")
+                    return
                 }
+                val extension = when (download.request.mimeType) {
+                    "audio/mp4" -> "m4a"
+                    "audio/aac" -> "aac"
+                    "audio/mpeg" -> "mp3"
+                    "audio/wav", "audio/x-wav" -> "wav"
+                    else -> "opus"
+                }
+                val musicDir = storageDirectory("Music").apply { mkdirs() }
+                val output = File(musicDir, "$videoId.$extension")
+                val staging = File.createTempFile("offline-", ".part", musicDir)
+                temporaryFile = staging
+                exportCacheToFile(cacheKey, staging, expectedBytes)
+                check(staging.length() == expectedBytes) { "The offline audio write is incomplete." }
 
-                Log.d(TAG, "Export and completion successful: $videoId")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to export cache file for completion: $videoId", e)
-                // Clean up partially-written output file to avoid corrupt files on disk
-                try {
-                    val destMusicDir = File(context.getExternalFilesDir(null), "Music")
-                    destMusicDir.listFiles()?.filter { it.nameWithoutExtension == videoId }?.forEach { it.delete() }
-                } catch (cleanupError: Exception) {
-                    Log.e(TAG, "Failed to clean up partial file for: $videoId", cleanupError)
+                filesMutex.withLock {
+                    val current = downloadedSongDao.getDownloadedSong(videoId)
+                    if (current?.downloadedAt != record.downloadedAt) return
+                    check(staging.renameTo(output)) { "Could not save the downloaded audio." }
+                    downloadedSongDao.markCompleted(videoId, output.absolutePath, expectedBytes)
                 }
-                updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+                if (record.localThumbnailPath.isBlank() && record.thumbnailUrl.isNotBlank()) {
+                    scope.launch {
+                        val artwork = downloadAndSaveThumbnail("$videoId-${record.downloadedAt}", record.thumbnailUrl)
+                            ?: return@launch
+                        filesMutex.withLock {
+                            val current = downloadedSongDao.getDownloadedSong(videoId)
+                            if (current?.downloadedAt == record.downloadedAt && current.status == DownloadStatus.COMPLETED) {
+                                downloadedSongDao.updateLocalThumbnail(videoId, artwork.absolutePath)
+                            } else {
+                                artwork.delete()
+                            }
+                        }
+                    }
+                }
             }
+            withContext(Dispatchers.Main) { manager.removeDownload(videoId) }
+            removeProgress(videoId)
+            downloadMetadata.remove(videoId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not finalize offline audio for $videoId", e)
+            updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
+            _downloadErrors.tryEmit("Could not save the downloaded song")
+        } finally {
+            temporaryFile?.delete()
+            exporting.remove(videoId)
         }
     }
 
-    private fun exportCacheToFile(cacheKey: String, outputFile: File) {
+    private fun exportCacheToFile(cacheKey: String, outputFile: File, length: Long) {
         val dataSource = CacheDataSource.Factory()
-            .setCache(simpleCache)
+            .setCache(cacheProvider.get())
             .setUpstreamDataSourceFactory(null) // Do NOT hit network, must read only from cache blocks
             .createDataSource()
 
@@ -578,6 +596,7 @@ class SongDownloadManager @Inject constructor(
         val dataSpec = DataSpec.Builder()
             .setUri(placeholderUri)
             .setKey(cacheKey)
+            .setLength(length)
             .build()
 
         try {
@@ -607,7 +626,7 @@ class SongDownloadManager @Inject constructor(
             val drawable = result.drawable
             val bitmap = (drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap ?: return@withContext null
 
-            val destDir = File(context.getExternalFilesDir(null), "Thumbnails").apply { mkdirs() }
+            val destDir = storageDirectory("Thumbnails").apply { mkdirs() }
             val destFile = File(destDir, "$videoId.webp")
             FileOutputStream(destFile).use { out ->
                 val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -619,6 +638,8 @@ class SongDownloadManager @Inject constructor(
                 bitmap.compress(format, 95, out)
             }
             destFile
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed downloading thumbnail for: $videoId", e)
             null
@@ -626,35 +647,29 @@ class SongDownloadManager @Inject constructor(
     }
 
     private fun updateProgress(videoId: String, progress: DownloadProgress) {
-        _activeDownloads.value = _activeDownloads.value + (videoId to progress)
+        _activeDownloads.update { it + (videoId to progress) }
     }
 
     private fun removeProgress(videoId: String) {
-        _activeDownloads.value = _activeDownloads.value - videoId
+        _activeDownloads.update { it - videoId }
     }
 
     private fun updateDbAndProgressStatus(videoId: String, status: DownloadStatus) {
         scope.launch {
-            downloadedSongDao.updateStatus(videoId, status)
+            downloadedSongDao.updateIncompleteStatus(videoId, status)
             val current = _activeDownloads.value[videoId]
             if (current != null) {
                 updateProgress(videoId, current.copy(status = status))
             }
-            if (status == DownloadStatus.FAILED || status == DownloadStatus.COMPLETED) {
+            if (status == DownloadStatus.FAILED) {
                 delay(3000)
-                removeProgress(videoId)
+                _activeDownloads.update { downloads ->
+                    if (downloads[videoId]?.status == DownloadStatus.FAILED) downloads - videoId else downloads
+                }
             }
         }
     }
 
-    private fun applySpeedBypass(streamUrl: String): String {
-        return if (streamUrl.contains("range=")) {
-            streamUrl
-        } else {
-            val separator = if (streamUrl.contains("?")) "&" else "?"
-            "${streamUrl}${separator}range=0-999999999"
-        }
-    }
 }
 
 /**
@@ -667,4 +682,10 @@ data class DownloadProgress(
     val bytesDownloaded: Long,
     val bytesTotal: Long,
     val status: DownloadStatus
-)
+) {
+    val isTransferring: Boolean
+        get() = when (status) {
+            DownloadStatus.PENDING, DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING, DownloadStatus.RETRYING -> true
+            else -> false
+        }
+}

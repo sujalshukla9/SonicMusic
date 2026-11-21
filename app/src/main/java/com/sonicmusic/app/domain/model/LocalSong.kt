@@ -8,7 +8,7 @@ data class LocalSong(
     val title: String,
     val artist: String,
     val album: String? = null,
-    val duration: Int,
+    val duration: Int, // Seconds, as in Song.
     val filePath: String,
     val albumId: Long? = null,
     val dateAdded: Long,
@@ -21,8 +21,13 @@ data class LocalSong(
         }
 }
 
+private const val DEVICE_SONG_PREFIX = "local_"
+
+internal fun String.deviceLocalSongId(): Long? =
+    takeIf { it.startsWith(DEVICE_SONG_PREFIX) }?.removePrefix(DEVICE_SONG_PREFIX)?.toLongOrNull()
+
 fun LocalSong.toSong(): Song = Song(
-    id = "local_$id",
+    id = "$DEVICE_SONG_PREFIX$id",
     title = title,
     artist = artist,
     album = album,

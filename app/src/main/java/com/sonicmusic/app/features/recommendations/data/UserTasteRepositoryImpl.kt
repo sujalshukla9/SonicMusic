@@ -436,7 +436,7 @@ class UserTasteRepositoryImpl @Inject constructor(
         val now = System.currentTimeMillis()
         val countryCode = RegionalRecommendationHelper.normalizeCountryCode(settingsDataStore.countryCode.first())
             ?: RegionalRecommendationHelper.normalizeCountryCode(Locale.getDefault().country)
-            ?: FALLBACK_COUNTRY_CODE
+            ?: com.sonicmusic.app.domain.model.CountryUtils.resolveFallbackCountryCode()
 
         val countryName = RegionalRecommendationHelper.canonicalCountryName(
             countryCode = countryCode,

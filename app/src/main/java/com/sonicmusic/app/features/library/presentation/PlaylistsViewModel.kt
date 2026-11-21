@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.repository.PlaylistRepository
+import com.sonicmusic.app.features.library.data.MusicLibraryPage
+import com.sonicmusic.app.features.library.data.MusicLibrarySection
+import com.sonicmusic.app.features.library.data.YouTubeMusicLibrary
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,7 +20,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class PlaylistsViewModel @Inject constructor(
-    private val playlistRepository: PlaylistRepository
+    private val playlistRepository: PlaylistRepository,
+    private val accountLibrary: YouTubeMusicLibrary
 ) : ViewModel() {
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
@@ -30,6 +34,13 @@ class PlaylistsViewModel @Inject constructor(
     val remotePlaylists: StateFlow<List<Playlist>> = _playlists
         .map { list -> list.filter { !it.isLocal } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val accountPlaylists = accountLibrary.observe(MusicLibrarySection.Playlists)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000, replayExpirationMillis = 0), MusicLibraryPage())
+
+    fun loadMoreAccountPlaylists() {
+        viewModelScope.launch { accountLibrary.loadMore(MusicLibrarySection.Playlists) }
+    }
 
     private val _isLoading = MutableStateFlow(true)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -88,20 +99,18 @@ class PlaylistsViewModel @Inject constructor(
 
     fun syncAllRemotePlaylists(onComplete: () -> Unit = {}) {
         viewModelScope.launch {
-            val remotes = _playlists.value.filter { !it.isLocal && it.remoteId != null }
-            if (remotes.isEmpty()) {
-                onComplete()
-                return@launch
-            }
+            val remotes = _playlists.value.filter { !it.isLocal && !it.isYouTubeAccountPlaylist && it.remoteId != null }
             _isRefreshing.value = true
-            remotes.forEach { playlist ->
-                val rId = playlist.remoteId ?: return@forEach
-                playlistRepository.fetchRemotePlaylist(rId)
-                    .onSuccess { (p, songs) ->
-                        playlistRepository.saveRemotePlaylist(p, songs)
-                    }
+            try {
+                accountLibrary.refreshPlaylists()
+                remotes.forEach { playlist ->
+                    val rId = playlist.remoteId ?: return@forEach
+                    playlistRepository.fetchRemotePlaylist(rId)
+                        .onSuccess { (p, songs) -> playlistRepository.saveRemotePlaylist(p, songs) }
+                }
+            } finally {
+                _isRefreshing.value = false
             }
-            _isRefreshing.value = false
             onComplete()
         }
     }

@@ -1,9 +1,15 @@
 package com.sonicmusic.app.features.player.audio
 
+import android.util.Log
 import androidx.media3.common.Format
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.domain.model.LicenseType
+import com.sonicmusic.app.domain.model.SourceType
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.audio.models.QualityClassification
+import com.sonicmusic.app.domain.audio.models.VerificationStatus
+import com.sonicmusic.app.domain.audio.models.SelectedPlaybackInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,6 +52,11 @@ data class AudioQualityUiState(
     val contentLength: Long? = null,
     val sourceName: String = "",
     val errorDetails: String? = null,
+    val sourceType: SourceType = SourceType.INNERTUBE,
+    val identityConfidence: Float = 1.0f,
+    val licenseType: LicenseType = LicenseType.STREAMING,
+    val qualityClassification: QualityClassification = QualityClassification.UNKNOWN,
+    val verificationStatus: VerificationStatus = VerificationStatus.VERIFIED,
 ) {
     val sampleRate: Int? get() = sampleRateHz
     val status: PlaybackStatus get() = playbackStatus
@@ -93,9 +104,13 @@ data class AudioQualityUiState(
             channelCount = channelCount ?: 0,
             isEnhanced = false,
             isLocal = isLocal,
+            isArchiveSource = false,
+            sourceType = sourceType,
             itag = itag,
             loudnessDb = loudnessDb,
-            contentLength = contentLength
+            contentLength = contentLength,
+            qualityClassification = qualityClassification,
+            verificationStatus = verificationStatus
         )
     }
 }
@@ -113,6 +128,45 @@ class PlaybackDiagnostics @Inject constructor() {
 
     private val _uiState = MutableStateFlow<AudioQualityUiState?>(null)
     val uiState: StateFlow<AudioQualityUiState?> = _uiState.asStateFlow()
+
+    private val resolvedStreams = android.util.LruCache<Pair<String, String>, AudioStreamInfo>(128)
+
+    fun rememberResolvedStream(songId: String, url: String, info: AudioStreamInfo) {
+        resolvedStreams.put(songId to url, info)
+    }
+
+    fun resolvedStreamInfo(songId: String, url: String): AudioStreamInfo? = resolvedStreams.get(songId to url)
+
+    @Synchronized
+    fun onRendererFormat(songId: String, url: String, format: Format) {
+        onSongChanged(songId)
+        val expected = resolvedStreamInfo(songId, url)
+        if (expected != null) onCandidateSelected(songId, expected)
+        onPlayingFormatChanged(format)
+
+        val actualCodec = AudioStreamInfo.codecFromMimeType(format.codecs ?: format.sampleMimeType.orEmpty())
+        val bitrate = format.averageBitrate.takeIf { it > 0 } ?: format.peakBitrate.takeIf { it > 0 }
+        val urlItag = ITAG.find(url)?.groupValues?.get(1)?.toIntOrNull()
+        val details = "song=$songId selectedItag=${expected?.itag} playingUrlItag=$urlItag " +
+            "selectedCodec=${expected?.codec} rendererCodec=$actualCodec profile=${format.codecs} " +
+            "selectedKbps=${expected?.bitrate} rendererBps=$bitrate " +
+            "sampleRate=${format.sampleRate} channels=${format.channelCount}"
+        val codecMismatch = expected != null && actualCodec != "Unknown" &&
+            actualCodec.substringBefore("-") != expected.codec.substringBefore("-")
+        val lowerSampleRate = expected != null && format.sampleRate > 0 && format.sampleRate < expected.sampleRate
+        val fewerChannels = expected != null && format.channelCount > 0 && format.channelCount < expected.channelCount
+        if (codecMismatch || lowerSampleRate || fewerChannels ||
+            (expected?.itag != null && urlItag != null && expected.itag != urlItag)
+        ) {
+            Log.w("SonicAudioFormat", "Unexpected playback format: $details")
+        } else {
+            Log.i("SonicAudioFormat", details)
+        }
+    }
+
+    private companion object {
+        val ITAG = Regex("[?&]itag=(\\d+)")
+    }
 
     private var currentSongId: String = ""
     private var selectedCandidate: AudioStreamCandidate? = null
@@ -142,6 +196,33 @@ class PlaybackDiagnostics @Inject constructor() {
     }
 
     @Synchronized
+    fun onSelectedPlaybackInfo(info: SelectedPlaybackInfo) {
+        if (info.songId == currentSongId || currentSongId.isEmpty()) {
+            currentSongId = info.songId
+            selectedCandidate = info.candidate ?: AudioStreamCandidate(
+                url = info.playbackUri,
+                mimeType = "",
+                codec = info.codec,
+                container = info.container,
+                bitrate = (info.bitrateKbps ?: 0) * 1000L,
+                bitrateKbps = info.bitrateKbps ?: 0,
+                sampleRate = info.sampleRateHz ?: 0,
+                bitDepth = info.bitDepth ?: 0,
+                channelCount = info.channelCount,
+                isAudioOnly = true,
+                sourceName = info.sourceName,
+                sourceType = info.selectedSource,
+                identityConfidence = info.identityConfidence,
+                licenseType = info.licenseType,
+                qualityClassification = info.qualityClassification,
+                verificationStatus = info.verificationStatus
+            )
+            isLocalSource = info.isLocal
+            publishState()
+        }
+    }
+
+    @Synchronized
     fun onCandidateSelected(songId: String, candidate: AudioStreamCandidate) {
         if (songId == currentSongId || currentSongId.isEmpty()) {
             currentSongId = songId
@@ -168,7 +249,8 @@ class PlaybackDiagnostics @Inject constructor() {
                 isAudioOnly = true,
                 contentLength = info.contentLength,
                 loudnessDb = info.loudnessDb,
-                sourceName = if (info.isLocal) "Local" else "Stream"
+                sourceName = if (info.isLocal) "Local" else "Stream",
+                sourceType = info.sourceType
             )
             isLocalSource = info.isLocal
             publishState()
@@ -221,22 +303,20 @@ class PlaybackDiagnostics @Inject constructor() {
         val fmt = playingFormat
 
         val codec = when {
+            fmt?.sampleMimeType != null -> AudioStreamInfo.codecFromMimeType(fmt.codecs ?: fmt.sampleMimeType!!)
             cand != null && cand.codec.isNotBlank() && cand.codec != "Unknown" -> cand.codec
-            fmt?.sampleMimeType != null -> AudioStreamInfo.codecFromMimeType(fmt.sampleMimeType!!)
             isLocalSource -> "Local Audio"
             else -> ""
         }
 
         val sourceBitrate = cand?.bitrateKbps?.takeIf { it > 0 }
-            ?: (cand?.itag?.let { AudioStreamInfo.nominalBitrateForItag(it) })
             ?: fmt?.bitrate?.takeIf { it > 0 }?.let { Math.round(it / 1000.0).toInt() }
 
         val sampleRate = cand?.sampleRate?.takeIf { it > 0 }
-            ?: (cand?.itag?.let { AudioStreamInfo.nominalSampleRateForItag(it) })
             ?: fmt?.sampleRate?.takeIf { it > 0 }
 
         val channels = cand?.channelCount?.takeIf { it > 0 }
-            ?: fmt?.channelCount?.takeIf { it > 0 } ?: 2
+            ?: fmt?.channelCount?.takeIf { it > 0 }
 
         val container = cand?.container ?: if (isLocalSource) "Local" else ""
 
@@ -273,7 +353,12 @@ class PlaybackDiagnostics @Inject constructor() {
             loudnessDb = cand?.loudnessDb,
             contentLength = cand?.contentLength,
             sourceName = cand?.sourceName ?: "",
-            errorDetails = lastError
+            errorDetails = lastError,
+            sourceType = cand?.sourceType ?: if (isLocalSource) SourceType.LOCAL_FILE else SourceType.INNERTUBE,
+            identityConfidence = cand?.identityConfidence ?: 1.0f,
+            licenseType = cand?.licenseType ?: LicenseType.STREAMING,
+            qualityClassification = cand?.qualityClassification ?: if (cand?.isFlac() == true) QualityClassification.VERIFIED_LOSSLESS else QualityClassification.UNKNOWN,
+            verificationStatus = cand?.verificationStatus ?: VerificationStatus.VERIFIED
         )
     }
 }

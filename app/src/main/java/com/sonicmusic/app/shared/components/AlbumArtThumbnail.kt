@@ -1,18 +1,17 @@
 package com.sonicmusic.app.shared.components
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import com.sonicmusic.app.theme.MotionTokens
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -66,7 +65,7 @@ fun AlbumArtThumbnail(
     }
     var candidateIndex by remember(candidateUrls) { mutableIntStateOf(0) }
     val modelUrl = candidateUrls.getOrNull(candidateIndex) ?: imageUrl
-    val crossfadeDuration = if (crossfade && !reduceMotion) com.sonicmusic.app.theme.MotionTokens.DurationStandard else 0
+    val crossfadeDuration = if (crossfade && !reduceMotion) MotionTokens.DurationStandard else 0
     val imageRequest = remember(context, modelUrl, crossfadeDuration, targetSizePx) {
         ImageRequest.Builder(context)
             .data(modelUrl)
@@ -84,9 +83,9 @@ fun AlbumArtThumbnail(
     // Animating shape morph transitions
     var previousShape by remember { mutableStateOf(shape) }
     var targetShape by remember { mutableStateOf(shape) }
-    val animProgress = remember { Animatable(0f) }
+    val animProgress = remember { Animatable(1f) }
 
-    LaunchedEffect(shape) {
+    LaunchedEffect(shape, reduceMotion) {
         if (shape != targetShape) {
             previousShape = targetShape
             targetShape = shape
@@ -96,28 +95,23 @@ fun AlbumArtThumbnail(
                 animProgress.snapTo(0f)
                 animProgress.animateTo(
                     targetValue = 1f,
-                    animationSpec = tween(durationMillis = 350, easing = FastOutSlowInEasing)
+                    animationSpec = MotionTokens.standardTween()
                 )
             }
             previousShape = shape // Reset morph state to prevent infinite rebuilds
         }
     }
 
-    // Build the morphing Compose Shape
-    val morph = remember(previousShape, targetShape) {
-        if (previousShape == targetShape) {
-            null
-        } else {
+    // Build the morphing Compose Shape - Fast path for static shapes (99.9% of runtime)
+    val staticShape = remember(targetShape, isLarge) { targetShape.toComposeShape(isLarge) }
+    val morph = remember(previousShape, targetShape, reduceMotion) {
+        if (previousShape != targetShape && !reduceMotion) {
             Morph(previousShape.toRoundedPolygon(), targetShape.toRoundedPolygon())
-        }
+        } else null
     }
-
-    val morphingShape = remember(morph, targetShape, animProgress.value, isLarge) {
-        if (morph == null) {
-            targetShape.toComposeShape(isLarge)
-        } else {
-            MorphComposeShape(morph, animProgress.value)
-        }
+    val progress = if (morph != null) animProgress.value else 1f
+    val morphingShape = remember(staticShape, morph, progress) {
+        if (morph != null && progress < 1f) MorphComposeShape(morph, progress) else staticShape
     }
 
     // Animated padding inset to prevent layout pops when changing shapes
@@ -128,7 +122,7 @@ fun AlbumArtThumbnail(
     }
     val animatedPadding by animateDpAsState(
         targetValue = targetPadding,
-        animationSpec = if (reduceMotion) androidx.compose.animation.core.snap() else tween(durationMillis = 350),
+        animationSpec = if (reduceMotion) androidx.compose.animation.core.snap() else MotionTokens.spatial(),
         label = "thumbnailPadding"
     )
 
@@ -153,8 +147,8 @@ fun AlbumArtThumbnail(
         modifier = modifier
             .padding(animatedPadding)
             .then(shadowModifier)
-            .background(effectiveBackgroundColor, morphingShape)
-            .clip(morphingShape),
+            .clip(morphingShape)
+            .background(effectiveBackgroundColor),
         contentAlignment = Alignment.Center
     ) {
         Icon(

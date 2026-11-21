@@ -12,6 +12,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sonicmusic.app.domain.model.FullPlayerStyle
 import com.sonicmusic.app.domain.model.PaletteStyle
+import com.sonicmusic.app.theme.ArtworkColors
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.ThemeMode
 import com.sonicmusic.app.domain.model.DarkMode
@@ -41,6 +42,7 @@ class SettingsDataStore @Inject constructor(
         val PALETTE_STYLE = stringPreferencesKey("palette_style")
         val PURE_BLACK = booleanPreferencesKey("pure_black")
         val LAST_SEED_COLOR = intPreferencesKey("last_seed_color")
+        val LAST_ACCENT_COLOR = intPreferencesKey("last_accent_color")
         val FULL_PLAYER_STYLE = stringPreferencesKey("full_player_style")
         val DYNAMIC_COLORS = booleanPreferencesKey("dynamic_colors") // Legacy
         val DYNAMIC_COLOR_INTENSITY = intPreferencesKey("dynamic_color_intensity") // Legacy
@@ -59,6 +61,9 @@ class SettingsDataStore @Inject constructor(
         val AUTO_UPDATE_ENABLED = booleanPreferencesKey("auto_update_enabled")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val IS_REGION_FROM_IP = booleanPreferencesKey("is_region_from_ip")
+        val IS_REGION_MANUAL = booleanPreferencesKey("is_region_manual")
+        val LANGUAGE_CODE = stringPreferencesKey("language_code")
+        val REGION_DETECTED_AT = longPreferencesKey("region_detected_at")
         val THUMBNAIL_SHAPE = stringPreferencesKey("thumbnail_shape")
         val PLAYER_CONTROL_STYLE = stringPreferencesKey("player_control_style")
         val NAVBAR_STYLE = stringPreferencesKey("navbar_style")
@@ -119,9 +124,11 @@ class SettingsDataStore @Inject constructor(
             preferences[PreferencesKeys.PURE_BLACK] ?: false
         }
 
-    val lastSeedColor: Flow<Int?> = context.dataStore.data
+    val lastArtworkColors: Flow<ArtworkColors?> = context.dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.LAST_SEED_COLOR]
+            preferences[PreferencesKeys.LAST_SEED_COLOR]?.let { seed ->
+                ArtworkColors(seed, preferences[PreferencesKeys.LAST_ACCENT_COLOR])
+            }
         }
 
     val dynamicColors: Flow<Boolean> = context.dataStore.data
@@ -136,7 +143,7 @@ class SettingsDataStore @Inject constructor(
 
     val fullPlayerStyle: Flow<FullPlayerStyle> = context.dataStore.data
         .map { preferences ->
-            val style = preferences[PreferencesKeys.FULL_PLAYER_STYLE] ?: FullPlayerStyle.NORMAL.name
+            val style = preferences[PreferencesKeys.FULL_PLAYER_STYLE] ?: FullPlayerStyle.WAVY.name
             FullPlayerStyle.fromString(style)
         }
 
@@ -200,6 +207,21 @@ class SettingsDataStore @Inject constructor(
             preferences[PreferencesKeys.IS_REGION_FROM_IP]
         }
 
+    val isRegionManual: Flow<Boolean> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.IS_REGION_MANUAL] ?: false
+        }
+
+    val languageCode: Flow<String?> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.LANGUAGE_CODE]
+        }
+
+    val regionDetectedAt: Flow<Long> = context.dataStore.data
+        .map { preferences ->
+            preferences[PreferencesKeys.REGION_DETECTED_AT] ?: 0L
+        }
+
     val blacklistedSongIds: Flow<Set<String>> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.BLACKLISTED_SONG_IDS] ?: emptySet()
@@ -223,7 +245,7 @@ class SettingsDataStore @Inject constructor(
 
     val playerControlStyle: Flow<PlayerControlStyle> = context.dataStore.data
         .map { preferences ->
-            val styleString = preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] ?: PlayerControlStyle.CLASSIC.name
+            val styleString = preferences[PreferencesKeys.PLAYER_CONTROL_STYLE] ?: PlayerControlStyle.MODERN.name
             PlayerControlStyle.fromString(styleString)
         }
 
@@ -269,9 +291,15 @@ class SettingsDataStore @Inject constructor(
         }
     }
 
-    suspend fun setLastSeedColor(color: Int) {
+    suspend fun setLastArtworkColors(colors: ArtworkColors) {
         context.dataStore.edit { preferences ->
-            preferences[PreferencesKeys.LAST_SEED_COLOR] = color
+            preferences[PreferencesKeys.LAST_SEED_COLOR] = colors.primary
+            val accent = colors.complementary
+            if (accent == null) {
+                preferences.remove(PreferencesKeys.LAST_ACCENT_COLOR)
+            } else {
+                preferences[PreferencesKeys.LAST_ACCENT_COLOR] = accent
+            }
         }
     }
 
@@ -362,6 +390,28 @@ class SettingsDataStore @Inject constructor(
     suspend fun setIsRegionFromIp(fromIp: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.IS_REGION_FROM_IP] = fromIp
+        }
+    }
+
+    suspend fun setIsRegionManual(manual: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.IS_REGION_MANUAL] = manual
+        }
+    }
+
+    suspend fun setLanguageCode(language: String?) {
+        context.dataStore.edit { preferences ->
+            if (language == null) {
+                preferences.remove(PreferencesKeys.LANGUAGE_CODE)
+            } else {
+                preferences[PreferencesKeys.LANGUAGE_CODE] = language
+            }
+        }
+    }
+
+    suspend fun setRegionDetectedAt(timestamp: Long) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.REGION_DETECTED_AT] = timestamp
         }
     }
 
