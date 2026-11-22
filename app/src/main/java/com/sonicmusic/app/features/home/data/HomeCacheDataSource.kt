@@ -91,7 +91,9 @@ class HomeCacheDataSource @Inject constructor(
                 }
             }
             items.takeIf { it.isNotEmpty() }?.let {
-                val kind = youtubeMusic.homeShelfKind(shelf.title)
+                val kind = if (shelf.kind == HomeShelf.Kind.Other) {
+                    youtubeMusic.homeShelfKind(shelf.title)
+                } else shelf.kind
                 val layout = if (kind == HomeShelf.Kind.ListenAgain) HomeShelf.Layout.Grid else shelf.layout
                 shelf.copy(items = it, kind = kind, layout = layout)
             }

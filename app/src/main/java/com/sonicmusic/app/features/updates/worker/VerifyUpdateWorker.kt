@@ -40,8 +40,13 @@ class VerifyUpdateWorker(context: Context, parameters: WorkerParameters) : Corou
             }
             if (download.sessionId >= 0) {
                 val session = installer.getSessionInfo(download.sessionId)
-                if (session?.isSealed == true) return@withContext Result.success()
-                // The process may have stopped between recording and committing the session.
+                val recoverConfirmation = inputData.getBoolean(UpdateDownloader.RECOVER_CONFIRMATION, false) &&
+                    download.awaitingConfirmation && !UpdateNotifications.hasConfirmation(download.sessionId)
+                if (session?.isSealed == true && !recoverConfirmation) return@withContext Result.success()
+
+                // Clear the old ID before abandoning so its failure callback cannot finish the replacement.
+                if (!downloader.resetSession(download.id, download.sessionId)) return@withContext Result.success()
+                if (recoverConfirmation) UpdateNotifications.clear(context)
                 if (session != null) installer.abandonSession(download.sessionId)
             }
             val status = downloader.manager.query(DownloadManager.Query().setFilterById(download.id))?.use { cursor ->

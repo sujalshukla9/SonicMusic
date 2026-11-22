@@ -4,16 +4,19 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadRequest
+import com.sonicmusic.app.BuildConfig
 import com.sonicmusic.app.data.local.dao.DownloadedSongDao
 import com.sonicmusic.app.data.local.entity.DownloadedSong
 import com.sonicmusic.app.data.local.entity.DownloadStatus
@@ -22,7 +25,7 @@ import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.model.deviceLocalSongId
-import coil.ImageLoader
+import coil.imageLoader
 import coil.request.ImageRequest
 import dagger.Lazy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -67,6 +70,8 @@ class SongDownloadManager @Inject constructor(
     companion object {
         private const val TAG = "SongDownloadManager"
         private const val PROGRESS_INTERVAL_MS = 750L
+        private const val URL_EXPIRY_MARGIN_MS = 60_000L
+        private val STREAM_REJECTION_CODES = setOf(401, 403, 404, 410)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -179,7 +184,7 @@ class SongDownloadManager @Inject constructor(
                             )
                             if (download.state == Download.STATE_COMPLETED) {
                                 scope.launch { exportCacheAndComplete(download) }
-                            } else if (download.state == Download.STATE_FAILED || download.state == Download.STATE_RESTARTING) {
+                            } else if (download.state == Download.STATE_FAILED) {
                                 // Expired URL fallback on startup retry
                                 refreshDownload(download.request, retry = true)
                             } else {
@@ -238,7 +243,11 @@ class SongDownloadManager @Inject constructor(
                     updateProgress(videoId, DownloadProgress(videoId, song.title, 0, 0, 0, DownloadStatus.PENDING))
                 }
 
-                val (candidate, _) = audioStreamExtractor.extractBestCandidate(videoId, quality).getOrThrow()
+                val lookupStartedAt = SystemClock.elapsedRealtime()
+                val candidate = audioStreamExtractor.extractDownloadCandidate(videoId, quality).getOrThrow()
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "Download stream ready in ${SystemClock.elapsedRealtime() - lookupStartedAt} ms (itag=${candidate.itag})")
+                }
                 filesMutex.withLock {
                     if (preparing[videoId] !== preparation || downloadedSongDao.getDownloadedSong(videoId) != initial) return@launch
                     downloadedSongDao.updateIncompleteStatus(videoId, DownloadStatus.QUEUED)
@@ -281,14 +290,33 @@ class SongDownloadManager @Inject constructor(
     fun resumeDownload(videoId: String) {
         scope.launch {
             Log.d(TAG, "Resuming download: $videoId")
-            val previous = media3.await().downloadIndex.getDownload(videoId)?.request
+            val manager = media3.await()
+            val previous = manager.downloadIndex.getDownload(videoId)
             if (previous == null) {
                 val song = downloadedSongDao.getDownloadedSong(videoId) ?: return@launch
                 val quality = downloadMetadata[videoId]?.quality ?: StreamQuality.BEST
-                downloadSong(Song(videoId, song.title, song.artists, duration = 0, thumbnailUrl = song.thumbnailUrl), quality)
+                downloadSong(song.toSong(), quality)
                 return@launch
             }
-            refreshDownload(previous, retry = false)
+            when (previous.state) {
+                Download.STATE_STOPPED -> {
+                    if (previous.request.isNearExpiry()) {
+                        refreshDownload(previous.request, retry = false)
+                    } else {
+                        filesMutex.withLock {
+                            val current = manager.downloadIndex.getDownload(videoId)
+                            if (current?.state != Download.STATE_STOPPED || current.request != previous.request ||
+                                downloadedSongDao.getDownloadedSong(videoId) == null
+                            ) return@withLock
+                            withContext(Dispatchers.Main) {
+                                manager.setStopReason(videoId, Download.STOP_REASON_NONE)
+                                manager.resumeDownloads()
+                            }
+                        }
+                    }
+                }
+                Download.STATE_FAILED -> refreshDownload(previous.request, retry = false)
+            }
         }
     }
 
@@ -409,11 +437,11 @@ class SongDownloadManager @Inject constructor(
             }
 
             if (state == Download.STATE_FAILED) {
-                val isHttpError = finalException?.cause is IOException ||
-                        finalException?.message?.contains("403") == true ||
-                        finalException?.message?.contains("410") == true
-                
-                if (isHttpError) {
+                val rejectedStream = generateSequence<Throwable>(finalException) { it.cause }
+                    .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                    .any { it.responseCode in STREAM_REJECTION_CODES }
+
+                if (rejectedStream || download.request.isNearExpiry()) {
                     Log.w(TAG, "Download failed due to HTTP / Expired URL. Retrying URL resolution...")
                     refreshDownload(download.request, retry = true)
                 } else {
@@ -462,6 +490,11 @@ class SongDownloadManager @Inject constructor(
         bytesTotal = download.contentLength
     )
 
+    private fun DownloadRequest.isNearExpiry(): Boolean =
+        AudioStreamCandidate.extractExpiryFromUrl(uri.toString())?.let {
+            it <= System.currentTimeMillis() + URL_EXPIRY_MARGIN_MS
+        } == true
+
     private fun createRequest(
         videoId: String,
         candidate: AudioStreamCandidate,
@@ -494,8 +527,9 @@ class SongDownloadManager @Inject constructor(
 
         updateDbAndProgressStatus(videoId, DownloadStatus.RETRYING)
         val excluded = if (retry) setOf(previous.uri.toString()) else emptySet()
-        val result = audioStreamExtractor.extractBestCandidate(videoId, quality, forceRefresh = true, excludeUrls = excluded)
-        val candidate = result.getOrNull()?.first
+        val candidate = audioStreamExtractor.extractDownloadCandidate(
+            videoId, quality, forceRefresh = true, excludeUrls = excluded
+        ).getOrNull()
         if (candidate == null) {
             updateDbAndProgressStatus(videoId, DownloadStatus.FAILED)
             return
@@ -616,7 +650,7 @@ class SongDownloadManager @Inject constructor(
     private suspend fun downloadAndSaveThumbnail(videoId: String, url: String): File? = withContext(Dispatchers.IO) {
         try {
             if (url.isBlank()) return@withContext null
-            val loader = ImageLoader(context)
+            val loader = context.imageLoader
             val request = ImageRequest.Builder(context)
                 .data(url)
                 .size(640, 640)

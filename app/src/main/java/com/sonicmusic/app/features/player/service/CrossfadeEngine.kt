@@ -141,8 +141,22 @@ class CrossfadeEngine(
 
     private var crossfadeJob: Job? = null
     private var preparedMediaId: String? = null
+    private var preparationListener: Player.Listener? = null
     private var outgoingPlayerForActiveFade: ExoPlayer? = null
     private var incomingPlayerForActiveFade: ExoPlayer? = null
+
+    internal fun handlesAudioFocus(player: ExoPlayer) = player != incomingPlayerForActiveFade
+
+    internal fun invalidatePreparedTrack() {
+        if (state == CrossfadeState.PREPARING_NEXT || state == CrossfadeState.READY_FOR_CROSSFADE) {
+            cancelCrossfade()
+        }
+    }
+
+    private fun stopWatchingPreparation() {
+        preparationListener?.let(standbyPlayer::removeListener)
+        preparationListener = null
+    }
 
     /**
      * Updates the user's configured crossfade duration in milliseconds.
@@ -216,9 +230,6 @@ class CrossfadeEngine(
         next.repeatMode = current.repeatMode
         next.shuffleModeEnabled = current.shuffleModeEnabled
         next.setMediaItems(nextItems, 0, 0L)
-        next.prepare()
-
-        // Listen for readiness
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
@@ -227,10 +238,10 @@ class CrossfadeEngine(
                             state = CrossfadeState.READY_FOR_CROSSFADE
                             Log.d(TAG, "Incoming track '${primaryNextItem.mediaMetadata.title}' is READY for crossfade")
                         }
-                        next.removeListener(this)
+                        stopWatchingPreparation()
                     }
                     Player.STATE_IDLE, Player.STATE_ENDED -> {
-                        next.removeListener(this)
+                        stopWatchingPreparation()
                     }
                 }
             }
@@ -239,10 +250,12 @@ class CrossfadeEngine(
                 Log.w(TAG, "Standby player preparation failed: ${error.message}. Aborting crossfade preparation.")
                 state = CrossfadeState.IDLE
                 preparedMediaId = null
-                next.removeListener(this)
+                stopWatchingPreparation()
             }
         }
+        preparationListener = listener
         next.addListener(listener)
+        next.prepare()
     }
 
     /**
@@ -277,6 +290,7 @@ class CrossfadeEngine(
     private fun executeCrossfade(outgoing: ExoPlayer, incoming: ExoPlayer, fadeDurationMs: Long) {
         if (isCrossfading) return
 
+        stopWatchingPreparation()
         state = CrossfadeState.CROSSFADING
         outgoingPlayerForActiveFade = outgoing
         incomingPlayerForActiveFade = incoming
@@ -286,7 +300,13 @@ class CrossfadeEngine(
         crossfadeJob?.cancel()
         crossfadeJob = scope.launch(Dispatchers.Main) {
             try {
+                if (!outgoing.isPlaying) {
+                    cancelCrossfade(keepIncoming = false)
+                    return@launch
+                }
                 incoming.volume = 0f
+                // The outgoing player owns focus during overlap. A second focus request can pause it.
+                incoming.setAudioAttributes(incoming.audioAttributes, false)
 
                 // Make the incoming player authoritative before its playback callbacks arrive.
                 val session = mediaSessionProvider()
@@ -302,6 +322,11 @@ class CrossfadeEngine(
                 val startedAt = SystemClock.elapsedRealtime()
 
                 while (isActive && incoming.playWhenReady) {
+                    if (!outgoing.playWhenReady || outgoing.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) {
+                        incoming.pause()
+                        if (isCrossfading) cancelCrossfade()
+                        return@launch
+                    }
                     val elapsed = SystemClock.elapsedRealtime() - startedAt
                     val progress = (elapsed.toFloat() / fadeDurationMs).coerceIn(0f, 1f)
                     val (outGain, inGain) = PlaybackGain.crossfade(
@@ -344,6 +369,7 @@ class CrossfadeEngine(
         incomingPlayerForActiveFade = null
         preparedMediaId = null
         state = if (completedNormally) CrossfadeState.COMPLETED else CrossfadeState.CANCELLED
+        incoming.setAudioAttributes(incoming.audioAttributes, true)
 
         // Reset state back to IDLE after completion
         state = CrossfadeState.IDLE
@@ -385,6 +411,12 @@ class CrossfadeEngine(
 
         val outgoing = outgoingPlayerForActiveFade
         val incoming = incomingPlayerForActiveFade
+        val preparing = state == CrossfadeState.PREPARING_NEXT || state == CrossfadeState.READY_FOR_CROSSFADE
+        stopWatchingPreparation()
+        outgoingPlayerForActiveFade = null
+        incomingPlayerForActiveFade = null
+        preparedMediaId = null
+        state = CrossfadeState.IDLE
 
         if (outgoing != null) {
             if (keepIncoming) {
@@ -406,18 +438,15 @@ class CrossfadeEngine(
                 incoming.clearMediaItems()
                 incoming.volume = 1f
             }
+            incoming.setAudioAttributes(incoming.audioAttributes, true)
         }
 
-        if (state == CrossfadeState.PREPARING_NEXT || state == CrossfadeState.READY_FOR_CROSSFADE) {
+        if (preparing) {
             standbyPlayer.stop()
             standbyPlayer.clearMediaItems()
             standbyPlayer.volume = 1f
         }
 
-        outgoingPlayerForActiveFade = null
-        incomingPlayerForActiveFade = null
-        preparedMediaId = null
-        state = CrossfadeState.IDLE
     }
 
     /**
@@ -479,6 +508,8 @@ class CrossfadeEngine(
         if (isCrossfading) {
             Log.d(TAG, "User seeked during crossfade. Aborting crossfade.")
             cancelCrossfade(keepIncoming = true)
+        } else {
+            invalidatePreparedTrack()
         }
     }
 

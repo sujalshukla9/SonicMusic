@@ -42,6 +42,8 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.player.audio.PlaybackGain
+import com.sonicmusic.app.features.player.audio.PcmPlaybackEffects
+import com.sonicmusic.app.features.player.audio.SpatialAudioMode
 import com.sonicmusic.app.features.player.audio.AudioEngine
 import com.sonicmusic.app.features.player.audio.PlaybackDiagnostics
 import com.sonicmusic.app.features.player.audio.PlaybackStatus
@@ -112,6 +114,9 @@ class PlaybackService : MediaSessionService() {
         private const val CHANNEL_ID = "sonic_music_playback"
         const val NOTIFICATION_ID = 1
 
+        private val serviceReady = kotlinx.coroutines.flow.MutableStateFlow(false)
+        internal val isReady: kotlinx.coroutines.flow.StateFlow<Boolean> = serviceReady
+
         const val ACTION_PLAY = "com.sonicmusic.PLAY"
         const val ACTION_PAUSE = "com.sonicmusic.PAUSE"
         const val ACTION_NEXT = "com.sonicmusic.NEXT"
@@ -150,6 +155,9 @@ class PlaybackService : MediaSessionService() {
     private var transitionSettingsJob: Job? = null
     private var spatialAudioSettingsJob: Job? = null
     private var soundCheckSettingsJob: Job? = null
+    private var normalizeVolume = SettingsDataStore.DEFAULT_NORMALIZE_VOLUME
+    private val firstPlayerEffects = PcmPlaybackEffects { onPcmFormatChanged() }
+    private val secondPlayerEffects = PcmPlaybackEffects { onPcmFormatChanged() }
     private var crossfadeMonitorJob: Job? = null
     private var crossfadeEngine: CrossfadeEngine? = null
     private val embeddedTrackLoudness = android.util.LruCache<Pair<String, String>, Double>(32)
@@ -168,6 +176,7 @@ class PlaybackService : MediaSessionService() {
         initializePlayer()
         observePlaybackSettings()
         setupNotificationProvider()
+        serviceReady.value = true
     }
 
     
@@ -179,8 +188,8 @@ class PlaybackService : MediaSessionService() {
 
         val mediaSourceFactory = buildMediaSourceFactory()
 
-        val p1 = createExoPlayerInstance(audioAttributes, mediaSourceFactory)
-        val p2 = createExoPlayerInstance(audioAttributes, mediaSourceFactory)
+        val p1 = createExoPlayerInstance(audioAttributes, mediaSourceFactory, firstPlayerEffects)
+        val p2 = createExoPlayerInstance(audioAttributes, mediaSourceFactory, secondPlayerEffects)
 
         p1.setAudioSessionId(sharedAudioSessionId)
         p1.addListener(createPlayerListener(p1))
@@ -211,6 +220,7 @@ class PlaybackService : MediaSessionService() {
             onPlayerSwapped = { newActivePlayer ->
                 player = newActivePlayer
                 updateSpatialPlayback(newActivePlayer)
+                updateTrackGain(newActivePlayer)
                 Log.d(TAG, "Active player swapped by CrossfadeEngine to: ${if (newActivePlayer == player1) "player1" else "player2"}")
             }
         )
@@ -227,7 +237,7 @@ class PlaybackService : MediaSessionService() {
     private fun releaseSession() {
         val session = mediaSession ?: return
         mediaSession = null
-        removeSession(session)
+        if (session in sessions) removeSession(session)
         session.release()
     }
 
@@ -241,26 +251,44 @@ class PlaybackService : MediaSessionService() {
         .build()
 
     private fun updateSpatialPlayback(current: ExoPlayer) {
-        audioEngine.updateSpatialPlayback(current.audioAttributes.audioAttributesV21.audioAttributes, current.audioFormat)
+        audioEngine.updateSpatialPlayback(
+            current.audioAttributes.audioAttributesV21.audioAttributes,
+            current.audioFormat,
+            effectsFor(current).hasStereoPcm
+        )
     }
 
+    private fun onPcmFormatChanged() {
+        serviceScope.launch { player?.let(::updateSpatialPlayback) }
+    }
+
+    private fun effectsFor(current: ExoPlayer) = if (current == player1) firstPlayerEffects else secondPlayerEffects
+
     private fun gainForItem(item: MediaItem?): Float {
-        if (!audioEngine.audioEngineState.value.soundCheckEnabled || item == null) return 1f
-        val uri = item.localConfiguration?.uri?.toString() ?: return 1f
-        val loudnessDb = playbackDiagnostics.resolvedStreamInfo(item.mediaId, uri)?.loudnessDb
+        return if (normalizeVolume) PlaybackGain.normalization(loudnessForItem(item)) else 1f
+    }
+
+    private fun loudnessForItem(item: MediaItem?): Double? {
+        val uri = item?.localConfiguration?.uri?.toString() ?: return null
+        return playbackDiagnostics.resolvedStreamInfo(item.mediaId, uri)?.loudnessDb?.takeIf(Double::isFinite)
             ?: embeddedTrackLoudness.get(item.mediaId to uri)
-        return PlaybackGain.normalization(loudnessDb)
     }
 
     private fun updateTrackGain(current: ExoPlayer) {
-        if (crossfadeEngine?.isCrossfading != true) {
-            current.volume = gainForItem(current.currentMediaItem)
+        val item = current.currentMediaItem
+        val effects = effectsFor(current)
+        effects.trackKey = item?.let { it.mediaId to it.localConfiguration?.uri }
+        val measured = loudnessForItem(item)
+        effects.estimateLoudness = normalizeVolume && item != null && measured == null
+        if (current == player && crossfadeEngine?.isCrossfading != true) {
+            current.volume = if (normalizeVolume) PlaybackGain.normalization(measured) else 1f
         }
     }
 
     private fun createExoPlayerInstance(
         audioAttributes: AudioAttributes,
-        mediaSourceFactory: androidx.media3.exoplayer.source.MediaSource.Factory
+        mediaSourceFactory: androidx.media3.exoplayer.source.MediaSource.Factory,
+        effects: PcmPlaybackEffects
     ): ExoPlayer {
         return ExoPlayer.Builder(this)
             .setAudioAttributes(audioAttributes, true)
@@ -280,6 +308,7 @@ class PlaybackService : MediaSessionService() {
                     ): androidx.media3.exoplayer.audio.AudioSink {
                         return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                             .setEnableFloatOutput(enableFloatOutput)
+                            .setAudioProcessors(arrayOf(effects))
                             .build()
                     }
                 }
@@ -374,10 +403,13 @@ class PlaybackService : MediaSessionService() {
         }
 
         soundCheckSettingsJob = serviceScope.launch {
-            audioEngine.audioEngineState
-                .map { it.soundCheckEnabled }
+            settingsDataStore.normalizeVolume
                 .distinctUntilChanged()
-                .collect { player?.let(::updateTrackGain) }
+                .collect { enabled ->
+                    normalizeVolume = enabled
+                    player1?.let(::updateTrackGain)
+                    player2?.let(::updateTrackGain)
+                }
         }
 
         spatialAudioSettingsJob = serviceScope.launch {
@@ -386,9 +418,22 @@ class PlaybackService : MediaSessionService() {
                 .distinctUntilChanged()
                 .collect { enabled ->
                     val attributes = musicAudioAttributes(enabled)
-                    player1?.setAudioAttributes(attributes, true)
-                    player2?.setAudioAttributes(attributes, true)
+                    player1?.let { it.setAudioAttributes(attributes, crossfadeEngine?.handlesAudioFocus(it) != false) }
+                    player2?.let { it.setAudioAttributes(attributes, crossfadeEngine?.handlesAudioFocus(it) != false) }
                     player?.let(::updateSpatialPlayback)
+                }
+        }
+
+        serviceScope.launch {
+            combine(audioEngine.spatialAudioMode, audioEngine.audioEngineState.map { it.spatialStrength }, ::Pair)
+                .distinctUntilChanged()
+                .collect { (mode, strength) ->
+                    val software = mode == SpatialAudioMode.STEREO_EFFECT
+                    val mix = strength.toFloat() / AudioEngine.MAX_VIRTUALIZER_STRENGTH
+                    firstPlayerEffects.spatialStrength = mix
+                    secondPlayerEffects.spatialStrength = mix
+                    firstPlayerEffects.spatialEnabled = software
+                    secondPlayerEffects.spatialEnabled = software
                 }
         }
     }
@@ -452,6 +497,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
             if (targetPlayer != player) return
+            if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) crossfadeEngine?.invalidatePreparedTrack()
             if (targetPlayer.playbackState == Player.STATE_ENDED) {
                 val nextIndex = targetPlayer.currentMediaItemIndex + 1
                 if (nextIndex < targetPlayer.mediaItemCount) {
@@ -492,10 +538,11 @@ class PlaybackService : MediaSessionService() {
         }
         
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            updateTrackGain(targetPlayer)
             if (targetPlayer != player) return
+            crossfadeEngine?.invalidatePreparedTrack()
             Log.d(TAG, "Track changed: ${mediaItem?.mediaMetadata?.title}")
 
-            updateTrackGain(targetPlayer)
             
             // ════════ TELEMETRY COLLECTION ════════
             val now = System.currentTimeMillis()
@@ -628,6 +675,7 @@ class PlaybackService : MediaSessionService() {
         
         override fun onRepeatModeChanged(repeatMode: Int) {
             if (targetPlayer != player) return
+            crossfadeEngine?.invalidatePreparedTrack()
             // Update custom layout to reflect new repeat mode
             val currentMediaItem = targetPlayer.currentMediaItem
             val songId = currentMediaItem?.mediaId.orEmpty()
@@ -683,12 +731,15 @@ class PlaybackService : MediaSessionService() {
                     }
                 }
                 val current = targetPlayer.currentMediaItem
-                if (targetPlayer == player && current?.mediaId == item.mediaId &&
+                if (current?.mediaId == item.mediaId &&
                     current.localConfiguration?.uri == item.localConfiguration?.uri
                 ) {
                     updateTrackGain(targetPlayer)
-                    playbackDiagnostics.onRendererFormat(item.mediaId, uri, format)
-                    audioEngine.updateFromExoPlayerFormat(format, item.mediaId)
+                    if (targetPlayer == player) {
+                        updateSpatialPlayback(targetPlayer)
+                        playbackDiagnostics.onRendererFormat(item.mediaId, uri, format)
+                        audioEngine.updateFromExoPlayerFormat(format, item.mediaId)
+                    }
                 }
             }
         }
@@ -943,6 +994,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        serviceReady.value = false
         android.util.Log.d(TAG, "onDestroy")
         skipSilenceJob?.cancel()
         transitionSettingsJob?.cancel()

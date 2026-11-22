@@ -59,9 +59,14 @@ fun AlbumArtThumbnail(
 
     // Candidate URL resolution for fallback handling
     val reduceMotion = com.sonicmusic.app.theme.shouldReduceMotion()
-    val candidateUrls = remember(imageUrl, highQuality) {
+    val displaySizePx = when {
+        targetSizePx <= 256 -> 256
+        targetSizePx <= 448 -> 448
+        else -> 640
+    }
+    val candidateUrls = remember(imageUrl, highQuality, displaySizePx) {
         if (highQuality) ThumbnailUrlUtils.buildCandidates(imageUrl)
-        else ThumbnailUrlUtils.buildDisplayCandidates(imageUrl)
+        else ThumbnailUrlUtils.buildDisplayCandidates(imageUrl, sizePx = displaySizePx)
     }
     var candidateIndex by remember(candidateUrls) { mutableIntStateOf(0) }
     val modelUrl = candidateUrls.getOrNull(candidateIndex) ?: imageUrl

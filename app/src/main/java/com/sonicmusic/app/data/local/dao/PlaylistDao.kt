@@ -27,6 +27,9 @@ interface PlaylistDao {
     """)
     fun observePlaylistPreviews(): Flow<List<PlaylistPreviewRow>>
 
+    @Query("SELECT remoteId FROM playlists WHERE remoteId IS NOT NULL")
+    fun observeRemoteIds(): Flow<List<String>>
+
     @Query("SELECT * FROM playlists WHERE id = :playlistId")
     suspend fun getPlaylistById(playlistId: Long): PlaylistEntity?
 

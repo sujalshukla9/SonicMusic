@@ -7301,8 +7301,7 @@ class YouTubeiService @Inject constructor(
 
     private fun normalizeArtistHeaderImage(url: String?): String? {
         val cleaned = url?.trim().orEmpty().takeIf { it.isNotEmpty() } ?: return null
-        val absolute = if (cleaned.startsWith("//")) " https:$cleaned" else cleaned
-        return ThumbnailUrlUtils.toHighQuality(absolute) ?: absolute
+        return if (cleaned.startsWith("//")) "https:$cleaned" else cleaned
     }
 
     private fun collectThumbnailCandidates(

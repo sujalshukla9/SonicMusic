@@ -271,20 +271,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     fun onDownloadedSongClick(download: DownloadedSong) {
-        val song = Song(
-            id = download.videoId,
-            title = download.title,
-            artist = download.artists,
-            duration = (download.durationMs / 1000).toInt(),
-            thumbnailUrl = download.thumbnailUrl
-        )
-        val file = java.io.File(download.localFilePath)
-        if (file.exists()) {
-            playerServiceConnection.playSong(song, download.localFilePath)
-        } else {
-            // Fallback to streaming
-            onSongClick(song)
-        }
+        playerServiceConnection.playDownloadedSong(download.toSong())
     }
 
     fun createPlaylist(name: String, description: String? = null) {

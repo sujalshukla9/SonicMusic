@@ -174,14 +174,12 @@ fun SearchScreen(
             )
 
             // Content
-            val isOnline = com.sonicmusic.app.shared.components.LocalIsOnline.current
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                 Column(
                     modifier = Modifier
                         .widthIn(max = Dimens.maxContentWidth)
                         .fillMaxSize()
                 ) {
-                    com.sonicmusic.app.shared.components.NoInternetBanner(isVisible = !isOnline)
                 val reduceMotion = shouldReduceMotion()
                 AnimatedContent(
                     targetState = searchState,

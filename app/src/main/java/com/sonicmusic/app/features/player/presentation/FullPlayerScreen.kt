@@ -393,7 +393,7 @@ fun FullPlayerScreen(
                     Spacer(modifier = Modifier.height(if (isCompactHeight) 8.dp else 16.dp))
                     // No internet banner
                     val isOnline = com.sonicmusic.app.shared.components.LocalIsOnline.current
-                    com.sonicmusic.app.shared.components.NoInternetBanner(isVisible = !isOnline)
+                    com.sonicmusic.app.shared.components.NoInternetBanner(isVisible = !isOnline, compact = true)
 
                     val windowSizeClass = LocalWindowSizeClass.current
                     val useLandscapeLayout = windowSizeClass.heightSizeClass == WindowHeightSizeClass.Compact ||

@@ -22,7 +22,8 @@ class YtmJsonCache @Inject constructor(@ApplicationContext context: Context) {
         fun isFresh(maxAge: Long): Boolean = System.currentTimeMillis() - checkedAt in 0L until maxAge
     }
 
-    private val root = File(context.noBackupFilesDir, "ytm")
+    // First use is inside an IO-dispatched read or write, not during ViewModel injection.
+    private val root by lazy { File(context.noBackupFilesDir, "ytm") }
     private val json = Json { ignoreUnknownKeys = true }
     private val lock = Mutex()
 

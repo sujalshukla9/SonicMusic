@@ -31,6 +31,9 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    companion object {
+        const val DEFAULT_NORMALIZE_VOLUME = false
+    }
 
     private object PreferencesKeys {
         val STREAM_QUALITY = intPreferencesKey("stream_quality") // legacy bitrate key
@@ -149,7 +152,7 @@ class SettingsDataStore @Inject constructor(
 
     val normalizeVolume: Flow<Boolean> = context.dataStore.data
         .map { preferences ->
-            preferences[PreferencesKeys.NORMALIZE_VOLUME] ?: true
+            preferences[PreferencesKeys.NORMALIZE_VOLUME] ?: DEFAULT_NORMALIZE_VOLUME
         }
 
     val gaplessPlayback: Flow<Boolean> = context.dataStore.data

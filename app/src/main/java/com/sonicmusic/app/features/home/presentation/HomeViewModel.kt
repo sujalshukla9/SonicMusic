@@ -6,7 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.R
 import com.sonicmusic.app.core.network.NetworkMonitor
-import com.sonicmusic.app.data.local.entity.DownloadStatus
+import com.sonicmusic.app.data.local.dao.DownloadedSongDao
+import com.sonicmusic.app.data.local.dao.PlaylistDao
 import com.sonicmusic.app.domain.model.CachedHomeFeed
 import com.sonicmusic.app.domain.model.CommunityPlaylist
 import com.sonicmusic.app.domain.model.HomeContent
@@ -20,7 +21,6 @@ import com.sonicmusic.app.domain.repository.HomeSessionRejectedException
 import com.sonicmusic.app.domain.repository.PlaylistRepository
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.home.domain.GetHomeContentUseCase
-import com.sonicmusic.app.features.library.data.DownloadRepository
 import com.sonicmusic.app.features.player.service.PlayerServiceConnection
 import com.sonicmusic.app.features.queue.data.QueueRepositoryImpl
 import com.sonicmusic.app.shared.components.pullrefresh.RefreshResult
@@ -33,11 +33,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -52,16 +54,20 @@ class HomeViewModel @Inject constructor(
     private val queueRepository: QueueRepositoryImpl,
     private val browseRepository: BrowseRepository,
     networkMonitor: NetworkMonitor,
-    downloadRepository: DownloadRepository,
+    downloadedSongDao: DownloadedSongDao,
+    playlistDao: PlaylistDao,
     private val playlistRepository: PlaylistRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     data class AccountNotice(val reconnect: Boolean, val showingPublicFeed: Boolean)
+    data class HomeUiState(
+        val content: HomeContent = HomeContent(),
+        val recentlyPlayed: List<Song> = emptyList(),
+        val isLoading: Boolean = true
+    )
 
-    private val _homeContent = MutableStateFlow(HomeContent())
+    private val loadedFeed = MutableStateFlow<HomeContent?>(null)
     private val playlistPicks = MutableStateFlow<List<Song>>(emptyList())
-    private val _isLoading = MutableStateFlow(true)
-    val isLoading = _isLoading.asStateFlow()
     private val _feedUnavailable = MutableStateFlow(false)
     val feedUnavailable = _feedUnavailable.asStateFlow()
     private val _accountNotice = MutableStateFlow<AccountNotice?>(null)
@@ -91,30 +97,29 @@ class HomeViewModel @Inject constructor(
 
     val isOnline = networkMonitor.isOnlineState
     val playbackCompleted = getHomeContentUseCase.playbackCompleted
-    val recentlyPlayed = getHomeContentUseCase.recentlyPlayed
-        .catch { Log.w(TAG, "Unable to read listening history", it) }
+    private val recentlyPlayed: StateFlow<List<Song>> = getHomeContentUseCase.recentlyPlayed
+        .catch {
+            Log.w(TAG, "Unable to read listening history", it)
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val allowGuestPicks = MutableStateFlow(false)
-    val homeContent = combine(_homeContent, recentlyPlayed, playlistPicks, allowGuestPicks) { feed, history, picks, guest ->
-        if (guest) withQuickPicks(feed, history, picks) else feed
+    val homeUiState = combine(loadedFeed, recentlyPlayed, playlistPicks, allowGuestPicks) { feed, history, picks, guest ->
+        if (feed == null) HomeUiState()
+        else HomeUiState(if (guest) withQuickPicks(feed, history, picks) else feed, history, isLoading = false)
     }.distinctUntilChanged()
         .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.Eagerly, HomeContent())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState())
 
-    val downloadedSongIds = downloadRepository.getDownloadedSongs()
-        .map { rows ->
-            buildSet {
-                for (row in rows) {
-                    if (row.status == DownloadStatus.COMPLETED) add(row.videoId)
-                }
-            }
-        }
+    private val completedSongIds = downloadedSongDao.observeCompletedSongIds()
+    val downloadedSongIds = completedSongIds
+        .map { it.toSet() }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
-    val savedPlaylistRemoteIds = playlistRepository.getAllPlaylists()
-        .map { rows -> buildSet { rows.mapNotNullTo(this) { it.remoteId } } }
+    val savedPlaylistRemoteIds = playlistDao.observeRemoteIds()
+        .map { it.toSet() }
         .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
@@ -123,6 +128,7 @@ class HomeViewModel @Inject constructor(
             getHomeContentUseCase.scopes.collect { newScope ->
                 loadJob?.cancel()
                 pageJob?.cancel()
+                loadedFeed.value = null
                 resetFallbackPicks()
                 loadJob = null
                 pageJob = null
@@ -132,7 +138,6 @@ class HomeViewModel @Inject constructor(
                 _accountNotice.value = null
                 deferredRefresh = null
                 consumedTokens.clear()
-                _homeContent.value = HomeContent()
                 allowGuestPicks.value = !newScope.isPersonalized
                 _isLoadingMore.value = false
                 _manualPagination.value = false
@@ -150,7 +155,7 @@ class HomeViewModel @Inject constructor(
     fun onFeedScrollChanged(isScrolling: Boolean, isAtTop: Boolean) {
         scrolling = isScrolling
         atTop = isAtTop
-        if (canApplyRefresh()) deferredRefresh?.let(::publishFirstPage)
+        if (canApplyRefresh()) deferredRefresh?.let { publishFirstPage(it) }
     }
 
     private fun canApplyRefresh() = !scrolling && (atTop || consumedTokens.isEmpty())
@@ -174,13 +179,17 @@ class HomeViewModel @Inject constructor(
         if (loadJob?.isActive == true || (!force && pageJob?.isActive == true)) return
         val previousPageJob = pageJob
         loadJob = viewModelScope.launch {
-            _isLoading.value = firstPage == null
             _feedUnavailable.value = false
             var success = false
             try {
                 previousPageJob?.cancelAndJoin()
                 if (firstPage == null) {
-                    getHomeContentUseCase.cached(activeScope)?.let { restoreCachedFeed(it) }
+                    getHomeContentUseCase.cached(activeScope)?.let { cached ->
+                        restoreCachedFeed(cached)
+                        if (!activeScope.isPersonalized && isOnline.value) {
+                            loadFallbackPicks(cached.firstPage, activeScope, force)
+                        }
+                    }
                 }
                 if (!isOnline.value) {
                     if (activeScope.isPersonalized && firstPage == null) showAccountFallback(activeScope, reconnect = false)
@@ -195,31 +204,38 @@ class HomeViewModel @Inject constructor(
                     val switchingToAccount = showingPublicFeed
                     val previous = firstPage.takeUnless { switchingToAccount }
                     val reconciled = withContext(Dispatchers.Default) {
-                        if (fresh == previous) null else reuseShelves(fresh, previous)
+                        if (!force && fresh == previous) null else reuseShelves(fresh, previous)
                     }
                     if (reconciled != null) {
-                        if (!switchingToAccount && !canApplyRefresh() && _homeContent.value.shelves.isNotEmpty()) {
+                        if (!switchingToAccount && previous != null && previous.shelves == reconciled.shelves &&
+                            (force || previous.continuation != reconciled.continuation)
+                        ) {
+                            // Restart the cursor chain without removing shelves the user can already see.
+                            publishFirstPage(reconciled, forcePicks = force, shelves = loadedFeed.value?.shelves ?: reconciled.shelves)
+                        } else if (!switchingToAccount && !canApplyRefresh() && !loadedFeed.value?.shelves.isNullOrEmpty()) {
                             deferredRefresh = reconciled
                         } else {
                             if (switchingToAccount) {
                                 resetFallbackPicks()
                                 showingPublicFeed = false
                             }
-                            publishFirstPage(reconciled)
+                            publishFirstPage(reconciled, forcePicks = force)
                         }
+                    } else {
+                        deferredRefresh = null
+                        if (!activeScope.isPersonalized) loadFallbackPicks(fresh, activeScope, force)
                     }
                     _accountNotice.value = null
-                    if (!activeScope.isPersonalized) loadFallbackPicks(activeScope, force)
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 if (activeScope.isPersonalized) showAccountFallback(activeScope, e is HomeSessionRejectedException)
-                _feedUnavailable.value = _homeContent.value.shelves.isEmpty()
+                _feedUnavailable.value = loadedFeed.value?.shelves.isNullOrEmpty()
                 Log.w(TAG, "Unable to refresh Home", e)
             } finally {
                 if (scope == activeScope) {
-                    _isLoading.value = false
+                    if (loadedFeed.value == null) loadedFeed.value = HomeContent()
                     if (_isRefreshing.value) {
                         _refreshResult.value = if (success) RefreshResult.SUCCESS else RefreshResult.ERROR
                         _isRefreshing.value = false
@@ -232,7 +248,7 @@ class HomeViewModel @Inject constructor(
     private suspend fun showAccountFallback(activeScope: HomeFeedScope, reconnect: Boolean) {
         if (scope != activeScope) return
         // A cached account page still belongs to the connected account, even if refresh fails.
-        if (_homeContent.value.shelves.isEmpty() && _homeContent.value.continuation == null) {
+        if (loadedFeed.value?.shelves.isNullOrEmpty() && loadedFeed.value?.continuation == null) {
             try {
                 val cached = getHomeContentUseCase.cached(activeScope.publicFeed())
                 val publicFeed = cached?.takeIf {
@@ -285,15 +301,22 @@ class HomeViewModel @Inject constructor(
         return feed.copy(shelves = listOf(shelf) + feed.shelves)
     }
 
-    private fun loadFallbackPicks(activeScope: HomeFeedScope, force: Boolean) {
-        val shelves = _homeContent.value.shelves
+    private fun loadFallbackPicks(feed: HomeContent, activeScope: HomeFeedScope, force: Boolean) {
+        val shelves = feed.shelves
         if (shelves.any { shelf -> shelf.kind == HomeShelf.Kind.QuickPicks ||
             shelf.items.any { it.playableSong != null }
-        }) return
+        }) {
+            resetFallbackPicks()
+            return
+        }
         val playlistId = shelves.asSequence().flatMap { it.items.asSequence() }
             .filterIsInstance<HomeShelfItem.Playlist>()
-            .firstOrNull()?.playlist?.browseId ?: return
-        if (picksJob?.isActive == true || (!force && picksSourceId == playlistId)) return
+            .firstOrNull()?.playlist?.browseId ?: run {
+                resetFallbackPicks()
+                return
+            }
+        if (picksSourceId == playlistId && (picksJob?.isActive == true || !force)) return
+        resetFallbackPicks()
         picksSourceId = playlistId
         val usePublicFeed = showingPublicFeed
         picksJob = viewModelScope.launch {
@@ -316,13 +339,17 @@ class HomeViewModel @Inject constructor(
         return fresh.copy(shelves = fresh.shelves.map { shelf -> oldShelves[shelf.id]?.takeIf { it == shelf } ?: shelf })
     }
 
-    private fun publishFirstPage(content: HomeContent) {
+    private fun publishFirstPage(
+        content: HomeContent,
+        forcePicks: Boolean = false,
+        shelves: List<HomeShelf> = content.shelves
+    ) {
         firstPage = content
         deferredRefresh = null
         consumedTokens.clear()
         _manualPagination.value = false
-        _homeContent.value = content
-        _isLoading.value = false
+        loadedFeed.value = if (shelves === content.shelves) content else content.copy(shelves = shelves)
+        scope?.takeUnless { it.isPersonalized }?.let { loadFallbackPicks(content, it, forcePicks) }
     }
 
     private suspend fun restoreCachedFeed(cached: CachedHomeFeed) {
@@ -340,24 +367,27 @@ class HomeViewModel @Inject constructor(
         consumedTokens.clear()
         consumedTokens.addAll(tokens)
         _manualPagination.value = false
-        _homeContent.value = content
-        _isLoading.value = false
+        loadedFeed.value = content
     }
 
     fun loadMoreHomeContent(userRequested: Boolean = false) {
         val activeScope = scope ?: return
         if (pageJob?.isActive == true || _isRefreshing.value || !isOnline.value) return
         if (_manualPagination.value && !userRequested) return
-        if (_homeContent.value.continuation == null) return
+        if (loadedFeed.value?.continuation == null) return
         val initialLoad = loadJob
 
         pageJob = viewModelScope.launch {
             initialLoad?.join()
             if (scope != activeScope || !isOnline.value) return@launch
+            deferredRefresh?.let { refresh ->
+                if (!userRequested) return@launch
+                publishFirstPage(refresh)
+            }
             _isLoadingMore.value = true
             try {
                 repeat(MAX_PAGES_PER_LOAD) {
-                    val current = _homeContent.value
+                    val current = loadedFeed.value ?: return@launch
                     val cursor = current.continuation ?: return@launch
                     if (cursor.token in consumedTokens) return@launch
 
@@ -366,10 +396,10 @@ class HomeViewModel @Inject constructor(
                         val result = appendPage(current, page)
                         result to (result.shelves != current.shelves)
                     }
-                    if (scope != activeScope || _homeContent.value !== current) return@launch
+                    if (scope != activeScope || loadedFeed.value !== current) return@launch
                     consumedTokens += cursor.token
                     val next = merged.continuation?.takeUnless { it.token in consumedTokens }
-                    _homeContent.value = merged.copy(continuation = next)
+                    loadedFeed.value = merged.copy(continuation = next)
                     if (changed || next == null) {
                         _manualPagination.value = false
                         return@launch
@@ -383,7 +413,7 @@ class HomeViewModel @Inject constructor(
                 if (e is HomeSessionRejectedException) {
                     _accountNotice.value = AccountNotice(reconnect = true, showingPublicFeed = false)
                 }
-                if (userRequested) _error.value = "Couldn’t load more from YouTube Music"
+                if (userRequested) _error.value = context.getString(R.string.home_load_more_error)
                 Log.w(TAG, "Unable to load the next Home page", e)
             } finally {
                 if (scope == activeScope) _isLoadingMore.value = false
@@ -630,8 +660,12 @@ class HomeViewModel @Inject constructor(
      *
      * @return true if a section had songs and playback was started.
      */
-    fun playSection(section: String, shuffle: Boolean = false): Boolean {
-        val songs = getSongsForSection(section).filter(::canPlay)
+    suspend fun playSection(section: String, shuffle: Boolean = false): Boolean {
+        val sectionSongs = getSongsForSection(section)
+        val songs = if (isOnline.value) sectionSongs else {
+            val downloaded = readCompletedSongIds()
+            sectionSongs.filter { it.id.deviceLocalSongId() != null || it.id in downloaded }
+        }
         if (songs.isEmpty()) {
             _error.value = "No playable songs available in this section"
             return false
@@ -640,13 +674,8 @@ class HomeViewModel @Inject constructor(
         return true
     }
 
-    /**
-     * Handle section song click with queue context for richer playback.
-     *
-     * Falls back to radio queue if the section cannot be resolved.
-     */
-    fun onSectionSongClick(@Suppress("UNUSED_PARAMETER") section: String, song: Song): Boolean {
-        if (!canPlay(song)) {
+    suspend fun onSectionSongClick(song: Song): Boolean {
+        if (!isOnline.value && song.id.deviceLocalSongId() == null && song.id !in readCompletedSongIds()) {
             _error.value = "This song is unavailable offline"
             return false
         }
@@ -655,27 +684,45 @@ class HomeViewModel @Inject constructor(
         return true
     }
 
-    private fun canPlay(song: Song): Boolean = isOnline.value ||
-        song.id.deviceLocalSongId() != null || song.id in downloadedSongIds.value
+    private suspend fun readCompletedSongIds(): Set<String> {
+        return try {
+            completedSongIds.first().toHashSet()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to check completed downloads", e)
+            emptySet()
+        }
+    }
 
     fun getItemsForSection(section: String): List<HomeShelfItem> =
-        if (section == SECTION_RECENTLY_PLAYED) recentlyPlayed.value.map { HomeShelfItem.Media(it) }
-        else homeContent.value.shelves.firstOrNull { it.id == section }?.items.orEmpty()
+        if (section == SECTION_RECENTLY_PLAYED) homeUiState.value.recentlyPlayed.map { HomeShelfItem.Media(it) }
+        else homeUiState.value.content.shelves.firstOrNull { it.id == section }?.items.orEmpty()
 
     fun getSongsForSection(section: String): List<Song> =
-        if (section == SECTION_RECENTLY_PLAYED) recentlyPlayed.value
-        else homeContent.value.shelves.firstOrNull { it.id == section }?.songs().orEmpty()
+        if (section == SECTION_RECENTLY_PLAYED) homeUiState.value.recentlyPlayed
+        else homeUiState.value.content.shelves.firstOrNull { it.id == section }?.songs().orEmpty()
 
     fun getSectionTitle(section: String): String =
         if (section == SECTION_RECENTLY_PLAYED) {
-            if (homeContent.value.shelves.any { it.kind == HomeShelf.Kind.ListenAgain }) {
+            if (homeUiState.value.content.shelves.any { shelf ->
+                shelf.kind == HomeShelf.Kind.ListenAgain && shelf.items.any { it.playableSong != null }
+            }) {
                 context.getString(R.string.home_recently_played)
             } else context.getString(R.string.home_listen_again)
-        } else homeContent.value.shelves.firstOrNull { it.id == section }?.title.orEmpty()
+        } else homeUiState.value.content.shelves.firstOrNull { it.id == section }?.title.orEmpty()
 
 
-    fun clearError() {
-        _error.value = null
+    fun clearError(message: String) {
+        _error.compareAndSet(message, null)
+    }
+
+    fun retryHomeError(message: String) {
+        if (message == context.getString(R.string.home_load_more_error)) {
+            loadMoreHomeContent(userRequested = true)
+        } else {
+            loadHomeContent()
+        }
     }
 
     fun clearRefreshResult() {

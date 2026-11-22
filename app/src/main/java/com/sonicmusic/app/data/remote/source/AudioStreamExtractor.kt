@@ -12,6 +12,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
@@ -71,6 +72,8 @@ class AudioStreamExtractor @Inject constructor(
 
     companion object {
         private const val TAG = "SonicStream"
+        private const val DOWNLOAD_PROBE_WINDOW_MS = 1_500L
+        private const val PREFERRED_DOWNLOAD_CLIENT_COUNT = 2
 
         // YouTube InnerTube API endpoint
         private const val YOUTUBE_API = "https://www.youtube.com/youtubei/v1/player"
@@ -144,6 +147,29 @@ class AudioStreamExtractor @Inject constructor(
         videoId: String,
         forceRefresh: Boolean = false,
         excludeUrls: Set<String> = emptySet()
+    ): Result<List<AudioStreamCandidate>> = discoverCandidates(videoId, forceRefresh, excludeUrls)
+
+    internal suspend fun extractDownloadCandidate(
+        videoId: String,
+        quality: StreamQuality,
+        forceRefresh: Boolean = false,
+        excludeUrls: Set<String> = emptySet()
+    ): Result<AudioStreamCandidate> =
+        discoverCandidates(videoId, forceRefresh, excludeUrls, downloadQuality = quality.takeIf { excludeUrls.isEmpty() }).mapCatching { candidates ->
+            checkNotNull(audioQualitySelector.selectBestCandidate(candidates, quality, excludeUrls)).candidate
+        }
+
+    private data class Discovery(
+        val primary: Result<List<AudioStreamCandidate>>,
+        val alternatives: List<Result<List<AudioStreamCandidate>>>,
+        val complete: Boolean = true
+    )
+
+    private suspend fun discoverCandidates(
+        videoId: String,
+        forceRefresh: Boolean,
+        excludeUrls: Set<String>,
+        downloadQuality: StreamQuality? = null
     ): Result<List<AudioStreamCandidate>> = withContext(Dispatchers.IO) {
         val observed = streamCache.get(videoId)
         val lock = extractionLocks[(videoId.hashCode() and Int.MAX_VALUE) % extractionLocks.size]
@@ -156,9 +182,30 @@ class AudioStreamExtractor @Inject constructor(
                 return@withLock Result.success(cached.streams)
             }
 
-            val (primary, alternatives) = coroutineScope {
-                val alternatives = async { probeAlternatives(videoId) }
-                newPipeService.extractAudioCandidates(videoId) to alternatives.await()
+            val (primary, alternatives, complete) = coroutineScope {
+                val preferred = if (downloadQuality == null) emptyList() else {
+                    fallbackClients.take(PREFERRED_DOWNLOAD_CLIENT_COUNT).map { client ->
+                        async { extractCandidatesWithClient(videoId, client) }
+                    }
+                }
+                if (downloadQuality != null) {
+                    withTimeoutOrNull(DOWNLOAD_PROBE_WINDOW_MS) { preferred.awaitAll() }
+                    val ready = preferred.filter { it.isCompleted }.map { it.await() }
+                    if (ready.any { response ->
+                            response.getOrNull()?.any { candidate ->
+                                candidate.meetsDownloadTarget(downloadQuality) &&
+                                    audioQualitySelector.isCandidateUsable(candidate, excludeUrls)
+                            } == true
+                        }
+                    ) {
+                        preferred.forEach { it.cancel() }
+                        return@coroutineScope Discovery(Result.success(emptyList()), ready, complete = false)
+                    }
+                }
+                val remaining = fallbackClients.drop(preferred.size).map { client ->
+                    async { extractCandidatesWithClient(videoId, client) }
+                }
+                Discovery(newPipeService.extractAudioCandidates(videoId), (preferred + remaining).awaitAll())
             }
             val discovered = (primary.getOrNull().orEmpty() + alternatives.flatMap { it.getOrNull().orEmpty() })
                 .filter { audioQualitySelector.isCandidateUsable(it, emptySet()) }
@@ -176,14 +223,22 @@ class AudioStreamExtractor @Inject constructor(
                 )
             }
 
-            val cacheLifetime = if (alternatives.any { it.isSuccess }) 900_000L else 60_000L
-            streamCache.put(videoId, CachedCandidates(discovered, System.currentTimeMillis() + cacheLifetime))
+            if (complete) {
+                val cacheLifetime = if (alternatives.any { it.isSuccess }) 900_000L else 60_000L
+                streamCache.put(videoId, CachedCandidates(discovered, System.currentTimeMillis() + cacheLifetime))
+            }
             Result.success(discovered)
         }
     }
 
-    private suspend fun probeAlternatives(videoId: String): List<Result<List<AudioStreamCandidate>>> = coroutineScope {
-        fallbackClients.map { client -> async { extractCandidatesWithClient(videoId, client) } }.awaitAll()
+    private fun AudioStreamCandidate.meetsDownloadTarget(quality: StreamQuality): Boolean {
+        if (!isAudioOnly) return false
+        val nominalKbps = AudioStreamInfo.nominalBitrateForItag(itag) ?: 0
+        val kbps = (bitrateBps / 1_000).takeIf { it > 0 } ?: nominalKbps.toLong()
+        return when (quality) {
+            StreamQuality.LOW, StreamQuality.MEDIUM -> kotlin.math.abs(kbps - quality.bitrate) <= 16
+            StreamQuality.HIGH, StreamQuality.BEST -> isLossless() || nominalKbps >= 160 || kbps >= 160
+        }
     }
 
     /**

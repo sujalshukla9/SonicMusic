@@ -39,6 +39,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Home
@@ -100,6 +103,7 @@ import com.sonicmusic.app.features.library.presentation.RecentlyPlayedScreen
 import com.sonicmusic.app.features.player.presentation.FullPlayerScreen
 import com.sonicmusic.app.features.player.presentation.MiniPlayer
 import com.sonicmusic.app.features.settings.presentation.SettingsScreen
+import com.sonicmusic.app.features.settings.presentation.NotificationSettingsScreen
 import com.sonicmusic.app.features.search.presentation.SearchScreen
 import com.sonicmusic.app.domain.model.ChartKind
 import com.sonicmusic.app.features.charts.presentation.ChartsScreen
@@ -111,6 +115,7 @@ import com.sonicmusic.app.theme.SonicMusicTheme
 import com.sonicmusic.app.features.home.presentation.HomeViewModel
 import com.sonicmusic.app.shared.components.NoInternetBanner
 import com.sonicmusic.app.shared.components.LocalIsOnline
+import com.sonicmusic.app.shared.components.ExpressiveSnackbarHost
 import dagger.hilt.android.AndroidEntryPoint
 
 import androidx.lifecycle.lifecycleScope
@@ -216,6 +221,7 @@ object SubScreens {
     const val ARTISTS = "library/artists"
     const val ARTIST_DETAIL = "library/artist/{artistName}?browseId={browseId}"
     const val SETTINGS = "settings"
+    const val NOTIFICATIONS = "settings/notifications"
     const val TOP_SONGS = "charts/songs"
     const val TOP_ARTISTS = "charts/artists"
     const val TOP_ALBUMS = "charts/albums"
@@ -319,14 +325,13 @@ fun SonicMusicApp(
 
                 // Global Error Handling (Player)
                 val playerViewModel: com.sonicmusic.app.features.player.presentation.PlayerViewModel = androidx.hilt.navigation.compose.hiltViewModel()
-                val view = androidx.compose.ui.platform.LocalView.current
-                androidx.compose.runtime.DisposableEffect(view, playerViewModel) {
-                    val connect = Runnable { playerViewModel.connectToPlayback() }
-                    val firstDraw = androidx.core.view.OneShotPreDrawListener.add(view) { view.post(connect) }
-                    onDispose {
-                        firstDraw.removeListener()
-                        view.removeCallbacks(connect)
+                androidx.compose.runtime.LaunchedEffect(playerViewModel) {
+                    com.sonicmusic.app.features.player.service.PlaybackService.isReady.collect { ready ->
+                        if (ready) playerViewModel.connectToPlayback()
                     }
+                }
+                androidx.compose.runtime.LaunchedEffect(playerViewModel, showFullPlayer) {
+                    if (showFullPlayer) playerViewModel.connectToPlayback()
                 }
                 val currentSong by playerViewModel.currentSong.collectAsStateWithLifecycle(initialValue = null)
                 val playbackError by playerViewModel.playbackError.collectAsStateWithLifecycle(initialValue = null)
@@ -568,7 +573,7 @@ fun SonicMusicApp(
                                 }
                             }
                         },
-                        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) }
+                        snackbarHost = { ExpressiveSnackbarHost(snackbarHostState) }
                     ) { paddingValues ->
                         MainScaffoldContent(
                             navController = navController,
@@ -583,7 +588,10 @@ fun SonicMusicApp(
                         )
                     }
                 }
-                
+                if (isMedium || isExpanded) {
+                    ExpressiveSnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
+                }
+
                 // Full Player - modal overlay
                 val sharesPlayerArtwork = !reduceMotion && currentSong != null &&
                     (isMedium || isExpanded || navbarStyle == NavbarStyle.CLASSICAL || showBottomNav)
@@ -683,10 +691,16 @@ fun MainScaffoldContent(
         }}
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Offline banner at top of all screens
-            NoInternetBanner(isVisible = !isOnline)
-            
-            Box(modifier = Modifier.weight(1f)) {
+            NoInternetBanner(
+                isVisible = !isOnline,
+                modifier = if (isCompact) Modifier.statusBarsPadding() else Modifier
+            )
+
+            Box(
+                modifier = Modifier.weight(1f).then(
+                    if (isCompact && !isOnline) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier
+                )
+            ) {
         NavHost(
             navController = navController,
             startDestination = Screen.Home.route,
@@ -844,7 +858,14 @@ fun MainScaffoldContent(
                     bottomPadding = bottomPadding,
                     onNavigateBack = { navController.popBackStack() },
                     viewModel = settingsViewModel,
-                    playerViewModel = playerViewModel
+                    playerViewModel = playerViewModel,
+                    onOpenNotifications = { navController.navigate(SubScreens.NOTIFICATIONS) }
+                )
+            }
+            composable(SubScreens.NOTIFICATIONS) {
+                NotificationSettingsScreen(
+                    bottomPadding = bottomPadding,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             

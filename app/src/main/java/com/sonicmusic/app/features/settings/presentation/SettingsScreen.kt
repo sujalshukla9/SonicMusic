@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -54,8 +55,12 @@ import com.sonicmusic.app.theme.LocalThumbnailShape
 import com.sonicmusic.app.theme.toComposeShape
 import com.sonicmusic.app.theme.Dimens
 import com.sonicmusic.app.shared.components.AlbumArtThumbnail
+import com.sonicmusic.app.shared.components.ExpressiveAlertDialog
+import com.sonicmusic.app.shared.components.ExpressiveSnackbarHost
 import com.sonicmusic.app.features.player.presentation.PlayerViewModel
 import com.sonicmusic.app.features.settings.presentation.SettingsViewModel
+import com.sonicmusic.app.R
+import com.sonicmusic.app.core.updater.UpdateDownloader
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -73,7 +78,8 @@ fun SettingsScreen(
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp,
     onNavigateBack: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
-    playerViewModel: PlayerViewModel = hiltViewModel()
+    playerViewModel: PlayerViewModel = hiltViewModel(),
+    onOpenNotifications: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -110,8 +116,6 @@ fun SettingsScreen(
     
     // Playback States
     val normalizeVolume by viewModel.normalizeVolume.collectAsStateWithLifecycle()
-    val balancedEqEnabled by viewModel.balancedEqEnabled.collectAsStateWithLifecycle()
-    val equalizerAvailable by viewModel.equalizerAvailable.collectAsStateWithLifecycle()
     val gaplessPlayback by viewModel.gaplessPlayback.collectAsStateWithLifecycle()
     val crossfadeDuration by viewModel.crossfadeDuration.collectAsStateWithLifecycle()
     val skipSilence by viewModel.skipSilence.collectAsStateWithLifecycle()
@@ -126,6 +130,7 @@ fun SettingsScreen(
     
     // Update States
     val appUpdateState by viewModel.appUpdateState.collectAsStateWithLifecycle()
+    val awaitingUpdateConfirmation by viewModel.awaitingUpdateConfirmation.collectAsStateWithLifecycle()
     
     var activeSheet by remember { mutableStateOf(SettingsSheet.None) }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
@@ -135,7 +140,7 @@ fun SettingsScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         contentWindowInsets = WindowInsets(0),
         containerColor = colorScheme.surface,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { ExpressiveSnackbarHost(snackbarHostState, Modifier.padding(bottom = bottomPadding)) },
         topBar = {
             MediumTopAppBar(
                 title = { ScreenTitle("Settings") },
@@ -326,18 +331,9 @@ fun SettingsScreen(
                 ) {
                     SettingsSwitchItem(
                         title = "Normalize Volume",
-                        subtitle = "Use streaming loudness data or ReplayGain tags for more consistent volume",
+                        subtitle = "Reduce loud tracks using loudness data or measured playback levels",
                         checked = normalizeVolume,
                         onCheckedChange = { viewModel.setNormalizeVolume(it) }
-                    )
-                    SettingsDivider()
-                    SettingsSwitchItem(
-                        title = "Balanced EQ",
-                        subtitle = if (equalizerAvailable) "Gentle bass and vocal presence with clipping headroom"
-                            else "Device equalizer is unavailable",
-                        checked = balancedEqEnabled,
-                        enabled = equalizerAvailable,
-                        onCheckedChange = viewModel::setBalancedEq
                     )
                     SettingsDivider()
                     SettingsSwitchItem(
@@ -379,6 +375,7 @@ fun SettingsScreen(
                         SpatialAudioMode.WAITING -> "Available when a supported track starts"
                         SpatialAudioMode.SYSTEM -> "System Spatializer on ${audioCapability.currentOutputRouteName}"
                         SpatialAudioMode.VIRTUALIZER -> "Device virtualization on ${audioCapability.currentOutputRouteName}"
+                        SpatialAudioMode.STEREO_EFFECT -> "Stereo spatial effect"
                         SpatialAudioMode.UNAVAILABLE -> "Unavailable for the current track or output"
                     }
                     SettingsSwitchItem(
@@ -506,18 +503,18 @@ fun SettingsScreen(
                     )
                     SettingsDivider()
                     SettingsActionItem(
-                        title = "Check for Updates",
-                        subtitle = appUpdateState.statusText,
+                        title = if (awaitingUpdateConfirmation) stringResource(R.string.update_continue_installation) else "Check for Updates",
+                        subtitle = if (awaitingUpdateConfirmation) UpdateDownloader.CONFIRMATION_REQUIRED else appUpdateState.statusText,
                         icon = Icons.Rounded.Refresh,
                         onClick = {
-                            if (appUpdateState.isUpdateAvailable && !appUpdateState.downloadUrl.isNullOrBlank()) {
+                            if (awaitingUpdateConfirmation || (appUpdateState.isUpdateAvailable && !appUpdateState.downloadUrl.isNullOrBlank())) {
                                 viewModel.downloadUpdate()
                             } else {
                                 viewModel.checkForUpdates()
                             }
                         },
                         trailingContent = {
-                            if (appUpdateState.isChecking || appUpdateState.isDownloading) {
+                            if (!awaitingUpdateConfirmation && (appUpdateState.isChecking || appUpdateState.isDownloading)) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(20.dp),
                                     strokeWidth = 2.dp
@@ -531,6 +528,13 @@ fun SettingsScreen(
                                 )
                             }
                         }
+                    )
+                    SettingsDivider()
+                    SettingsActionItem(
+                        title = stringResource(R.string.notification_settings_title),
+                        subtitle = stringResource(R.string.notification_settings_summary),
+                        icon = Icons.Rounded.Notifications,
+                        onClick = onOpenNotifications
                     )
                 }
             }
@@ -797,17 +801,20 @@ fun SettingsScreen(
                                     }
                                 },
                                 singleLine = true,
-                                shape = RoundedCornerShape(12.dp)
+                                shape = MaterialTheme.shapes.large
                             )
 
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .heightIn(max = 420.dp)
+                                    .heightIn(max = 420.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 item {
                                     OptionItem(
-                                        text = "🌐  Auto-detect (Network & Session)",
+                                        text = stringResource(R.string.settings_region_auto),
+                                        subtitle = stringResource(R.string.settings_region_auto_summary),
+                                        icon = Icons.Rounded.Public,
                                         selected = !isRegionManual,
                                         onClick = {
                                             viewModel.setAutoDetectRegion()
@@ -894,20 +901,19 @@ private fun YouTubeAccountSettings(viewModel: YouTubeAccountViewModel) {
     }
 
     if (showDisconnect) {
-        AlertDialog(
-            onDismissRequest = { showDisconnect = false },
-            title = { Text("Disconnect YouTube Music?") },
-            text = { Text("This removes the synced playlists from SonicMusic.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDisconnect = false
-                    viewModel.disconnect()
-                }) { Text("Disconnect") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDisconnect = false }) { Text("Cancel") }
+        ExpressiveAlertDialog(
+            icon = Icons.Rounded.LinkOff,
+            title = "Disconnect YouTube Music?",
+            confirmLabel = "Disconnect",
+            dismissLabel = "Cancel",
+            onDismiss = { showDisconnect = false },
+            onConfirm = {
+                showDisconnect = false
+                viewModel.disconnect()
             }
-        )
+        ) {
+            Text("This removes the synced playlists from SonicMusic.")
+        }
     }
 }
 
@@ -948,47 +954,42 @@ private fun YouTubePlaybackSettings(viewModel: YouTubePlaybackViewModel = hiltVi
     if (showImport) {
         var cookie by remember { mutableStateOf("") }
         var index by remember { mutableStateOf("0") }
-        AlertDialog(
-            onDismissRequest = { showImport = false },
-            title = { Text("Connect playback session") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Paste the Cookie header from your own signed-in YouTube Music session. SonicMusic encrypts it on this device.")
-                    OutlinedTextField(
-                        value = cookie,
-                        onValueChange = { if (it.length <= 16_384) cookie = it },
-                        label = { Text("YouTube Music Cookie header") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = index,
-                        onValueChange = { if (it.length <= 9 && it.all(Char::isDigit)) index = it },
-                        label = { Text("Google account index") },
-                        supportingText = { Text("Use 0 for the first account.") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = cookie.isNotBlank() && index.isNotBlank(),
-                    onClick = {
-                        viewModel.connect(cookie, index)
-                        cookie = ""
-                        showImport = false
-                    },
-                ) { Text("Connect") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showImport = false }) { Text("Cancel") }
+        ExpressiveAlertDialog(
+            icon = Icons.Rounded.Headphones,
+            title = "Connect playback session",
+            confirmLabel = "Connect",
+            dismissLabel = "Cancel",
+            confirmEnabled = cookie.isNotBlank() && index.isNotBlank(),
+            onDismiss = { showImport = false },
+            onConfirm = {
+                viewModel.connect(cookie, index)
+                cookie = ""
+                showImport = false
             },
             properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn)
-        )
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Paste the Cookie header from your own signed-in YouTube Music session. SonicMusic encrypts it on this device.")
+                OutlinedTextField(
+                    value = cookie,
+                    onValueChange = { if (it.length <= 16_384) cookie = it },
+                    label = { Text("YouTube Music Cookie header") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = index,
+                    onValueChange = { if (it.length <= 9 && it.all(Char::isDigit)) index = it },
+                    label = { Text("Google account index") },
+                    supportingText = { Text("Use 0 for the first account.") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
     }
 }
 
@@ -1159,10 +1160,14 @@ private fun SettingsSliderItem(
 private fun OptionItem(
     text: String,
     selected: Boolean,
+    subtitle: String? = null,
+    icon: ImageVector? = null,
     onClick: () -> Unit
 ) {
     ListItem(
         headlineContent = { Text(text, fontWeight = FontWeight.Medium) },
+        supportingContent = subtitle?.let { { Text(it) } },
+        leadingContent = icon?.let { { Icon(it, contentDescription = null) } },
         trailingContent = {
             if (selected) {
                 Icon(
@@ -1176,7 +1181,7 @@ private fun OptionItem(
             containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
             headlineColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface
         ),
-        modifier = Modifier.pressable(onClick = onClick)
+        modifier = Modifier.clip(MaterialTheme.shapes.large).pressable(onClick = onClick)
     )
 }
 

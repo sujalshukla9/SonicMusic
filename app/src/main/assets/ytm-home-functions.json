@@ -11,6 +11,9 @@
     "quick_picks": {
       "titles": ["Quick picks"],
       "shelfIds": ["0d1375f3-e635-403a-817b-9b18af32c6d4"]
+    },
+    "forgotten_favorites": {
+      "titles": ["Forgotten favorites", "Forgotten favourites"]
     }
   },
   "functions": {

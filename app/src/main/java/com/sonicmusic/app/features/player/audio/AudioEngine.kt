@@ -34,7 +34,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.math.exp
-import kotlin.math.roundToInt
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -79,16 +78,11 @@ class AudioEngine @Inject constructor(
 ) {
     companion object {
         private const val TAG = "AudioEngine"
-        const val BALANCED_EQ = "balanced"
         
         // ═══════════════════════════════════════════════════════════
         // PREFERENCE KEYS
         // ═══════════════════════════════════════════════════════════
         
-        private val KEY_CROSSFADE_ENABLED = booleanPreferencesKey("crossfade_enabled")
-        private val KEY_CROSSFADE_DURATION = intPreferencesKey("crossfade_duration_ms")
-        private val KEY_SOUND_CHECK = booleanPreferencesKey("sound_check_enabled")
-
         private val KEY_SPATIAL_AUDIO = booleanPreferencesKey("spatial_audio_enabled")
         private val KEY_SPATIAL_STRENGTH = intPreferencesKey("spatial_strength")
         private val KEY_SPATIAL_MIGRATED = booleanPreferencesKey("spatial_migrated_v1")
@@ -104,12 +98,8 @@ class AudioEngine @Inject constructor(
         private val KEY_DOWNLOAD_QUALITY_TIER = stringPreferencesKey("download_quality_tier")
         
         // Default Values
-        const val DEFAULT_CROSSFADE_DURATION = 3000
         const val MAX_VIRTUALIZER_STRENGTH = 1000
         const val DEFAULT_VIRTUALIZER_STRENGTH = 500
-        private const val JAMES_DSP_MUD_CUT_MAX_MB = 180
-        private const val JAMES_DSP_PRESENCE_RECOVERY_MAX_MB = 90
-        private const val JAMES_DSP_HEADROOM_MAX_MB = 260
     }
     
     private val Context.audioPrefs by preferencesDataStore(name = "audio_engine_prefs")
@@ -119,6 +109,7 @@ class AudioEngine @Inject constructor(
     val spatialAudioMode: StateFlow<SpatialAudioMode> = _spatialAudioMode.asStateFlow()
     private var spatialAttributes: AudioAttributes? = null
     private var spatialFormat: AudioFormat? = null
+    private var stereoEffectAvailable = false
 
     // Audio Effects
     private var virtualizer: Virtualizer? = null
@@ -174,9 +165,6 @@ class AudioEngine @Inject constructor(
         "warm" to shortArrayOf(400, 300, 100, -100, -200),
     )
 
-    // Anchor points in Hz and millibels for the frequency-based listening preset.
-    private val balancedEqFrequencies = doubleArrayOf(60.0, 230.0, 910.0, 3600.0, 14000.0)
-    private val balancedEqGains = intArrayOf(150, 40, -100, 130, 80)
     
     init {
         // Load saved quality tiers immediately so Settings can show real values
@@ -223,10 +211,7 @@ class AudioEngine @Inject constructor(
         // Detect output device capabilities
         detectOutputDevice()
         
-        // Load saved preferences
-        scope.launch {
-            loadSavedPreferences()
-        }
+        applyCurrentState(_audioEngineState.value)
         
         Log.d(TAG, "Apple-Style Audio Engine initialized")
     }
@@ -298,22 +283,17 @@ class AudioEngine @Inject constructor(
         val isFidelityMigrated = prefs[KEY_FIDELITY_MIGRATED] ?: false
         val spatialAudioEnabled: Boolean
         val spatialStrength: Int
-        val soundCheckEnabled: Boolean
 
         if (!isFidelityMigrated) {
             // Audio Fidelity Reset:
-            // Previous versions forced destructive 100% Virtualizer immersion and dynamic range compression ON by default,
-            // which caused audio to sound hollow, phase-cancelled, and muffled.
-            // Reset to clean, bit-perfect, uncompressed audio by default.
+            // Reset the legacy forced Virtualizer setting to neutral stereo.
             spatialAudioEnabled = false
             spatialStrength = DEFAULT_VIRTUALIZER_STRENGTH
-            soundCheckEnabled = false
             scope.launch {
                 try {
                     context.audioPrefs.edit {
                         it[KEY_SPATIAL_AUDIO] = false
                         it[KEY_SPATIAL_STRENGTH] = DEFAULT_VIRTUALIZER_STRENGTH
-                        it[KEY_SOUND_CHECK] = false
                         it[KEY_FIDELITY_MIGRATED] = true
                     }
                 } catch (e: Exception) {
@@ -323,18 +303,14 @@ class AudioEngine @Inject constructor(
         } else {
             spatialAudioEnabled = prefs[KEY_SPATIAL_AUDIO] ?: false
             spatialStrength = prefs[KEY_SPATIAL_STRENGTH] ?: DEFAULT_VIRTUALIZER_STRENGTH
-            soundCheckEnabled = prefs[KEY_SOUND_CHECK] ?: false
         }
 
+        val storedPreset = prefs[KEY_EQ_PRESET]
         val state = AudioEngineState(
-            crossfadeEnabled = prefs[KEY_CROSSFADE_ENABLED] ?: false,
-            crossfadeDuration = prefs[KEY_CROSSFADE_DURATION] ?: DEFAULT_CROSSFADE_DURATION,
-            soundCheckEnabled = soundCheckEnabled,
-
             spatialAudioEnabled = spatialAudioEnabled,
             spatialStrength = spatialStrength,
-            eqEnabled = prefs[KEY_EQ_ENABLED] ?: false,
-            eqPreset = prefs[KEY_EQ_PRESET] ?: "flat",
+            eqEnabled = prefs[KEY_EQ_ENABLED] == true && (storedPreset == null || storedPreset in eqPresets),
+            eqPreset = storedPreset?.takeIf(eqPresets::containsKey) ?: "flat",
             reverbEnabled = prefs[KEY_REVERB_ENABLED] ?: false,
             reverbPreset = prefs[KEY_REVERB_PRESET] ?: PresetReverb.PRESET_NONE.toInt(),
             wifiQualityTier = wifiTier,
@@ -347,9 +323,9 @@ class AudioEngine @Inject constructor(
     }
     
     private fun applyCurrentState(state: AudioEngineState) {
-        setSpatialAudio(state.spatialAudioEnabled, state.spatialStrength)
-        setEqualizer(state.eqEnabled, state.eqPreset)
-        setReverb(state.reverbEnabled, state.reverbPreset)
+        updateVirtualizerState()
+        applyEqSettings()
+        applyReverbEffect(state.reverbEnabled, state.reverbPreset)
     }
     
     // ═══════════════════════════════════════════════════════════════
@@ -543,7 +519,7 @@ class AudioEngine @Inject constructor(
     /**
      * Get available EQ presets
      */
-    fun getEqPresets(): List<String> = eqPresets.keys.toList() + BALANCED_EQ
+    fun getEqPresets(): List<String> = eqPresets.keys.toList()
     
     /**
      * Enable/disable equalizer with preset
@@ -564,10 +540,6 @@ class AudioEngine @Inject constructor(
         }
     }
 
-    fun setBalancedEq(enabled: Boolean) {
-        if (!enabled && audioEngineState.value.eqPreset != BALANCED_EQ) return
-        setEqualizer(enabled, BALANCED_EQ)
-    }
     
     /**
      * Set custom EQ band level
@@ -602,17 +574,6 @@ class AudioEngine @Inject constructor(
         } ?: emptyList()
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // SOUND CHECK (Loudness Normalization)
-    // ═══════════════════════════════════════════════════════════════
-    
-    fun setSoundCheck(enabled: Boolean) {
-        _audioEngineState.value = _audioEngineState.value.copy(soundCheckEnabled = enabled)
-        scope.launch {
-            context.audioPrefs.edit { it[KEY_SOUND_CHECK] = enabled }
-        }
-    }
-
     private fun applyEqSettings() {
         val state = _audioEngineState.value
         equalizer?.let { eq ->
@@ -639,11 +600,7 @@ class AudioEngine @Inject constructor(
         val maxGain = range[1].toInt()
         val bands = eq.numberOfBands.toInt()
         val requested = IntArray(bands) { band ->
-            val gain = when {
-                !applyPreset -> 0
-                preset == BALANCED_EQ -> balancedEqGain(eq.getCenterFreq(band.toShort()) / 1000.0)
-                else -> curve.getOrNull(band)?.toInt() ?: 0
-            }
+            val gain = if (applyPreset) curve.getOrNull(band)?.toInt() ?: 0 else 0
             gain.coerceIn(minGain, maxGain)
         }
         val headroom = requested.maxOrNull()?.coerceAtLeast(0) ?: 0
@@ -656,24 +613,15 @@ class AudioEngine @Inject constructor(
         updateEqBands()
     }
 
-    private fun balancedEqGain(frequency: Double): Int {
-        val high = balancedEqFrequencies.indexOfFirst { it >= frequency }
-        if (high < 0) return balancedEqGains.last()
-        if (high == 0) return balancedEqGains.first()
-        val lowFrequency = balancedEqFrequencies[high - 1]
-        val fraction = kotlin.math.ln(frequency / lowFrequency) /
-            kotlin.math.ln(balancedEqFrequencies[high] / lowFrequency)
-        val lowGain = balancedEqGains[high - 1]
-        return (lowGain + (balancedEqGains[high] - lowGain) * fraction).roundToInt()
-    }
     
     // ═══════════════════════════════════════════════════════════════
     // SPATIAL AUDIO (Virtualizer)
     // ═══════════════════════════════════════════════════════════════
     
     @Synchronized
-    fun updateSpatialPlayback(attributes: AudioAttributes, format: Format?) {
+    fun updateSpatialPlayback(attributes: AudioAttributes, format: Format?, stereoEffectAvailable: Boolean) {
         spatialAttributes = attributes
+        this.stereoEffectAvailable = stereoEffectAvailable
         spatialFormat = format?.let { track ->
             val channelMask = when (track.channelCount) {
                 1 -> AudioFormat.CHANNEL_OUT_MONO
@@ -720,7 +668,9 @@ class AudioEngine @Inject constructor(
                     )
                 if (supported && effect.strengthSupported) effect.setStrength(state.spatialStrength.toShort())
                 effect.enabled = supported
-                supported && effect.enabled && effect.virtualizationMode != Virtualizer.VIRTUALIZATION_MODE_OFF
+                val active = supported && effect.enabled && effect.virtualizationMode != Virtualizer.VIRTUALIZATION_MODE_OFF
+                if (supported && !active) effect.enabled = false
+                active
             }.getOrElse {
                 runCatching { effect.enabled = false }
                 false
@@ -731,6 +681,7 @@ class AudioEngine @Inject constructor(
             !state.spatialAudioEnabled -> SpatialAudioMode.OFF
             useSystem -> SpatialAudioMode.SYSTEM
             virtualized -> SpatialAudioMode.VIRTUALIZER
+            stereoEffectAvailable && format?.channelCount == 2 -> SpatialAudioMode.STEREO_EFFECT
             format == null -> SpatialAudioMode.WAITING
             else -> SpatialAudioMode.UNAVAILABLE
         }
@@ -779,7 +730,7 @@ class AudioEngine @Inject constructor(
     /**
      * Enable/disable Reverb with preset
      */
-    fun setReverb(enabled: Boolean, preset: Int = PresetReverb.PRESET_NONE.toInt()) {
+    private fun applyReverbEffect(enabled: Boolean, preset: Int) {
         reverb?.let { r ->
             try {
                 r.enabled = enabled
@@ -793,6 +744,10 @@ class AudioEngine @Inject constructor(
                 Log.e(TAG, "Error setting Platform Reverb", e)
             }
         }
+    }
+
+    fun setReverb(enabled: Boolean, preset: Int = PresetReverb.PRESET_NONE.toInt()) {
+        applyReverbEffect(enabled, preset)
 
         _audioEngineState.value = _audioEngineState.value.copy(
             reverbEnabled = enabled,
@@ -807,45 +762,16 @@ class AudioEngine @Inject constructor(
         }
     }
     
-    // ═══════════════════════════════════════════════════════════════
-    // CROSSFADE
-    // ═══════════════════════════════════════════════════════════════
-    
-    /**
-     * Enable/disable crossfade with duration control
-     * @param durationMs Crossfade duration in milliseconds (1000-12000)
-     */
-    fun setCrossfade(enabled: Boolean, durationMs: Int = DEFAULT_CROSSFADE_DURATION) {
-        val clampedDuration = durationMs.coerceIn(1000, 12000)
-        
-        _audioEngineState.value = _audioEngineState.value.copy(
-            crossfadeEnabled = enabled,
-            crossfadeDuration = clampedDuration,
-        )
-        
-        scope.launch {
-            context.audioPrefs.edit {
-                it[KEY_CROSSFADE_ENABLED] = enabled
-                it[KEY_CROSSFADE_DURATION] = clampedDuration
-            }
-        }
-        
-        Log.d(TAG, if (enabled) "Crossfade ON: ${clampedDuration}ms" else "Crossfade OFF")
-    }
-    
-    
     /**
      * Reset all effects to default
      */
     fun resetToDefault() {
-        setSoundCheck(false)
         setWifiQualityTier(StreamQuality.BEST)
         setCellularQualityTier(StreamQuality.HIGH)
         setDownloadQualityTier(StreamQuality.BEST)
         setEqualizer(false)
         setSpatialAudio(false, DEFAULT_VIRTUALIZER_STRENGTH)
         setReverb(false)
-        setCrossfade(false)
         Log.d(TAG, "Reset to defaults")
     }
     
@@ -872,6 +798,7 @@ class AudioEngine @Inject constructor(
         Log.d(TAG, "Releasing Audio Engine")
         spatialAttributes = null
         spatialFormat = null
+        stereoEffectAvailable = false
         releaseEffects()
         clearStreamInfo()
         currentAudioSessionId = 0
@@ -880,7 +807,7 @@ class AudioEngine @Inject constructor(
 }
 
 enum class SpatialAudioMode {
-    OFF, WAITING, SYSTEM, VIRTUALIZER, UNAVAILABLE
+    OFF, WAITING, SYSTEM, VIRTUALIZER, STEREO_EFFECT, UNAVAILABLE
 }
 
 /**
@@ -910,12 +837,6 @@ data class EqBandInfo(
  * Apple Music-style: separate quality tiers for Wi-Fi / Cellular / Download
  */
 data class AudioEngineState(
-    // Crossfade
-    val crossfadeEnabled: Boolean = false,
-    val crossfadeDuration: Int = AudioEngine.DEFAULT_CROSSFADE_DURATION,
-    // Sound Check (disabled by default for pristine bit-perfect audio)
-    val soundCheckEnabled: Boolean = false,
-
     // Spatial Audio (disabled by default to prevent comb-filtering & muffled midrange)
     val spatialAudioEnabled: Boolean = false,
     val spatialStrength: Int = AudioEngine.DEFAULT_VIRTUALIZER_STRENGTH,

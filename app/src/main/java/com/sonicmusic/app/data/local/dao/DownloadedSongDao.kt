@@ -14,6 +14,9 @@ interface DownloadedSongDao {
     @Query("SELECT * FROM downloaded_songs_v2 ORDER BY downloadedAt DESC")
     fun getAllDownloadedSongs(): Flow<List<DownloadedSong>>
 
+    @Query("SELECT videoId FROM downloaded_songs_v2 WHERE status = 'COMPLETED'")
+    fun observeCompletedSongIds(): Flow<List<String>>
+
     @Query("SELECT * FROM downloaded_songs_v2 WHERE videoId = :videoId")
     suspend fun getDownloadedSong(videoId: String): DownloadedSong?
 

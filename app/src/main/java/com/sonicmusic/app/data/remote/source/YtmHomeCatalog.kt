@@ -226,6 +226,7 @@ internal class YtmHomeCatalog(context: Context) {
         return when {
             matches("listen_again") -> HomeShelf.Kind.ListenAgain
             matches("quick_picks") -> HomeShelf.Kind.QuickPicks
+            matches("forgotten_favorites") -> HomeShelf.Kind.ForgottenFavorites
             else -> HomeShelf.Kind.Other
         }
     }

@@ -67,28 +67,11 @@ class SettingsViewModel @Inject constructor(
     private val whileObserved = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000)
 
     // Audio Engine Settings
-    val normalizeVolume = audioEngine.audioEngineState
-        .map { it.soundCheckEnabled }
-        .stateIn(viewModelScope, whileObserved, audioEngine.audioEngineState.value.soundCheckEnabled)
+    val normalizeVolume = settingsRepository.normalizeVolume
+        .stateIn(viewModelScope, whileObserved, com.sonicmusic.app.data.local.datastore.SettingsDataStore.DEFAULT_NORMALIZE_VOLUME)
 
-    val balancedEqEnabled = audioEngine.audioEngineState
-        .map { it.eqEnabled && it.eqPreset == AudioEngine.BALANCED_EQ }
-        .stateIn(viewModelScope, whileObserved, false)
-
-    val equalizerAvailable = audioEngine.eqBands
-        .map { it.isNotEmpty() }
-        .stateIn(viewModelScope, whileObserved, audioEngine.eqBands.value.isNotEmpty())
-
-    fun setBalancedEq(enabled: Boolean) = audioEngine.setBalancedEq(enabled)
-
-    val crossfadeDuration = audioEngine.audioEngineState
-        .map { state ->
-            if (state.crossfadeEnabled) {
-                (state.crossfadeDuration / 1000).coerceIn(0, 12)
-            } else {
-                0
-            }
-        }
+    val crossfadeDuration = settingsRepository.crossfadeDuration
+        .map { it.coerceIn(0, 12) }
         .stateIn(viewModelScope, whileObserved, 0)
 
     val spatialAudioMode = audioEngine.spatialAudioMode
@@ -144,6 +127,12 @@ class SettingsViewModel @Inject constructor(
 
     private val _appUpdateState = MutableStateFlow(AppUpdateState())
     val appUpdateState: StateFlow<AppUpdateState> = _appUpdateState.asStateFlow()
+    private val updateDownloader = UpdateDownloader(context)
+    private val updateStatus = updateDownloader.observeStatus()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    val awaitingUpdateConfirmation = updateStatus
+        .map { it == UpdateDownloader.CONFIRMATION_REQUIRED }
+        .stateIn(viewModelScope, whileObserved, false)
         
     // Region Settings
     val countryCode: StateFlow<String?> = regionRepository.countryCode
@@ -163,7 +152,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            UpdateDownloader(context).observeStatus().collect { message ->
+            updateStatus.collect { message ->
                 if (message != null) {
                     _appUpdateState.value = _appUpdateState.value.copy(
                         isDownloading = false,
@@ -218,7 +207,6 @@ class SettingsViewModel @Inject constructor(
 
 
     fun setNormalizeVolume(enabled: Boolean) {
-        audioEngine.setSoundCheck(enabled)
         viewModelScope.launch {
             settingsRepository.setNormalizeVolume(enabled)
         }
@@ -231,10 +219,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setCrossfadeDuration(seconds: Int) {
-        val safeSeconds = seconds.coerceIn(0, 12)
-        audioEngine.setCrossfade(safeSeconds > 0, safeSeconds * 1000)
         viewModelScope.launch {
-            settingsRepository.setCrossfadeDuration(safeSeconds)
+            settingsRepository.setCrossfadeDuration(seconds.coerceIn(0, 12))
         }
     }
 
@@ -320,9 +306,16 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun downloadUpdate() {
+        val pending = updateDownloader.pending()
+        if (pending?.awaitingConfirmation == true) {
+            if (!UpdateNotifications.openConfirmation(context, pending.sessionId)) {
+                updateDownloader.scheduleVerification(pending.id, recoverConfirmation = true)
+            }
+            return
+        }
+
         val currentState = _appUpdateState.value
         if (currentState.isChecking || currentState.isDownloading) return
-        if (UpdateNotifications.openConfirmation(context)) return
 
         val updatePackage = currentState.updatePackage
         val latestVersion = currentState.latestVersion
@@ -353,9 +346,8 @@ class SettingsViewModel @Inject constructor(
             )
 
             try {
-                val downloader = UpdateDownloader(context)
-                val downloadId = withContext(Dispatchers.IO) { downloader.downloadApk(updatePackage) }
-                downloader.observeDownloadProgress(downloadId).collect { progress ->
+                val downloadId = withContext(Dispatchers.IO) { updateDownloader.downloadApk(updatePackage) }
+                updateDownloader.observeDownloadProgress(downloadId).collect { progress ->
                     _appUpdateState.value = _appUpdateState.value.copy(
                         isDownloading = true,
                         downloadProgress = progress,

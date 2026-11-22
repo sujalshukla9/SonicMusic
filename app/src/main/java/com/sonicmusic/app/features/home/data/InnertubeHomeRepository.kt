@@ -68,7 +68,7 @@ class InnertubeHomeRepository @Inject constructor(
             checkScope(scope)
             val feed = cached?.feed?.takeIf {
                 !force && it.schemaVersion == CachedHomeFeed.CURRENT_VERSION &&
-                    it.loadedPages.isNotEmpty() && it.firstPage.shelves == content.shelves
+                    it.loadedPages.isNotEmpty() && it.firstPage == content
             } ?: CachedHomeFeed(content, schemaVersion = CachedHomeFeed.CURRENT_VERSION)
             cache.save(feedScope, feed)
             Log.d(TAG, "Home browse loaded ${content.shelves.size} sections (account=${session != null})")

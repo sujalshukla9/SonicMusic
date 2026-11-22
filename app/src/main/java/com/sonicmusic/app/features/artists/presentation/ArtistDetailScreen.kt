@@ -33,6 +33,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +43,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -53,7 +56,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
@@ -65,7 +67,6 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -96,11 +97,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.sonicmusic.app.domain.model.ArtistProfileSectionType
 import com.sonicmusic.app.domain.model.PlaybackHistory
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.ThumbnailShape
+import com.sonicmusic.app.shared.components.ReleaseAlbumCard
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.shared.components.songPressable
@@ -260,7 +265,6 @@ fun ArtistDetailScreen(
                                 imageUrl = current?.imageUrl,
                                 bannerUrl = current?.bannerUrl,
                                 subscribersText = current?.subscribersText,
-                                songCount = current?.topSongs?.size ?: 0,
                                 onPlayAll = { if (viewModel.playAll()) onShowFullPlayer() },
                                 onShuffle = { if (viewModel.playAll(shuffle = true)) onShowFullPlayer() },
                                 onRadio = { if (viewModel.startRadio()) onShowFullPlayer() },
@@ -276,7 +280,7 @@ fun ArtistDetailScreen(
                         val topSongs = current?.topSongs.orEmpty()
                         if (topSongs.isNotEmpty()) {
                             item(key = "top_songs") {
-                                SectionHeader("Songs", onSeeAllClick = { openTab(ArtistTab.Songs) },
+                                SectionHeader("Popular songs", onSeeAllClick = { openTab(ArtistTab.Songs) },
                                     modifier = Modifier.padding(horizontal = 20.dp))
                             }
                             itemsIndexed(topSongs.take(5), key = { _, song -> "song_" + song.id }) { index, song ->
@@ -480,13 +484,13 @@ private fun SectionHeader(
 /**
  * Hero header with large artist image, name, subscribers, follow button, and action buttons
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ArtistHeroHeader(
     artistName: String,
     imageUrl: String?,
     bannerUrl: String?,
     subscribersText: String?,
-    songCount: Int,
     onPlayAll: () -> Unit,
     onShuffle: () -> Unit,
     onRadio: () -> Unit,
@@ -495,190 +499,107 @@ private fun ArtistHeroHeader(
     onToggleFollow: () -> Unit,
     hasSongs: Boolean
 ) {
-    val colorScheme = MaterialTheme.colorScheme
-
-    Box(
-        modifier = Modifier.fillMaxWidth(),
-        contentAlignment = Alignment.TopCenter
+    val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val images = remember(bannerUrl, imageUrl) {
+        listOfNotNull(bannerUrl, imageUrl).map(String::trim).filter(String::isNotEmpty).distinct()
+    }
+    var imageIndex by remember(images) { mutableStateOf(0) }
+    var artworkVisible by remember(images) { mutableStateOf(false) }
+    val imageRequest = remember(context, images, imageIndex) {
+        images.getOrNull(imageIndex)?.let { url -> ImageRequest.Builder(context).data(url).size(960).build() }
+    }
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        color = colors.surfaceContainer,
+        shape = MaterialTheme.shapes.extraLarge
     ) {
-        if (bannerUrl != null) {
-            SongThumbnail(
-                artworkUrl = bannerUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                highQuality = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(260.dp)
-            )
+        Column {
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(260.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                colorScheme.background
+                modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp),
+                contentAlignment = Alignment.BottomStart
+            ) {
+                if (imageRequest != null) {
+                    AsyncImage(
+                        model = imageRequest,
+                        contentDescription = null,
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Crop,
+                        onSuccess = { artworkVisible = true },
+                        onError = {
+                            artworkVisible = false
+                            imageIndex++
+                        }
+                    )
+                }
+                if (artworkVisible) {
+                    Box(
+                        Modifier.matchParentSize().background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                0.4f to Color.Black.copy(alpha = 0.20f),
+                                1f to Color.Black.copy(alpha = 0.86f)
                             )
                         )
                     )
-            )
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = if (bannerUrl != null) 32.dp else 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Artist image — large circular
-            Surface(
-                modifier = Modifier
-                    .size(160.dp)
-                    .clip(CircleShape),
-            color = colorScheme.surfaceContainerHigh,
-            tonalElevation = 6.dp
-        ) {
-            if (imageUrl != null) {
-                SongThumbnail(
-                    artworkUrl = imageUrl,
-                    contentDescription = artistName,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    highQuality = true
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
+                } else {
                     Icon(
-                        imageVector = Icons.Rounded.Person,
+                        Icons.Rounded.Person,
                         contentDescription = null,
-                        modifier = Modifier.size(72.dp),
-                        tint = colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        tint = colors.onTertiaryContainer.copy(alpha = 0.28f),
+                        modifier = Modifier.align(Alignment.TopEnd).padding(22.dp).size(110.dp)
                     )
+                }
+                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = artistName,
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (artworkVisible) Color.White else colors.onSurface,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    subscribersText?.takeIf(String::isNotBlank)?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (artworkVisible) Color.White.copy(alpha = 0.88f) else colors.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Button(onClick = onPlayAll, enabled = hasSongs) {
+                    Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Play")
+                }
+                if (hasRadio) {
+                    FilledTonalButton(onClick = onRadio) {
+                        Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Radio")
+                    }
+                }
+                if (hasSongs) {
+                    FilledTonalButton(onClick = onShuffle, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                        Icon(Icons.Rounded.Shuffle, contentDescription = "Shuffle", modifier = Modifier.size(20.dp))
+                    }
+                }
+                OutlinedButton(onClick = onToggleFollow) {
+                    if (isFollowed) {
+                        Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text(if (isFollowed) "Following" else "Follow")
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Artist name
-        Text(
-            text = artistName,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = colorScheme.onSurface,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        // Subscriber count (from YTMusic)
-        if (!subscribersText.isNullOrBlank()) {
-            Text(
-                text = subscribersText,
-                style = MaterialTheme.typography.bodyMedium,
-                color = colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-        }
-
-        // Song count
-        if (songCount > 0) {
-            Text(
-                text = "$songCount songs",
-                style = MaterialTheme.typography.bodySmall,
-                color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Follow Button
-        if (isFollowed) {
-            FilledTonalButton(
-                onClick = onToggleFollow,
-                shape = RoundedCornerShape(24.dp),
-                colors = ButtonDefaults.filledTonalButtonColors(
-                    containerColor = colorScheme.surfaceVariant,
-                    contentColor = colorScheme.onSurfaceVariant
-                )
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Check,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Following", fontWeight = FontWeight.Medium)
-            }
-        } else {
-            OutlinedButton(
-                onClick = onToggleFollow,
-                shape = RoundedCornerShape(24.dp),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp, colorScheme.outline
-                ),
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = colorScheme.onSurface
-                )
-            ) {
-                Text("Follow", fontWeight = FontWeight.Medium)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Action buttons
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = onPlayAll,
-                enabled = hasSongs,
-                shape = RoundedCornerShape(24.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colorScheme.primary
-                ),
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Play All", fontWeight = FontWeight.SemiBold)
-            }
-
-            FilledTonalButton(
-                onClick = onShuffle,
-                enabled = hasSongs,
-                shape = RoundedCornerShape(24.dp),
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Shuffle,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Shuffle", fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        if (hasRadio) {
-            TextButton(onClick = onRadio, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Rounded.GraphicEq, contentDescription = null, modifier = Modifier.size(20.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Start radio")
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-    }
     }
 }
 
@@ -780,68 +701,8 @@ private fun ArtistTopSongItem(
 private fun AlbumCard(
     song: Song,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier.width(140.dp)
-) {
-    val colorScheme = MaterialTheme.colorScheme
-
-    Column(
-        modifier = modifier
-            .clip(MaterialTheme.shapes.large)
-            .pressable(onClick = onClick)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f),
-            shape = RoundedCornerShape(12.dp),
-            color = colorScheme.surfaceContainerHigh,
-            tonalElevation = 2.dp
-        ) {
-            if (song.thumbnailUrl.isNotBlank()) {
-                SongThumbnail(
-                    artworkUrl = song.thumbnailUrl,
-                    contentDescription = song.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Album,
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp),
-                        tint = colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = song.title,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-            color = colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        val subtitle = listOfNotNull(
-            song.artist.takeIf { it.isNotBlank() && !it.equals("Unknown artist", ignoreCase = true) },
-            song.year?.toString()
-        ).joinToString(" • ")
-        if (subtitle.isNotBlank()) {
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
+    modifier: Modifier = Modifier.width(152.dp)
+) = ReleaseAlbumCard(album = song, onClick = onClick, modifier = modifier)
 
 /**
  * Video card — wider 16:9 aspect ratio

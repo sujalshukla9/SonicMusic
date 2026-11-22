@@ -739,7 +739,6 @@ class PlayerViewModel @Inject constructor(
     fun getReverbPresets() = playerServiceConnection.audioEngine.getReverbPresets()
 
     // Sound Check
-    fun setSoundCheck(enabled: Boolean) = playerServiceConnection.audioEngine.setSoundCheck(enabled)
 
     // Quality Tiers
     fun setWifiQuality(quality: StreamQuality) = playerServiceConnection.audioEngine.setWifiQualityTier(quality)

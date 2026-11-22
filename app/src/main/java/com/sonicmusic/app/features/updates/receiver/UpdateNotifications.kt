@@ -9,20 +9,26 @@ import androidx.core.app.NotificationCompat
 import com.sonicmusic.app.R
 import com.sonicmusic.app.app.MainActivity
 import com.sonicmusic.app.core.util.hasNotificationPermission
+import java.util.concurrent.atomic.AtomicReference
 
 internal object UpdateNotifications {
-    private const val CHANNEL = "update_channel"
+    const val CHANNEL = "update_channel"
     private const val ID = 1001
-    private var confirmation: Intent? = null
+    private data class Confirmation(val sessionId: Int, val intent: Intent)
+    private val confirmation = AtomicReference<Confirmation?>()
 
-    fun requestConfirmation(context: Context, message: String, action: Intent) {
-        confirmation = action
+    fun requestConfirmation(context: Context, sessionId: Int, message: String, action: Intent) {
+        confirmation.set(Confirmation(sessionId, action))
         show(context, message, action)
     }
 
-    fun openConfirmation(context: Context): Boolean {
-        val action = confirmation ?: return false
-        return runCatching { context.startActivity(action) }.isSuccess
+    fun hasConfirmation(sessionId: Int) = confirmation.get()?.sessionId == sessionId
+
+    fun openConfirmation(context: Context, sessionId: Int): Boolean {
+        val action = confirmation.get()?.takeIf { it.sessionId == sessionId } ?: return false
+        return runCatching { context.startActivity(action.intent) }
+            .onFailure { confirmation.compareAndSet(action, null) }
+            .isSuccess
     }
 
     fun show(context: Context, message: String, action: Intent = Intent(context, MainActivity::class.java)) {
@@ -42,7 +48,7 @@ internal object UpdateNotifications {
     }
 
     fun clear(context: Context) {
-        confirmation = null
+        confirmation.set(null)
         (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(ID)
     }
 }

@@ -17,7 +17,7 @@ data class CachedHomeFeed(
     val schemaVersion: Int = 0
 ) {
     companion object {
-        const val CURRENT_VERSION = 2
+        const val CURRENT_VERSION = 4
     }
 }
 
@@ -43,7 +43,7 @@ data class HomeShelf(
     val kind: Kind = Kind.Other
 ) {
     enum class Layout { Carousel, Grid, List }
-    enum class Kind { Other, ListenAgain, QuickPicks }
+    enum class Kind { Other, ListenAgain, QuickPicks, ForgottenFavorites }
 
     fun songs(): List<Song> = items.mapNotNull(HomeShelfItem::playableSong).distinctBy(Song::id)
 }

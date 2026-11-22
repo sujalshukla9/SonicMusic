@@ -22,7 +22,12 @@ import kotlinx.coroutines.flow.flowOn
 import java.util.UUID
 
 class UpdateDownloader(private val context: Context) {
-    internal data class Pending(val id: Long, val update: UpdatePackage, val sessionId: Int)
+    internal data class Pending(
+        val id: Long,
+        val update: UpdatePackage,
+        val sessionId: Int,
+        val awaitingConfirmation: Boolean
+    )
 
     private val preferences by lazy {
         context.getSharedPreferences("app_update_prefs", Context.MODE_PRIVATE)
@@ -67,9 +72,9 @@ class UpdateDownloader(private val context: Context) {
         id
     }
 
-    internal fun pending(): Pending? {
+    internal fun pending(): Pending? = synchronized(lock) {
         val id = preferences.getLong(KEY_ID, -1)
-        if (id < 0) return null
+        if (id < 0) return@synchronized null
         val update = runCatching {
             UpdatePackage(
                 preferences.getString("url", "").orEmpty(),
@@ -77,8 +82,9 @@ class UpdateDownloader(private val context: Context) {
                 preferences.getString("sha256", "").orEmpty(),
                 preferences.getString("certificate", "").orEmpty()
             )
-        }.getOrNull() ?: return null
-        return Pending(id, update, preferences.getInt(KEY_SESSION, -1))
+        }.getOrNull() ?: return@synchronized null
+        val sessionId = preferences.getInt(KEY_SESSION, -1)
+        Pending(id, update, sessionId, sessionId >= 0 && preferences.getString(KEY_STATUS, null) == CONFIRMATION_REQUIRED)
     }
 
     internal fun trackSession(downloadId: Long, sessionId: Int): Boolean = synchronized(lock) {
@@ -86,12 +92,29 @@ class UpdateDownloader(private val context: Context) {
         preferences.edit().putInt(KEY_SESSION, sessionId).commit()
     }
 
-    internal fun finish(downloadId: Long, status: String) = synchronized(lock) {
-        if (pending()?.id != downloadId) return@synchronized
-        preferences.edit().remove(KEY_ID).remove(KEY_SESSION)
+    internal fun markAwaitingConfirmation(downloadId: Long, sessionId: Int): Boolean = synchronized(lock) {
+        val pending = pending() ?: return@synchronized false
+        if (pending.id != downloadId || pending.sessionId != sessionId) return@synchronized false
+        preferences.edit().putString(KEY_STATUS, CONFIRMATION_REQUIRED).commit()
+    }
+
+    internal fun resetSession(downloadId: Long, sessionId: Int): Boolean = synchronized(lock) {
+        val pending = pending() ?: return@synchronized false
+        if (pending.id != downloadId || pending.sessionId != sessionId) return@synchronized false
+        preferences.edit().remove(KEY_SESSION)
+            .putString(KEY_STATUS, "Preparing the verified update again…").commit()
+    }
+
+    internal fun finish(downloadId: Long, status: String, sessionId: Int? = null): Boolean = synchronized(lock) {
+        val pending = pending() ?: return@synchronized false
+        if (pending.id != downloadId || (sessionId != null && sessionId != pending.sessionId)) {
+            return@synchronized false
+        }
+        val saved = preferences.edit().remove(KEY_ID).remove(KEY_SESSION)
             .remove("url").remove("version").remove("sha256").remove("certificate")
             .putString(KEY_STATUS, status).commit()
         runCatching { manager.remove(downloadId) }
+        saved
     }
 
     internal fun message(status: String?) {
@@ -111,13 +134,13 @@ class UpdateDownloader(private val context: Context) {
         pending()?.let { scheduleVerification(it.id) }
     }
 
-    internal fun scheduleVerification(downloadId: Long) {
+    internal fun scheduleVerification(downloadId: Long, recoverConfirmation: Boolean = false) {
         if (pending()?.id != downloadId) return
         WorkManager.getInstance(context).enqueueUniqueWork(
             "verify-sonicmusic-apk-$downloadId",
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             OneTimeWorkRequestBuilder<VerifyUpdateWorker>()
-                .setInputData(workDataOf("downloadId" to downloadId))
+                .setInputData(workDataOf("downloadId" to downloadId, RECOVER_CONFIRMATION to recoverConfirmation))
                 .build()
         )
     }
@@ -146,10 +169,12 @@ class UpdateDownloader(private val context: Context) {
         }
     }.distinctUntilChanged().flowOn(Dispatchers.IO)
 
-    private companion object {
-        val lock = Any()
-        const val KEY_ID = "pending_update_download_id"
-        const val KEY_SESSION = "pending_update_session"
-        const val KEY_STATUS = "update_status"
+    internal companion object {
+        const val CONFIRMATION_REQUIRED = "Update verified. Confirm installation to continue."
+        const val RECOVER_CONFIRMATION = "recoverConfirmation"
+        private val lock = Any()
+        private const val KEY_ID = "pending_update_download_id"
+        private const val KEY_SESSION = "pending_update_session"
+        private const val KEY_STATUS = "update_status"
     }
 }

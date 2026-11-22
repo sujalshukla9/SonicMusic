@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -47,6 +48,9 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.LinkOff
+import androidx.compose.material.icons.rounded.SyncProblem
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MoreVert
@@ -77,13 +81,11 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
@@ -91,6 +93,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
@@ -105,6 +108,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -130,6 +134,11 @@ import com.sonicmusic.app.domain.model.ContentType
 import com.sonicmusic.app.domain.model.HomeShelf
 import com.sonicmusic.app.domain.model.HomeShelfItem
 import com.sonicmusic.app.shared.components.SongCarouselCard
+import com.sonicmusic.app.shared.components.ArtworkCardContent
+import com.sonicmusic.app.shared.components.ExpressiveAlertDialog
+import com.sonicmusic.app.shared.components.ExpressiveNotice
+import com.sonicmusic.app.shared.components.ExpressiveSnackbarHost
+import com.sonicmusic.app.shared.components.ReleaseAlbumCard
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.deviceLocalSongId
 import com.sonicmusic.app.domain.model.ThumbnailShape
@@ -140,6 +149,9 @@ import com.sonicmusic.app.features.home.presentation.HomeViewModel
 import com.sonicmusic.app.shared.components.SongCarousel
 import java.time.LocalTime
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -159,19 +171,19 @@ fun HomeScreen(
     onShowFullPlayer: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
-    val homeContent by viewModel.homeContent.collectAsStateWithLifecycle()
-    val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val home by viewModel.homeUiState.collectAsStateWithLifecycle()
+    val homeContent = home.content
+    val recentlyPlayed = home.recentlyPlayed
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val refreshResult by viewModel.refreshResult.collectAsStateWithLifecycle()
-    val error by viewModel.error.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
     val manualPagination by viewModel.manualPagination.collectAsStateWithLifecycle()
     val feedUnavailable by viewModel.feedUnavailable.collectAsStateWithLifecycle()
     val accountNotice by viewModel.accountNotice.collectAsStateWithLifecycle()
-    val recentlyPlayed by viewModel.recentlyPlayed.collectAsStateWithLifecycle()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val snackbarHostState = remember { SnackbarHostState() }
+    val actionScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     LaunchedEffect(lifecycle, viewModel) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -206,14 +218,14 @@ fun HomeScreen(
         }
     }
 
-    val onHomeSectionSongClick: (String, Song) -> Unit = { sectionKey, song ->
-        if (viewModel.onSectionSongClick(sectionKey, song)) {
-            onShowFullPlayer()
+    val onHomeSectionSongClick: (Song) -> Unit = { song ->
+        actionScope.launch {
+            if (viewModel.onSectionSongClick(song)) onShowFullPlayer()
         }
     }
     val onHomeSectionPlay: (String, Boolean) -> Unit = { sectionKey, shuffle ->
-        if (viewModel.playSection(sectionKey, shuffle = shuffle)) {
-            onShowFullPlayer()
+        actionScope.launch {
+            if (viewModel.playSection(sectionKey, shuffle = shuffle)) onShowFullPlayer()
         }
     }
     val onHomeSectionSeeAll: (String) -> Unit = { sectionKey ->
@@ -221,65 +233,46 @@ fun HomeScreen(
     }
 
 
-    // Show error snackbar with retry action
-    LaunchedEffect(error) {
-        error?.let { errorMessage ->
-            val result = snackbarHostState.showSnackbar(
-                message = errorMessage,
-                actionLabel = "Retry",
-                duration = SnackbarDuration.Long
-            )
-            if (result == SnackbarResult.ActionPerformed) {
-                viewModel.loadHomeContent()
-            }
-            viewModel.clearError()
-        }
-    }
+    ShowHomeErrors(viewModel, snackbarHostState, offerRetry = true)
 
     val appUpdateState by settingsViewModel.appUpdateState.collectAsStateWithLifecycle()
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { ExpressiveSnackbarHost(snackbarHostState, Modifier.padding(bottom = bottomPadding)) },
         containerColor = Color.Transparent,
         contentWindowInsets = WindowInsets(0)
     ) { paddingValues ->
-        val downloadedSongIds by viewModel.downloadedSongIds.collectAsStateWithLifecycle()
-        val savedPlaylistRemoteIds by viewModel.savedPlaylistRemoteIds.collectAsStateWithLifecycle()
         var showUpdateDialog by androidx.compose.runtime.saveable.rememberSaveable(appUpdateState.latestVersion) {
             androidx.compose.runtime.mutableStateOf(true)
         }
 
-        if (appUpdateState.isUpdateAvailable && !appUpdateState.isDownloading && showUpdateDialog) {
-            AlertDialog(
-                onDismissRequest = { showUpdateDialog = false },
-                title = { Text(text = "Update Available") },
-                text = { Text(text = "A new version of SonicMusic (v${appUpdateState.latestVersion}) is available. Would you like to update now?") },
-                confirmButton = {
-                    TextButton(onClick = { 
-                        settingsViewModel.downloadUpdate() 
-                        showUpdateDialog = false
-                    }) {
-                        Text("Update")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showUpdateDialog = false }) {
-                        Text("Later")
-                    }
+        val latestVersion = appUpdateState.latestVersion
+        if (appUpdateState.isUpdateAvailable && !appUpdateState.isDownloading && showUpdateDialog && latestVersion != null) {
+            ExpressiveAlertDialog(
+                icon = Icons.Rounded.CloudDownload,
+                title = stringResource(R.string.update_alert_title),
+                confirmLabel = stringResource(R.string.update_alert_action),
+                dismissLabel = stringResource(R.string.update_alert_later),
+                onDismiss = { showUpdateDialog = false },
+                onConfirm = {
+                    settingsViewModel.downloadUpdate()
+                    showUpdateDialog = false
                 }
-            )
+            ) {
+                Text(stringResource(R.string.update_alert_message, latestVersion))
+            }
+        }
+
+        if (home.isLoading) {
+            HomeFeedLoading(Modifier.fillMaxSize().padding(paddingValues).padding(bottom = bottomPadding))
+            return@Scaffold
         }
 
         val hasRemoteFeed = homeContent.shelves.isNotEmpty()
-        val isInitialLoading = !isRefreshing && isOnline && isLoading && !hasRemoteFeed && recentlyPlayed.isEmpty()
-        var showInitialLoading by remember { mutableStateOf(false) }
-        LaunchedEffect(isInitialLoading) {
-            showInitialLoading = false
-            if (isInitialLoading) {
-                delay(250L)
-                showInitialLoading = true
+            val downloadedSongIds = if (isOnline) emptySet() else {
+                viewModel.downloadedSongIds.collectAsStateWithLifecycle().value
             }
-        }
+            val savedPlaylistRemoteIds = viewModel.savedPlaylistRemoteIds.collectAsStateWithLifecycle()
 
                 M3ExpressivePullToRefresh(
                     isRefreshing = isRefreshing,
@@ -313,12 +306,6 @@ fun HomeScreen(
                         )
                     }
 
-                    if (isInitialLoading && showInitialLoading) {
-                        animatedSection(key = "initial_feed_loader", contentType = "loader") {
-                            HomeFeedLoading()
-                        }
-                    }
-
                     if (!isOnline && !hasRemoteFeed && recentlyPlayed.isEmpty()) {
                         animatedSection(key = "offline_notice", contentType = "offline_notice") {
                             com.sonicmusic.app.shared.components.NoInternetView(
@@ -329,142 +316,195 @@ fun HomeScreen(
                         item(key = "home_notice", contentType = "notice") {
                             val notice = accountNotice
                             val message = when {
-                                notice == null -> R.string.home_feed_unavailable
+                                notice == null -> R.string.home_feed_retry_message
                                 notice.reconnect && notice.showingPublicFeed -> R.string.home_public_reconnect
                                 notice.showingPublicFeed -> R.string.home_public_fallback
                                 notice.reconnect -> R.string.home_account_reconnect
                                 else -> R.string.home_account_unavailable
                             }
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            val reconnect = notice?.reconnect == true
+                            val title = when {
+                                reconnect -> R.string.home_session_notice_title
+                                notice?.showingPublicFeed == true -> R.string.home_public_notice_title
+                                else -> R.string.home_feed_unavailable
+                            }
+                            Box(
+                                Modifier.fillMaxWidth().padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = stringResource(message),
-                                    modifier = Modifier.weight(1f),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                ExpressiveNotice(
+                                    icon = if (reconnect) Icons.Rounded.LinkOff else Icons.Rounded.SyncProblem,
+                                    title = stringResource(title),
+                                    message = stringResource(message),
+                                    actionLabel = stringResource(if (reconnect) R.string.home_account_settings else R.string.home_retry),
+                                    onAction = if (reconnect) onNavigateToSettings else viewModel::refreshHomeContent,
+                                    modifier = Modifier.widthIn(max = Dimens.maxContentWidth)
                                 )
-                                TextButton(onClick = if (notice?.reconnect == true) onNavigateToSettings else {
-                                    { viewModel.refreshHomeContent() }
-                                }) {
-                                    Text(stringResource(if (notice?.reconnect == true) R.string.home_account_settings else R.string.home_retry))
-                                }
                             }
                         }
                     }
 
                     val historySection = HomeViewModel.SECTION_RECENTLY_PLAYED
+                    val hasListenAgain = homeContent.shelves.any { it.kind == HomeShelf.Kind.ListenAgain && it.items.any { item -> item.playableSong != null } }
                     val lastSong = recentlyPlayed.firstOrNull()
                     if (lastSong != null) {
                         animatedSection(key = "continue_listening", contentType = "continue_listening") {
                             ContinueListeningSection(
                                 lastSong = lastSong,
                                 isEnabled = isOnline || lastSong.id.deviceLocalSongId() != null || lastSong.id in downloadedSongIds,
-                                onSongClick = { onHomeSectionSongClick(historySection, it) }
+                                onSongClick = onHomeSectionSongClick
                             )
                         }
                         animatedSection(key = historySection, contentType = "song_section") {
-                            SongSection(
-                                title = viewModel.getSectionTitle(historySection),
-                                subtitle = "Your recent listening history",
-                                songs = recentlyPlayed,
-                                onSongClick = { onHomeSectionSongClick(historySection, it) },
-                                onPlayAll = { onHomeSectionPlay(historySection, false) },
-                                onShuffle = { onHomeSectionPlay(historySection, true) },
-                                onSeeAllClick = { onHomeSectionSeeAll(historySection) },
-                                isOnline = isOnline,
-                                downloadedSongIds = downloadedSongIds
-                            )
+                            if (hasListenAgain) {
+                                SongSection(
+                                    title = stringResource(R.string.home_recently_played),
+                                    subtitle = "Your recent listening history",
+                                    songs = recentlyPlayed,
+                                    onSongClick = onHomeSectionSongClick,
+                                    onPlayAll = { onHomeSectionPlay(historySection, false) },
+                                    onShuffle = { onHomeSectionPlay(historySection, true) },
+                                    onSeeAllClick = { onHomeSectionSeeAll(historySection) },
+                                    isOnline = isOnline,
+                                    downloadedSongIds = downloadedSongIds
+                                )
+                            } else {
+                                ListenAgainGrid(
+                                    songs = recentlyPlayed,
+                                    title = stringResource(R.string.home_listen_again),
+                                    onSongClick = onHomeSectionSongClick,
+                                    onPlayAll = { onHomeSectionPlay(historySection, false) },
+                                    onShuffle = { onHomeSectionPlay(historySection, true) },
+                                    onSeeAllClick = { onHomeSectionSeeAll(historySection) },
+                                    isOnline = isOnline,
+                                    downloadedSongIds = downloadedSongIds
+                                )
+                            }
                         }
                     }
 
-                    items(
-                        items = homeContent.shelves,
-                        key = { it.id },
-                        contentType = { it.layout }
-                    ) { shelf ->
-                        val songs = remember(shelf) { shelf.songs() }
-                        val onSongClick: (Song) -> Unit = { onHomeSectionSongClick(shelf.id, it) }
-                        val onSeeAll = { onHomeSectionSeeAll(shelf.id) }
-                        val onPlayAll: (() -> Unit)? = if (songs.isEmpty()) null else {
-                            { onHomeSectionPlay(shelf.id, false) }
-                        }
-                        val onShuffle: (() -> Unit)? = if (songs.isEmpty()) null else {
-                            { onHomeSectionPlay(shelf.id, true) }
-                        }
-                        val openPlaylist: (CommunityPlaylist) -> Unit = { playlist ->
-                            onNavigateToPlaylist(playlist.browseId, playlist.title, playlist.creator, playlist.thumbnailUrl)
-                        }
-
-                        Box(animatedSection().fillMaxWidth()) {
-                            when {
-                                shelf.items.all { it is HomeShelfItem.Playlist } -> {
-                                    val playlists = remember(shelf) {
-                                        shelf.items.map { (it as HomeShelfItem.Playlist).playlist }
+                    for (shelf in homeContent.shelves) {
+                        if (shelf.layout == HomeShelf.Layout.List && shelf.kind != HomeShelf.Kind.ForgottenFavorites &&
+                            shelf.items.isNotEmpty() && shelf.items.all { it.playableSong != null }
+                        ) {
+                            item(key = shelf.id, contentType = "compact_shelf_header") {
+                                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    Box(Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()) {
+                                        HomeShelfHeader(
+                                            title = shelf.title,
+                                            subtitle = shelf.subtitle,
+                                            onPlayAll = { onHomeSectionPlay(shelf.id, false) },
+                                            onShuffle = { onHomeSectionPlay(shelf.id, true) },
+                                            onSeeAllClick = { onHomeSectionSeeAll(shelf.id) }
+                                        )
                                     }
-                                    TrendingCommunityPlaylistsSection(
-                                        title = shelf.title,
-                                        subtitle = shelf.subtitle,
-                                        playlists = playlists,
-                                        savedPlaylistRemoteIds = savedPlaylistRemoteIds,
-                                        onPlaylistClick = openPlaylist,
-                                        onPlayPlaylist = { playlist, shuffle ->
-                                            viewModel.playCommunityPlaylist(playlist, shuffle = shuffle)
-                                            onShowFullPlayer()
-                                        },
-                                        onPlayPlaylistNext = viewModel::playCommunityPlaylistNext,
-                                        onAddPlaylistToQueue = viewModel::addCommunityPlaylistToQueue,
-                                        onToggleSavePlaylist = viewModel::toggleSaveCommunityPlaylist,
-                                        onTrackClick = onSongClick,
-                                        onTrackPlayNext = viewModel::playNext,
-                                        onTrackAddToQueue = viewModel::addToQueue
+                                }
+                            }
+                            val previews = shelf.items.take(8)
+                            items(previews, key = { "${shelf.id}/${it.key}" }, contentType = { "compact_song_row" }) { entry ->
+                                val song = checkNotNull(entry.playableSong)
+                                val available = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
+                                Box(
+                                    Modifier.fillMaxWidth().padding(bottom = if (entry == previews.last()) 24.dp else 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CompactSongRow(
+                                        song = song,
+                                        onClick = { onHomeSectionSongClick(song) },
+                                        modifier = Modifier.widthIn(max = Dimens.maxContentWidth)
+                                            .fillMaxWidth().padding(horizontal = Dimens.screenPadding),
+                                        isEnabled = available
                                     )
                                 }
-                                songs.size == shelf.items.size && shelf.layout == HomeShelf.Layout.Grid -> {
-                                    ListenAgainGrid(
-                                        songs = songs.take(27),
-                                        title = shelf.title,
-                                        onSongClick = onSongClick,
-                                        onPlayAll = { onHomeSectionPlay(shelf.id, false) },
-                                        onShuffle = { onHomeSectionPlay(shelf.id, true) },
-                                        onSeeAllClick = onSeeAll,
-                                        isOnline = isOnline,
-                                        downloadedSongIds = downloadedSongIds
-                                    )
-                                }
-                                songs.size == shelf.items.size -> {
-                                    SongSection(
-                                        title = shelf.title,
-                                        subtitle = shelf.subtitle,
-                                        songs = songs,
-                                        onSongClick = onSongClick,
-                                        onPlayAll = onPlayAll,
-                                        onShuffle = onShuffle,
-                                        onSeeAllClick = onSeeAll,
-                                        compactRows = shelf.layout == HomeShelf.Layout.List,
-                                        isOnline = isOnline,
-                                        downloadedSongIds = downloadedSongIds
-                                    )
-                                }
-                                else -> {
-                                    HomeMediaShelf(
-                                        shelf = shelf,
-                                        onClick = { item ->
-                                            when (item) {
-                                                is HomeShelfItem.Media -> when (item.song.contentType) {
-                                                    ContentType.ALBUM -> onNavigateToAlbum(item.song)
-                                                    ContentType.ARTIST -> onNavigateToArtist(item.song.title, item.song.artistId)
-                                                    else -> onSongClick(item.song)
+                            }
+                            continue
+                        }
+                        item(key = shelf.id, contentType = shelf.layout) {
+                            val songs = remember(shelf) { shelf.songs() }
+                            val onSongClick = onHomeSectionSongClick
+                            val onSeeAll = { onHomeSectionSeeAll(shelf.id) }
+                            val onPlayAll: (() -> Unit)? = if (songs.isEmpty()) null else {
+                                { onHomeSectionPlay(shelf.id, false) }
+                            }
+                            val onShuffle: (() -> Unit)? = if (songs.isEmpty()) null else {
+                                { onHomeSectionPlay(shelf.id, true) }
+                            }
+                            val openPlaylist: (CommunityPlaylist) -> Unit = { playlist ->
+                                onNavigateToPlaylist(playlist.browseId, playlist.title, playlist.creator, playlist.thumbnailUrl)
+                            }
+
+                            Box(Modifier.fillMaxWidth()) {
+                                when {
+                                    shelf.items.all { it is HomeShelfItem.Playlist } -> {
+                                        val playlists = remember(shelf) {
+                                            shelf.items.map { (it as HomeShelfItem.Playlist).playlist }
+                                        }
+                                        TrendingCommunityPlaylistsSection(
+                                            title = shelf.title,
+                                            subtitle = shelf.subtitle,
+                                            playlists = playlists,
+                                            onSeeAllClick = onSeeAll,
+                                            savedPlaylistRemoteIds = savedPlaylistRemoteIds.value,
+                                            onPlaylistClick = openPlaylist,
+                                            onPlayPlaylist = { playlist, shuffle ->
+                                                viewModel.playCommunityPlaylist(playlist, shuffle = shuffle)
+                                                onShowFullPlayer()
+                                            },
+                                            onPlayPlaylistNext = viewModel::playCommunityPlaylistNext,
+                                            onAddPlaylistToQueue = viewModel::addCommunityPlaylistToQueue,
+                                            onToggleSavePlaylist = viewModel::toggleSaveCommunityPlaylist,
+                                            onTrackClick = onSongClick,
+                                            onTrackPlayNext = viewModel::playNext,
+                                            onTrackAddToQueue = viewModel::addToQueue
+                                        )
+                                    }
+                                    songs.isNotEmpty() && (shelf.kind == HomeShelf.Kind.ListenAgain ||
+                                        (songs.size == shelf.items.size && shelf.layout == HomeShelf.Layout.Grid &&
+                                            shelf.kind != HomeShelf.Kind.ForgottenFavorites)) -> {
+                                        ListenAgainGrid(
+                                            songs = remember(songs) { songs.take(27) },
+                                            title = shelf.title,
+                                            onSongClick = onSongClick,
+                                            onPlayAll = { onHomeSectionPlay(shelf.id, false) },
+                                            onShuffle = { onHomeSectionPlay(shelf.id, true) },
+                                            onSeeAllClick = onSeeAll,
+                                            isOnline = isOnline,
+                                            downloadedSongIds = downloadedSongIds
+                                        )
+                                    }
+                                    songs.size == shelf.items.size && shelf.kind != HomeShelf.Kind.ForgottenFavorites -> {
+                                        SongSection(
+                                            title = shelf.title,
+                                            subtitle = shelf.subtitle,
+                                            songs = songs,
+                                            onSongClick = onSongClick,
+                                            onPlayAll = onPlayAll,
+                                            onShuffle = onShuffle,
+                                            onSeeAllClick = onSeeAll,
+                                            isOnline = isOnline,
+                                            downloadedSongIds = downloadedSongIds
+                                        )
+                                    }
+                                    else -> {
+                                        HomeMediaShelf(
+                                            shelf = shelf,
+                                            onClick = { item ->
+                                                when (item) {
+                                                    is HomeShelfItem.Media -> when (item.song.contentType) {
+                                                        ContentType.ALBUM -> onNavigateToAlbum(item.song)
+                                                        ContentType.ARTIST -> onNavigateToArtist(item.song.title, item.song.artistId)
+                                                        else -> onSongClick(item.song)
+                                                    }
+                                                    is HomeShelfItem.Playlist -> openPlaylist(item.playlist)
                                                 }
-                                                is HomeShelfItem.Playlist -> openPlaylist(item.playlist)
-                                            }
-                                        },
-                                        onSeeAll = onSeeAll,
-                                        onPlayAll = onPlayAll,
-                                        onShuffle = onShuffle,
-                                        isOnline = isOnline,
-                                        downloadedSongIds = downloadedSongIds
-                                    )
+                                            },
+                                            onSeeAll = onSeeAll,
+                                            onPlayAll = onPlayAll,
+                                            onShuffle = onShuffle,
+                                            isOnline = isOnline,
+                                            downloadedSongIds = downloadedSongIds
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -494,27 +534,30 @@ fun HomeScreen(
 }
 
 @Composable
-private fun HomeFeedLoading() {
-    val colors = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 24.dp)
-            .semantics { contentDescription = "Loading recommendations" },
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Box(
-            Modifier.width(120.dp).height(18.dp)
-                .clip(MaterialTheme.shapes.small).background(colors.surfaceContainerHighest)
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            repeat(2) {
-                Box(
-                    Modifier.weight(1f).aspectRatio(1.3f)
-                        .clip(MaterialTheme.shapes.large).background(colors.surfaceContainerHigh)
-                )
+internal fun ShowHomeErrors(
+    viewModel: HomeViewModel,
+    snackbarHostState: SnackbarHostState,
+    offerRetry: Boolean = false
+) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val retryLabel = if (offerRetry) stringResource(R.string.home_retry) else null
+    LaunchedEffect(lifecycle, viewModel, snackbarHostState, retryLabel) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.error.filterNotNull().collectLatest { errorMessage ->
+                val result = snackbarHostState.showSnackbar(errorMessage, retryLabel, duration = SnackbarDuration.Long)
+                viewModel.clearError(errorMessage)
+                if (result == SnackbarResult.ActionPerformed) viewModel.retryHomeError(errorMessage)
             }
         }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private fun HomeFeedLoading(modifier: Modifier = Modifier) {
+    val description = stringResource(R.string.home_loading)
+    Box(modifier, contentAlignment = Alignment.Center) {
+        LoadingIndicator(Modifier.semantics { contentDescription = description })
     }
 }
 
@@ -769,7 +812,9 @@ private fun ContinueListeningCard(
                 SongThumbnail(
                     artworkUrl = song.thumbnailUrl,
                     modifier = Modifier.fillMaxSize(),
-                    contentDescription = song.title
+                    contentDescription = song.title,
+                    crossfade = false,
+                    targetSizePx = with(LocalDensity.current) { thumbSize.roundToPx() }
                 )
             }
             
@@ -933,11 +978,10 @@ private fun ListenAgainGrid(
                 contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
                 pageSpacing = 16.dp
             ) { page ->
-                val startIndex = page * songsPerPage
-                val pageSongs = songs.drop(startIndex).take(songsPerPage)
-                
-                // Dynamic Grid layout chunks
-                val rows = pageSongs.chunked(columns)
+                val rows = remember(songs, page, songsPerPage, columns) {
+                    val startIndex = (page * songsPerPage).coerceAtMost(songs.size)
+                    songs.subList(startIndex, minOf(startIndex + songsPerPage, songs.size)).chunked(columns)
+                }
                 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -995,7 +1039,8 @@ private fun ListenAgainGridItem(
     modifier: Modifier = Modifier,
     isEnabled: Boolean = true
 ) {
-    val currentShape = LocalThumbnailShape.current.toComposeShape()
+    val thumbnailShape = LocalThumbnailShape.current
+    val currentShape = remember(thumbnailShape) { thumbnailShape.toComposeShape() }
     Card(
         modifier = modifier
             .aspectRatio(1f)
@@ -1017,7 +1062,8 @@ private fun ListenAgainGridItem(
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier.fillMaxSize(),
-                contentDescription = song.title
+                contentDescription = song.title,
+                crossfade = false
             )
             
             // Dark gradient overlay for text visibility
@@ -1061,73 +1107,82 @@ private fun HomeShelfHeader(
     subtitle: String?,
     onPlayAll: (() -> Unit)?,
     onShuffle: (() -> Unit)?,
-    onSeeAllClick: () -> Unit
+    onSeeAllClick: () -> Unit,
+    stackActions: Boolean = false
 ) {
-    // Section Header
-    Row(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = Dimens.screenPadding, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = Dimens.screenPadding, vertical = 8.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-            subtitle?.let {
+        val narrow = maxWidth < 320.dp || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.25f
+        val labels: @Composable () -> Unit = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.semantics { heading() }
                 )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
-
-        // Action buttons
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Shuffle button
-            if (onShuffle != null) IconButton(
-                onClick = onShuffle,
-                modifier = Modifier.size(36.dp)
+        val actions: @Composable () -> Unit = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Shuffle,
-                    contentDescription = "Shuffle",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+                // Shuffle button
+                if (onShuffle != null) IconButton(
+                    onClick = onShuffle,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
 
-            // Play All button
-            if (onPlayAll != null) IconButton(
-                onClick = onPlayAll,
-                modifier = Modifier.size(36.dp)
+                // Play All button
+                if (onPlayAll != null) IconButton(
+                    onClick = onPlayAll,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayArrow,
+                        contentDescription = "Play All",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                // See all button
+                TextButton(onClick = onSeeAllClick) {
+                    Text(
+                        text = "See all",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+        if ((narrow || stackActions) && (onPlayAll != null || onShuffle != null)) {
+            Column(Modifier.fillMaxWidth()) {
+                labels()
+                Box(Modifier.align(Alignment.End)) { actions() }
+            }
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayArrow,
-                    contentDescription = "Play All",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            // See all button
-            TextButton(onClick = onSeeAllClick) {
-                Text(
-                    text = "See all",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Box(Modifier.weight(1f)) { labels() }
+                actions()
             }
         }
     }
@@ -1143,31 +1198,55 @@ private fun HomeMediaShelf(
     isOnline: Boolean,
     downloadedSongIds: Set<String>
 ) {
+    val cardWidth = Dimens.cardWidth
+    val artworkSize = with(LocalDensity.current) { cardWidth.roundToPx() }
+    val showTrackDetails = shelf.kind == HomeShelf.Kind.ForgottenFavorites
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()) {
-            HomeShelfHeader(shelf.title, shelf.subtitle, onPlayAll, onShuffle, onSeeAll)
+            HomeShelfHeader(shelf.title, shelf.subtitle, onPlayAll, onShuffle, onSeeAll, stackActions = showTrackDetails)
             LazyRow(
                 contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(shelf.items, key = { it.key }, contentType = { it.playableSong != null }) { item ->
+                items(shelf.items, key = { it.key }, contentType = { (it as? HomeShelfItem.Media)?.song?.contentType }) { item ->
                     val song = item.playableSong
-                    if (song != null) {
+                    val enabled = song == null || isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
+                    if (song != null && showTrackDetails) {
+                        Card(
+                            modifier = Modifier.width(cardWidth)
+                                .alpha(if (enabled) 1f else 0.4f)
+                                .songPressable(song, SongActionSource.HOME, enabled = enabled, onClick = { onClick(item) }),
+                            shape = MaterialTheme.shapes.large,
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+                        ) {
+                            ArtworkCardContent(item.artwork, item.title, item.subtitle, artworkCrossfade = false, targetSizePx = artworkSize)
+                        }
+                    } else if (song != null) {
                         SongCarouselCard(
                             song = song,
                             onClick = { onClick(item) },
-                            modifier = Modifier.width(Dimens.cardWidth),
-                            isEnabled = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
+                            modifier = Modifier.width(cardWidth),
+                            isEnabled = enabled,
+                            artworkSizePx = artworkSize
+                        )
+                    } else if (item is HomeShelfItem.Media && item.song.contentType == ContentType.ALBUM) {
+                        ReleaseAlbumCard(
+                            album = item.song,
+                            onClick = { onClick(item) },
+                            modifier = Modifier.width(cardWidth),
+                            artworkCrossfade = false
                         )
                     } else {
                         Card(
-                            modifier = Modifier.width(Dimens.cardWidth).clickable { onClick(item) },
+                            modifier = Modifier.width(cardWidth).clickable { onClick(item) },
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
                         ) {
                             SongThumbnail(
                                 artworkUrl = item.artwork,
                                 contentDescription = null,
-                                modifier = Modifier.fillMaxWidth().aspectRatio(1f)
+                                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                                crossfade = false,
+                                targetSizePx = artworkSize
                             )
                             Column(Modifier.padding(8.dp)) {
                                 Text(item.title, style = MaterialTheme.typography.labelLarge, maxLines = 2,
@@ -1196,7 +1275,6 @@ private fun SongSection(
     onPlayAll: (() -> Unit)? = null,
     onShuffle: (() -> Unit)? = null,
     onSeeAllClick: () -> Unit,
-    compactRows: Boolean = false,
     isOnline: Boolean = true,
     downloadedSongIds: Set<String> = emptySet()
 ) {
@@ -1205,25 +1283,13 @@ private fun SongSection(
             modifier = Modifier.widthIn(max = Dimens.maxContentWidth).fillMaxWidth()
         ) {
             HomeShelfHeader(title, subtitle, onPlayAll, onShuffle, onSeeAllClick)
-            if (compactRows) {
-                Column(
-                    modifier = Modifier.padding(horizontal = Dimens.screenPadding),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    songs.take(8).forEach { song ->
-                        val available = isOnline || song.id.deviceLocalSongId() != null || song.id in downloadedSongIds
-                        CompactSongRow(song = song, onClick = { onSongClick(song) }, isEnabled = available)
-                    }
-                }
-            } else {
-                SongCarousel(
-                    songs = songs,
-                    onSongClick = onSongClick,
-                    isOnline = isOnline,
-                    downloadedSongIds = downloadedSongIds,
-                    itemWidth = Dimens.cardWidth
-                )
-            }
+            SongCarousel(
+                songs = songs,
+                onSongClick = onSongClick,
+                isOnline = isOnline,
+                downloadedSongIds = downloadedSongIds,
+                itemWidth = Dimens.cardWidth
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
         }
@@ -1243,11 +1309,11 @@ private fun SongSection(
 private fun CompactSongRow(
     song: Song,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     isEnabled: Boolean = true
 ) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .alpha(if (isEnabled) 1f else 0.4f)
             .songPressable(
                 song = song,
@@ -1272,7 +1338,9 @@ private fun CompactSongRow(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(LocalThumbnailShape.current.toComposeShape()),
-                contentDescription = song.title
+                contentDescription = song.title,
+                crossfade = false,
+                targetSizePx = with(LocalDensity.current) { 56.dp.roundToPx() }
             )
             
             Spacer(modifier = Modifier.width(12.dp))
@@ -1335,6 +1403,7 @@ private fun TrendingCommunityPlaylistsSection(
     title: String,
     subtitle: String?,
     playlists: List<CommunityPlaylist>,
+    onSeeAllClick: () -> Unit,
     savedPlaylistRemoteIds: Set<String>,
     onPlaylistClick: (CommunityPlaylist) -> Unit,
     onPlayPlaylist: (CommunityPlaylist, Boolean) -> Unit,
@@ -1348,33 +1417,14 @@ private fun TrendingCommunityPlaylistsSection(
 ) {
     if (playlists.isEmpty()) return
 
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        val cardWidth = minOf(320.dp, maxWidth - Dimens.screenPadding * 2 - 12.dp).coerceAtLeast(220.dp)
         Column(
             modifier = Modifier
                 .widthIn(max = Dimens.maxContentWidth)
                 .fillMaxWidth()
         ) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    if (subtitle != null) {
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
+            HomeShelfHeader(title, subtitle, onPlayAll = null, onShuffle = null, onSeeAllClick = onSeeAllClick)
 
             // Material 3 Expressive Uncontained Carousel
             val carouselState = rememberCarouselState { playlists.size }
@@ -1382,7 +1432,7 @@ private fun TrendingCommunityPlaylistsSection(
 
             HorizontalUncontainedCarousel(
                 state = carouselState,
-                itemWidth = 340.dp,
+                itemWidth = cardWidth,
                 itemSpacing = 16.dp,
                 contentPadding = PaddingValues(horizontal = Dimens.screenPadding),
                 modifier = Modifier
@@ -1475,14 +1525,15 @@ private fun TrendingCommunityPlaylistCard(
             ) {
                 // Square cover / collage artwork on the left
                 Box(
-                    modifier = Modifier.size(108.dp)
+                    modifier = Modifier.size(82.dp)
                 ) {
                     SongThumbnail(
                         artworkUrl = resolvedPlaylistCover,
                         shape = ThumbnailShape.ROUNDED_SQUARE,
                         modifier = Modifier.fillMaxSize(),
                         contentDescription = playlist.title,
-                        targetSizePx = 320
+                        crossfade = false,
+                        targetSizePx = with(LocalDensity.current) { 82.dp.roundToPx() }
                     )
 
                     // Playlist badge (top-start)
@@ -1794,7 +1845,8 @@ private fun TrackPreviewRow(
             shape = ThumbnailShape.ROUNDED_SQUARE,
             modifier = Modifier.size(38.dp),
             contentDescription = song.title,
-            targetSizePx = 120
+            crossfade = false,
+            targetSizePx = with(LocalDensity.current) { 38.dp.roundToPx() }
         )
 
         Spacer(modifier = Modifier.width(10.dp))

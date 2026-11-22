@@ -1,22 +1,21 @@
 package com.sonicmusic.app.shared.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.WifiOff
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -25,8 +24,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.sonicmusic.app.R
+import com.sonicmusic.app.theme.Dimens
+import com.sonicmusic.app.theme.MotionTokens
+import com.sonicmusic.app.theme.shouldReduceMotion
 
 /**
  * CompositionLocal providing network connectivity state.
@@ -35,8 +42,7 @@ import androidx.compose.ui.unit.dp
 val LocalIsOnline = staticCompositionLocalOf { true }
 
 /**
- * Full-screen "No Internet" view with a retry button.
- * Use this in place of content when network is required and unavailable.
+ * Offline state for screens that need an active connection.
  */
 @Composable
 fun NoInternetView(
@@ -44,39 +50,17 @@ fun NoInternetView(
     modifier: Modifier = Modifier
 ) {
     Box(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxWidth().padding(horizontal = Dimens.screenPadding, vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(32.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.WifiOff,
-                contentDescription = null,
-                modifier = Modifier.size(80.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            )
-            Spacer(modifier = Modifier.height(20.dp))
-            Text(
-                text = "No Internet Connection",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Check your connection and try again",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-            Button(onClick = onRetry) {
-                Text("Retry")
-            }
-        }
+        ExpressiveNotice(
+            icon = Icons.Rounded.WifiOff,
+            title = stringResource(R.string.network_offline),
+            message = stringResource(R.string.network_reconnect_message),
+            actionLabel = stringResource(R.string.network_retry),
+            onAction = onRetry,
+            modifier = Modifier.widthIn(max = Dimens.maxContentWidth)
+        )
     }
 }
 
@@ -88,28 +72,41 @@ fun NoInternetView(
 @Composable
 fun NoInternetBanner(
     isVisible: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
 ) {
+    val reduceMotion = shouldReduceMotion()
     AnimatedVisibility(
         visible = isVisible,
-        enter = slideInVertically { -it } + fadeIn(),
-        exit = slideOutVertically { -it } + fadeOut(),
-        modifier = modifier
+        enter = if (reduceMotion) EnterTransition.None else
+            expandVertically(MotionTokens.quickSpatial(), expandFrom = Alignment.Top) + fadeIn(MotionTokens.effects()),
+        exit = if (reduceMotion) ExitTransition.None else
+            shrinkVertically(MotionTokens.quickSpatial(), shrinkTowards = Alignment.Top) + fadeOut(MotionTokens.quickEffects())
     ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = MaterialTheme.colorScheme.errorContainer,
-            tonalElevation = 2.dp
+        Box(
+            modifier = modifier.fillMaxWidth()
+                .padding(horizontal = Dimens.screenPadding, vertical = if (compact) 2.dp else 6.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "No internet connection",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-            )
+            Surface(
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = if (compact) 4.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Rounded.WifiOff, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(
+                        text = stringResource(R.string.network_offline),
+                        style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
         }
     }
 }

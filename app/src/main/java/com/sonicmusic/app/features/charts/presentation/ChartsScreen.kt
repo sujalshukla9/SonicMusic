@@ -61,6 +61,7 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.ThumbnailShape
 import com.sonicmusic.app.features.player.presentation.sheets.SongActionSource
 import com.sonicmusic.app.shared.components.SongListSkeleton
+import com.sonicmusic.app.shared.components.ReleaseAlbumCard
 import com.sonicmusic.app.shared.components.SongThumbnail
 import com.sonicmusic.app.shared.components.songCombinedClickable
 import com.sonicmusic.app.theme.Dimens
@@ -81,8 +82,9 @@ fun ChartsScreen(
     val items = state.page?.items.orEmpty()
     val hasMore = state.page?.hasMore == true
     val isSongs = kind == ChartKind.Songs
+    val isNewReleases = state.page?.origin == ChartOrigin.NewReleases
     val chartQueue = remember(items, isSongs) { if (isSongs) items.map(ChartItem::media) else emptyList() }
-    val title = stringResource(kind.titleResource())
+    val title = stringResource(if (isNewReleases) R.string.chart_new_releases else kind.titleResource())
     val (container, onContainer, icon) = when (kind) {
         ChartKind.Songs -> Triple(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer, Icons.Rounded.MusicNote)
         ChartKind.Artists -> Triple(MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer, Icons.Rounded.MicExternalOn)
@@ -132,7 +134,11 @@ fun ChartsScreen(
                 modifier = content.padding(bottom = bottomPadding)
             )
             else -> LazyVerticalGrid(
-                columns = if (isSongs) GridCells.Fixed(1) else GridCells.Adaptive(132.dp),
+                columns = when {
+                    isSongs -> GridCells.Fixed(1)
+                    isNewReleases -> GridCells.Adaptive(146.dp)
+                    else -> GridCells.Adaptive(132.dp)
+                },
                 modifier = content,
                 contentPadding = PaddingValues(
                     start = Dimens.screenPadding,
@@ -147,21 +153,20 @@ fun ChartsScreen(
                     val page = state.page
                     val subtitle = when (page?.origin) {
                         ChartOrigin.MusicVideos -> page.sourceTitle ?: stringResource(R.string.chart_music_videos)
-                        ChartOrigin.NewReleases -> stringResource(R.string.chart_new_releases)
                         else -> page?.sourceTitle
                     }
                     Surface(
                         shape = MaterialTheme.shapes.extraLarge,
-                        color = container,
-                        contentColor = onContainer
+                        color = if (isNewReleases) MaterialTheme.colorScheme.surfaceContainerHigh else container,
+                        contentColor = if (isNewReleases) MaterialTheme.colorScheme.onSurface else onContainer
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = if (isNewReleases) 12.dp else 20.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text(
                                 state.region.ifBlank { title },
-                                style = MaterialTheme.typography.headlineMedium,
+                                style = if (isNewReleases) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
                             if (!subtitle.isNullOrBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium)
@@ -186,6 +191,8 @@ fun ChartsScreen(
                 itemsIndexed(items, key = { _, item -> item.media.id }, contentType = { _, _ -> kind }) { index, item ->
                     if (isSongs) {
                         ChartSongRow(item) { onPlayChart(chartQueue, index) }
+                    } else if (isNewReleases) {
+                        ReleaseAlbumCard(album = item.media, onClick = { onOpen(item.media) })
                     } else {
                         ChartArtworkCard(item, artist = kind == ChartKind.Artists) { onOpen(item.media) }
                     }

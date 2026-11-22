@@ -4,6 +4,9 @@ object ThumbnailUrlUtils {
     private val videoIdRegex = Regex("(?:vi(?:_webp)?/|v=|youtu\\.be/)([A-Za-z0-9_-]{11})")
     private val iYtImgPathRegex = Regex("https?://i\\.ytimg\\.com/vi(?:_webp)?/([A-Za-z0-9_-]{11})/([^?]+)")
     private val iYtImgUrlRegex = Regex("https?://i\\.ytimg\\.com/vi(?:_webp)?/([A-Za-z0-9_-]{11})/[^\\s]+")
+    private val displayRectSuffix = Regex("=w\\d+-h\\d+[^&]*")
+    private val displaySquareSuffix = Regex("=s\\d+[^&]*")
+    private val displayDimensions = Regex("w\\d+-h\\d+")
 
     fun playlistTrackArtwork(videoId: String, artwork: String?, cover: String?): String {
         fun imageKey(url: String?) = url?.substringBefore('?')?.substringBefore('=')
@@ -101,7 +104,7 @@ object ThumbnailUrlUtils {
      * Display-oriented thumbnail URL normalization.
      * Prefers broadly available variants first so list/grid artwork appears faster.
      */
-    fun toDisplayQuality(url: String?, videoId: String? = null): String? {
+    fun toDisplayQuality(url: String?, videoId: String? = null, sizePx: Int = 640): String? {
         val cleanedUrl = url?.trim().orEmpty().takeIf { it.isNotEmpty() }
         val id = normalizeVideoId(videoId) ?: extractVideoId(cleanedUrl)
 
@@ -124,9 +127,9 @@ object ThumbnailUrlUtils {
                 cleanedUrl.contains("ggpht.com", ignoreCase = true)
             ) {
                 return cleanedUrl
-                    .replace(Regex("=w\\d+-h\\d+[^&]*"), "=w640-h640-l90-rj")
-                    .replace(Regex("=s\\d+[^&]*"), "=s640")
-                    .replace(Regex("w\\d+-h\\d+"), "w640-h640")
+                    .replace(displayRectSuffix, "=w${sizePx}-h${sizePx}-l90-rj")
+                    .replace(displaySquareSuffix, "=s$sizePx")
+                    .replace(displayDimensions, "w${sizePx}-h${sizePx}")
             }
 
             return cleanedUrl
@@ -138,12 +141,12 @@ object ThumbnailUrlUtils {
     /**
      * Candidate order tuned for fast first-paint in feed/list UIs.
      */
-    fun buildDisplayCandidates(url: String?, videoId: String? = null): List<String> {
+    fun buildDisplayCandidates(url: String?, videoId: String? = null, sizePx: Int = 640): List<String> {
         val cleanedUrl = url?.trim().orEmpty().takeIf { it.isNotEmpty() }
         val id = normalizeVideoId(videoId) ?: extractVideoId(cleanedUrl)
         val candidates = LinkedHashSet<String>()
 
-        val displayUrl = toDisplayQuality(cleanedUrl, id)
+        val displayUrl = toDisplayQuality(cleanedUrl, id, sizePx)
         if (!displayUrl.isNullOrBlank()) {
             candidates.add(displayUrl)
         }

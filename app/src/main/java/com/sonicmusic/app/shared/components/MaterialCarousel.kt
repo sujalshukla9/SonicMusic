@@ -25,6 +25,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -48,8 +49,15 @@ fun SongCarouselCard(
     modifier: Modifier = Modifier,
     shape: Shape = LocalThumbnailShape.current.toComposeShape(),
     isEnabled: Boolean = true,
-    source: SongActionSource = SongActionSource.HOME
+    source: SongActionSource = SongActionSource.HOME,
+    artworkSizePx: Int = 320
 ) {
+    val titleScrim = remember {
+        Brush.verticalGradient(
+            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.25f), Color.Black.copy(alpha = 0.75f)),
+            startY = 50f
+        )
+    }
     Card(
         modifier = modifier
             .aspectRatio(1f)
@@ -69,23 +77,16 @@ fun SongCarouselCard(
             SongThumbnail(
                 artworkUrl = song.thumbnailUrl,
                 modifier = Modifier.fillMaxSize(),
-                contentDescription = song.title
+                contentDescription = song.title,
+                crossfade = false,
+                targetSizePx = artworkSizePx
             )
 
             // Dark gradient overlay for text readability
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.25f),
-                                Color.Black.copy(alpha = 0.75f)
-                            ),
-                            startY = 50f
-                        )
-                    )
+                    .background(titleScrim)
             )
 
             // Song title at bottom start
@@ -126,6 +127,7 @@ fun SongCarousel(
     val carouselState = rememberCarouselState { songs.size }
     val thumbnailShape = LocalThumbnailShape.current
     val currentShape = remember(thumbnailShape) { thumbnailShape.toComposeShape() }
+    val artworkSizePx = with(LocalDensity.current) { itemWidth.roundToPx() }
 
     if (useMultiBrowse) {
         HorizontalMultiBrowseCarousel(
@@ -146,6 +148,7 @@ fun SongCarousel(
                     onClick = { if (isSongEnabled) onSongClick(song) },
                     isEnabled = isSongEnabled,
                     shape = currentShape,
+                    artworkSizePx = artworkSizePx,
                     modifier = Modifier
                         .maskClip(currentShape)
                         .fillMaxSize()
@@ -171,6 +174,7 @@ fun SongCarousel(
                     onClick = { if (isSongEnabled) onSongClick(song) },
                     isEnabled = isSongEnabled,
                     shape = currentShape,
+                    artworkSizePx = artworkSizePx,
                     modifier = Modifier
                         .maskClip(currentShape)
                         .fillMaxSize()

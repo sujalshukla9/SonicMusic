@@ -23,8 +23,9 @@ class AppUpdateReceiver : BroadcastReceiver() {
             }
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 if (BuildConfig.VERSION_CODE >= pending.update.versionCode) {
-                    downloader.finish(pending.id, "SonicMusic was updated successfully.")
-                    UpdateNotifications.clear(context)
+                    if (downloader.finish(pending.id, "SonicMusic was updated successfully.")) {
+                        UpdateNotifications.clear(context)
+                    }
                 }
             }
             INSTALL_RESULT -> handleInstallResult(context, intent, downloader, pending)
@@ -43,12 +44,11 @@ class AppUpdateReceiver : BroadcastReceiver() {
                 intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
             }
             if (confirmation != null) {
-                val message = "Update verified. Confirm installation to continue."
-                downloader.message(message)
+                if (!downloader.markAwaitingConfirmation(pending.id, sessionId)) return
                 confirmation.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                UpdateNotifications.requestConfirmation(context, message, confirmation)
+                UpdateNotifications.requestConfirmation(context, sessionId, UpdateDownloader.CONFIRMATION_REQUIRED, confirmation)
                 if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-                    UpdateNotifications.openConfirmation(context)
+                    UpdateNotifications.openConfirmation(context, sessionId)
                 }
                 return
             }
@@ -64,7 +64,7 @@ class AppUpdateReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_STORAGE -> "There isn’t enough storage to install the update."
             else -> "Installation failed. Your installed version is ready to use."
         }
-        downloader.finish(pending.id, message)
+        if (!downloader.finish(pending.id, message, sessionId)) return
         UpdateNotifications.clear(context)
         if (status != PackageInstaller.STATUS_SUCCESS) UpdateNotifications.show(context, message)
     }

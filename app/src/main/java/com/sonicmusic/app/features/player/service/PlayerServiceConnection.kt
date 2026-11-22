@@ -12,6 +12,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import androidx.core.content.ContextCompat
+import com.sonicmusic.app.core.network.NetworkMonitor
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
@@ -80,6 +81,7 @@ class PlayerServiceConnection @Inject constructor(
     private val settingsRepository: dagger.Lazy<com.sonicmusic.app.data.repository.SettingsRepository>,
     private val intelligentSourceResolver: dagger.Lazy<com.sonicmusic.app.data.repository.IntelligentSourceResolver>,
     private val playbackSessionStore: YouTubePlaybackSessionStore,
+    private val networkMonitor: NetworkMonitor,
 ) {
     companion object {
         private const val TAG = "SonicConnection"
@@ -301,6 +303,7 @@ class PlayerServiceConnection @Inject constructor(
 
     // Monotonic session id to ignore stale async queue work after new playback starts.
     private val queueSessionId = AtomicInteger(0)
+    private var downloadedRadioSession: Int? = null
 
     init {
         scope.launch {
@@ -309,6 +312,23 @@ class PlayerServiceConnection @Inject constructor(
                 streamUrlCache.clear()
                 syncUpcomingMediaItems()
                 preResolveUpcomingTracks(_currentQueueIndex.value)
+            }
+        }
+        scope.launch {
+            networkMonitor.isOnlineState.drop(1).collect { online ->
+                if (!online) {
+                    radioJob?.cancel()
+                    radioJob = null
+                    _isLoadingMore.value = false
+                    if (isWaitingForNextTrack) {
+                        isWaitingForNextTrack = false
+                        _isBuffering.value = false
+                    }
+                } else if (downloadedRadioSession == queueSessionId.get() &&
+                    mediaController?.currentMediaItem?.mediaId?.let { it == _currentSong.value?.id } == true
+                ) {
+                    forceQueueCheck()
+                }
             }
         }
     }
@@ -1108,6 +1128,12 @@ class PlayerServiceConnection @Inject constructor(
         }
     }
 
+    fun playDownloadedSong(song: Song) {
+        if (deferPlaybackUntilConnected { playDownloadedSong(song) }) return
+        playSongsLazy(listOf(song))
+        downloadedRadioSession = queueSessionId.get()
+    }
+
     /**
      * Play a single song and dynamically generate fresh YouTube Music recommendations
      * based on that song, loading INITIAL_RECOMMENDATION_COUNT (15 songs total) into the queue.
@@ -1281,6 +1307,7 @@ class PlayerServiceConnection @Inject constructor(
      * - If infiniteModeEnabled: pre-fetches next recommendations and plays immediately.
      */
     fun skipToNext() {
+        if (_currentSong.value != null && deferPlaybackUntilConnected(::skipToNext)) return
         val controller = mediaController ?: return
         val currentIndex = _currentQueueIndex.value
         val totalQueueSize = synchronized(songQueue) { songQueue.size }
@@ -1312,6 +1339,7 @@ class PlayerServiceConnection @Inject constructor(
      * - Otherwise: restarts current track to 0.
      */
     fun skipToPrevious() {
+        if (_currentSong.value != null && deferPlaybackUntilConnected(::skipToPrevious)) return
         val controller = mediaController ?: return
         val currentIndex = _currentQueueIndex.value
         val qSize = synchronized(songQueue) { songQueue.size }
@@ -1331,6 +1359,7 @@ class PlayerServiceConnection @Inject constructor(
      * Force skip to previous track ignoring restart threshold
      */
     fun forceSkipToPrevious() {
+        if (_currentSong.value != null && deferPlaybackUntilConnected(::forceSkipToPrevious)) return
         val controller = mediaController ?: return
         val currentIndex = _currentQueueIndex.value
         val qSize = synchronized(songQueue) { songQueue.size }
@@ -1751,7 +1780,8 @@ class PlayerServiceConnection @Inject constructor(
     // ═══════════════════════════════════════════════════════════════
     
     private fun canAutoQueue(): Boolean =
-        _infiniteModeEnabled.value && _currentSong.value?.id?.deviceLocalSongId() == null
+        networkMonitor.isOnlineState.value && _infiniteModeEnabled.value &&
+            _currentSong.value?.id?.deviceLocalSongId() == null
 
     /**
      * Check if queue needs more songs and prefetch them before the queue runs dry.
@@ -1801,7 +1831,7 @@ class PlayerServiceConnection @Inject constructor(
         playImmediatelyWhenReady: Boolean = false,
         initial: Boolean = false,
     ) {
-        if (radioJob?.isActive == true) return
+        if (!networkMonitor.isOnlineState.value || radioJob?.isActive == true) return
         val sessionId = queueSessionId.get()
         val remaining = synchronized(songQueue) { songQueue.size - _currentQueueIndex.value - 1 }
         if (!initial && !playImmediatelyWhenReady && remaining > PREFETCH_THRESHOLD && !reachedEndOfQueue) return
@@ -1842,7 +1872,7 @@ class PlayerServiceConnection @Inject constructor(
                         knownIds
                     )
                 }
-                if (sessionId != queueSessionId.get() || !isActive) return@launch
+                if (sessionId != queueSessionId.get() || !isActive || !networkMonitor.isOnlineState.value) return@launch
 
                 val added: List<Song>
                 val snapshot = synchronized(songQueue) {
@@ -1881,7 +1911,9 @@ class PlayerServiceConnection @Inject constructor(
                     _isBuffering.value = false
                 }
             } finally {
-                if (sessionId == queueSessionId.get()) _isLoadingMore.value = false
+                if (sessionId == queueSessionId.get() && radioJob === currentCoroutineContext()[Job]) {
+                    _isLoadingMore.value = false
+                }
             }
         }
     }

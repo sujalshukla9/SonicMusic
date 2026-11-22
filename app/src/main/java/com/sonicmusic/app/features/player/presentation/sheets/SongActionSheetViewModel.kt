@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.data.repository.SettingsRepository
 import com.sonicmusic.app.domain.model.Playlist
 import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.StreamQuality
@@ -22,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
@@ -34,6 +36,7 @@ class SongActionSheetViewModel @Inject constructor(
     private val songRepository: SongRepository,
     private val playlistRepository: PlaylistRepository,
     private val songDownloadManager: SongDownloadManager,
+    private val settingsRepository: SettingsRepository,
     private val recommendationEngine: RecommendationEngine,
     val audioCapabilityDetector: AudioCapabilityDetector
 ) : ViewModel() {
@@ -64,6 +67,8 @@ class SongActionSheetViewModel @Inject constructor(
     fun play(song: Song, source: SongActionSource, queueIndex: Int?) {
         if (source == SongActionSource.QUEUE && queueIndex != null) {
             playerServiceConnection.skipToQueueItem(queueIndex)
+        } else if (source == SongActionSource.DOWNLOADS) {
+            playerServiceConnection.playDownloadedSong(song)
         } else {
             playerServiceConnection.playSongWithRadio(song)
         }
@@ -113,8 +118,10 @@ class SongActionSheetViewModel @Inject constructor(
     fun observeDownloadedFileSize(songId: String) = songDownloadManager.observeDownloadedFileSize(songId)
 
     fun download(song: Song, context: Context) {
-        songDownloadManager.downloadSong(song, StreamQuality.BEST)
-        Toast.makeText(context, "Downloading \"${song.title}\"...", Toast.LENGTH_SHORT).show()
+        viewModelScope.launch {
+            songDownloadManager.downloadSong(song, settingsRepository.downloadQuality.first())
+            Toast.makeText(context, "Downloading \"${song.title}\"...", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun removeDownload(songId: String, context: Context) {
