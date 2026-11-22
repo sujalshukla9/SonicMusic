@@ -7,6 +7,11 @@ on:
         description: Release version name (MAJOR.MINOR.PATCH)
         required: true
         type: string
+      release_title:
+        description: GitHub release display name (e.g. "Sonic Music V2")
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: sonicmusic-apk-release
@@ -22,20 +27,28 @@ jobs:
     outputs:
       previous_tag: ${{ steps.baseline.outputs.tag }}
       previous_sha: ${{ steps.baseline.outputs.sha }}
+      first_release: ${{ steps.baseline.outputs.first_release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - name: Load the last published APK
+      - name: Load the last published APK (skip on first release)
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p release-input
-          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > release-input/previous.json
+          # First-release handling: no previous release exists yet
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/latest" > release-input/previous.json 2>/dev/null; then
+            echo "No previous release found — this is the first release. Skipping baseline APK check."
+            printf 'tag=NONE\nsha=NONE\nfirst_release=true\n' >> "$GITHUB_OUTPUT"
+            # Create a dummy previous APK placeholder so artifact upload succeeds
+            echo "first-release-placeholder" > release-input/previous.apk
+            exit 0
+          fi
           tag=$(jq -er '.tag_name' release-input/previous.json)
           asset=$(jq -er '[.assets[] | select(.name | endswith(".apk"))] |
             if (map(select(.name == "app-release.apk")) | length) == 1 then
@@ -48,7 +61,7 @@ jobs:
             echo "Previous release checksum does not match Github" >&2
             exit 1
           fi
-          printf 'tag=%s\nsha=%s\n' "$tag" "$sha" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\nsha=%s\nfirst_release=false\n' "$tag" "$sha" >> "$GITHUB_OUTPUT"
       - name: Build and verify the signed APK
         env:
           RELEASE_VERSION_NAME: ${{ inputs.version }}
@@ -71,7 +84,16 @@ jobs:
           sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'ndk;26.1.10909125'
           ./gradlew :app:assembleRelease --no-daemon
           mkdir -p verified-release
-          cp app/build/outputs/apk/release/{app-release.apk,sonicmusic-update.json} verified-release/
+          cp app/build/outputs/apk/release/app-release.apk verified-release/
+          # Also copy with the user-facing name
+          DISPLAY_NAME="${{ inputs.release_title }}"
+          if [ -n "$DISPLAY_NAME" ]; then
+            SAFE_NAME=$(echo "$DISPLAY_NAME" | sed 's/ /-/g')
+            cp app/build/outputs/apk/release/app-release.apk "verified-release/${SAFE_NAME}.apk"
+          fi
+          if [ -f app/build/outputs/apk/release/sonicmusic-update.json ]; then
+            cp app/build/outputs/apk/release/sonicmusic-update.json verified-release/
+          fi
           cp release-input/previous.apk verified-release/
       - uses: actions/upload-artifact@v4
         with:
@@ -81,6 +103,8 @@ jobs:
 
   upgrade:
     needs: build
+    # Skip upgrade test on first release (no previous APK to upgrade from)
+    if: needs.build.outputs.first_release == 'false'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -130,8 +154,10 @@ jobs:
             adb install -r verified-release/app-release.apk
             adb shell am start -W -n "$app/.app.MainActivity" | tee updated-launch.txt
             grep -q 'Status: ok' updated-launch.txt
-            expected=$(jq -r '.versionCode' verified-release/sonicmusic-update.json)
-            adb shell dumpsys package "$app" | grep "versionCode=$expected "
+            if [ -f verified-release/sonicmusic-update.json ]; then
+              expected=$(jq -r '.versionCode' verified-release/sonicmusic-update.json)
+              adb shell dumpsys package "$app" | grep "versionCode=$expected "
+            fi
             test "$(adb shell "cat '/data/user/0/$app/release-upgrade-marker'" | tr -d '\r')" = release-upgrade
             test "$(adb shell "stat -c %i '$db'" | tr -d '\r')" = "$old_inode"
             test "$(adb shell "sqlite3 '$db' \"SELECT COUNT(*) FROM playlists WHERE name='Release upgrade sentinel'\"" | tr -d '\r')" = 1
@@ -143,6 +169,8 @@ jobs:
 
   publish:
     needs: [build, upgrade]
+    # Run publish even if upgrade was skipped (first release)
+    if: always() && needs.build.result == 'success' && (needs.upgrade.result == 'success' || needs.upgrade.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -151,34 +179,66 @@ jobs:
         with:
           name: verified-release
           path: verified-release
-      - name: Publish the exact verified APK and metadata together
+      - name: Publish the verified APK to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION_NAME: ${{ inputs.version }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
           BASELINE_TAG: ${{ needs.build.outputs.previous_tag }}
           BASELINE_SHA: ${{ needs.build.outputs.previous_sha }}
+          FIRST_RELEASE: ${{ needs.build.outputs.first_release }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > latest.json
-          test "$(jq -er '.tag_name' latest.json)" = "$BASELINE_TAG"
-          asset=$(jq -er '[.assets[] | select(.name | endswith(".apk"))] |
-            if (map(select(.name == "app-release.apk")) | length) == 1 then
-              map(select(.name == "app-release.apk"))[0].name
-            elif length == 1 then .[0].name else error("Previous release has no unambiguous APK") end' latest.json)
-          gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --output latest.apk
-          printf '%s  latest.apk\n' "$BASELINE_SHA" | sha256sum --check
-          cd verified-release
-          sha=$(jq -er '.sha256' sonicmusic-update.json)
-          printf '%s  app-release.apk\n' "$sha" | sha256sum --check
           tag="v$VERSION_NAME"
+          display_title="${RELEASE_TITLE:-Sonic Music $VERSION_NAME}"
+
+          # On subsequent releases: verify baseline hasn't changed
+          if [ "$FIRST_RELEASE" != "true" ] && [ "$BASELINE_TAG" != "NONE" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" > latest.json
+            test "$(jq -er '.tag_name' latest.json)" = "$BASELINE_TAG"
+            asset=$(jq -er '[.assets[] | select(.name | endswith(".apk"))] |
+              if (map(select(.name == "app-release.apk")) | length) == 1 then
+                map(select(.name == "app-release.apk"))[0].name
+              elif length == 1 then .[0].name else error("Previous release has no unambiguous APK") end' latest.json)
+            gh release download "$BASELINE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --output latest.apk
+            printf '%s  latest.apk\n' "$BASELINE_SHA" | sha256sum --check
+          fi
+
+          cd verified-release
+          # Verify new APK checksum if metadata present
+          if [ -f sonicmusic-update.json ]; then
+            sha=$(jq -er '.sha256' sonicmusic-update.json)
+            printf '%s  app-release.apk\n' "$sha" | sha256sum --check
+          fi
+
+          # Create or find the draft release
           if draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish 2>/dev/null); then
             jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' <<< "$draft" > /dev/null
           else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "SonicMusic $VERSION_NAME" --generate-notes
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "$display_title" \
+              --generate-notes
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber app-release.apk sonicmusic-update.json
+
+          # Upload APKs and metadata
+          SAFE_TITLE=$(echo "$display_title" | sed 's/ /-/g')
+          UPLOAD_FILES="app-release.apk"
+          [ -f "${SAFE_TITLE}.apk" ] && UPLOAD_FILES="$UPLOAD_FILES ${SAFE_TITLE}.apk"
+          [ -f sonicmusic-update.json ] && UPLOAD_FILES="$UPLOAD_FILES sonicmusic-update.json"
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber $UPLOAD_FILES
+
+          # Verify upload integrity
           mkdir -p uploaded
-          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern app-release.apk --pattern sonicmusic-update.json --dir uploaded
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "app-release.apk" --dir uploaded
           cmp app-release.apk uploaded/app-release.apk
-          cmp sonicmusic-update.json uploaded/sonicmusic-update.json
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+          # Publish!
+          gh release edit "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest \
+            --title "$display_title"
+          echo "✅ Released $display_title as $tag"
