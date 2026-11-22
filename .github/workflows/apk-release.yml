@@ -31,8 +31,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Setup Android SDK
-        run: |
-          sdkmanager 'platforms;android-35' 'build-tools;34.0.0' 'ndk;26.1.10909125'
+        uses: android-actions/setup-android@v3
+      - name: Install required SDK packages
+        run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
       - name: Build Release APK
         env:
           RELEASE_VERSION_NAME: ${{ inputs.version }}
