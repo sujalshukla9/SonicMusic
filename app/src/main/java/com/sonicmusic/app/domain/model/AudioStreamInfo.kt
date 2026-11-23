@@ -191,7 +191,7 @@ data class AudioStreamInfo(
          */
         fun nominalBitrateForItag(itag: Int?): Int? = when (itag) {
             251 -> 160
-            141, 338 -> 256
+            141, 338, 774 -> 256
             22 -> 192
             140, 171 -> 128
             18 -> 96

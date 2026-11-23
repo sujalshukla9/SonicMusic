@@ -8,6 +8,7 @@ import com.sonicmusic.app.domain.audio.models.TrackIdentity
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.features.player.audio.PlaybackDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,7 +44,8 @@ class IntelligentAudioResolver @Inject constructor(
     data class CachedResolution(
         val candidate: AudioStreamCandidate,
         val info: AudioStreamInfo,
-        val expiresAtMs: Long
+        val expiresAtMs: Long,
+        val alternatives: List<AudioStreamCandidate>,
     )
     private data class ResolutionKey(val trackId: String, val quality: StreamQuality, val sessionRevision: Long)
     private val resolutionCache = android.util.LruCache<ResolutionKey, CachedResolution>(128)
@@ -90,26 +92,40 @@ class IntelligentAudioResolver @Inject constructor(
         quality: StreamQuality,
         forceRefresh: Boolean,
         excludeUrls: Set<String>,
+        excludeFormats: Set<PlaybackStreamFormat>,
         onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)?
     ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> = withContext(Dispatchers.IO) {
         val videoId = track.trackId
-        val wantsHighQuality = quality == StreamQuality.HIGH || quality == StreamQuality.BEST
-        val snapshot = if (wantsHighQuality) playbackSessionStore.snapshot() else null
+        val snapshot = if (quality.prefersHighestQuality) playbackSessionStore.snapshot() else null
         val cacheKey = ResolutionKey(videoId, quality, snapshot?.revision ?: 0L)
 
         // Cancel any pending discovery job for this track before starting new
         cancelResolution(videoId)
 
+        fun AudioStreamCandidate.isExcluded(): Boolean =
+            url in excludeUrls ||
+                (excludeFormats.isNotEmpty() && PlaybackStreamFormat.fromUrl(url, itag) in excludeFormats)
+
         // 1. Check cached resolution if still valid
         if (!forceRefresh) {
             val cached = resolutionCache.get(cacheKey)
             if (cached != null && !cached.candidate.isExpired() && cached.expiresAtMs > System.currentTimeMillis() &&
-                cached.candidate.url !in excludeUrls &&
+                !cached.candidate.isExcluded() &&
                 (snapshot == null || snapshot.revision == playbackSessionStore.revision)
             ) {
                 Log.d(TAG, "Serving cached audio resolution for '$videoId' (${cached.candidate.sourceType})")
                 playbackDiagnostics.onCandidateSelected(videoId, cached.candidate)
                 return@withContext Result.success(Pair(cached.candidate, cached.info))
+            }
+            if (cached != null && excludeFormats.isNotEmpty() &&
+                (snapshot == null || snapshot.revision == playbackSessionStore.revision)
+            ) {
+                val replacement = audioSourceSelector.selectBestSource(
+                    cached.alternatives.filterNot { it.isExcluded() }, quality, excludeUrls
+                )
+                if (replacement is AudioResolutionResult.Success) {
+                    return@withContext handleSelectionResult(cacheKey, replacement, snapshot?.session != null)
+                }
             }
         }
 
@@ -127,19 +143,22 @@ class IntelligentAudioResolver @Inject constructor(
         if (usableAccountCandidates.isEmpty() && publicResult.isFailure) {
             return@withContext Result.failure(checkNotNull(publicResult.exceptionOrNull()))
         }
-        val candidates = (usableAccountCandidates + publicResult.getOrNull().orEmpty()).distinctBy { it.url }
+        val candidates = (usableAccountCandidates + publicResult.getOrNull().orEmpty())
+            .distinctBy { it.url }
+            .filterNot { it.isExcluded() }
 
         val selection = audioSourceSelector.selectBestSource(
             innertubeCandidates = candidates,
             requestedQuality = quality,
             excludeUrls = excludeUrls
         )
-        return@withContext handleSelectionResult(cacheKey, selection)
+        return@withContext handleSelectionResult(cacheKey, selection, snapshot?.session != null)
     }
 
     private fun handleSelectionResult(
         cacheKey: ResolutionKey,
         result: AudioResolutionResult,
+        hasAccountSession: Boolean,
     ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> {
         val videoId = cacheKey.trackId
         return when (result) {
@@ -149,7 +168,8 @@ class IntelligentAudioResolver @Inject constructor(
                 resolutionCache.put(cacheKey, CachedResolution(
                     candidate = candidate,
                     info = info,
-                    expiresAtMs = candidate.expiresAtMs ?: (System.currentTimeMillis() + 15 * 60 * 1000L)
+                    expiresAtMs = playbackResolutionCacheExpiry(candidate, hasAccountSession),
+                    alternatives = result.fallbackCandidates,
                 ))
                 playbackDiagnostics.onCandidateSelected(videoId, candidate)
                 Result.success(Pair(candidate, info))
@@ -159,5 +179,19 @@ class IntelligentAudioResolver @Inject constructor(
                 Result.failure(IllegalStateException(result.failureReason))
             }
         }
+    }
+}
+
+internal const val STANDARD_STREAM_RECHECK_MS = 90_000L
+
+internal fun playbackResolutionCacheExpiry(candidate: AudioStreamCandidate, hasAccountSession: Boolean): Long {
+    val now = System.currentTimeMillis()
+    val streamingExpiry = candidate.expiresAtMs ?: AudioStreamCandidate.extractExpiryFromUrl(candidate.url)
+    val deadline = streamingExpiry?.minus(60_000L) ?: (now + 15 * 60_000L)
+    return if (hasAccountSession && !candidate.isLossless() && !candidate.isExtendedQualityAudio()) {
+        // Retry the account path on a later play after a temporary failure or lower-quality response.
+        minOf(deadline, now + STANDARD_STREAM_RECHECK_MS)
+    } else {
+        deadline
     }
 }

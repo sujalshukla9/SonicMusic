@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sonicmusic.app.core.network.HttpStatusException
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
+import com.sonicmusic.app.data.remote.source.YouTubeMusicLoginState
 import com.sonicmusic.app.data.remote.source.YouTubePlaybackSession
 import com.sonicmusic.app.data.remote.source.YouTubePlaybackSessionStore
 import com.sonicmusic.app.features.library.data.YouTubeMusicSyncWorker
@@ -49,7 +50,15 @@ class YouTubePlaybackViewModel @Inject constructor(
             if (extractor.verifyPlaybackSession(session)) {
                 sessionStore.save(session)
                 YouTubeMusicSyncWorker.accountConnected(context)
-                "Session connected for your YouTube Music Home and high-quality playback."
+                when (extractor.playbackWebLoginState(session)) {
+                    YouTubeMusicLoginState.SignedIn ->
+                        "Connected to YouTube Music. Streaming quality depends on the formats YouTube offers."
+                    YouTubeMusicLoginState.SignedOut ->
+                        "Home is connected. The Music web player could not sign in to the selected account. " +
+                            "Check the account index and use the Cookie header from that signed-in account."
+                    YouTubeMusicLoginState.Unspecified ->
+                        "Home is connected. The Music web player could not verify the playback session right now."
+                }
             } else {
                 "YouTube Music did not accept this session. Check the cookie and account index."
             }

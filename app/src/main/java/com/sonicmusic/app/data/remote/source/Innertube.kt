@@ -173,7 +173,8 @@ object Innertube {
         body: JSONObject,
         acceptLanguage: String,
         fieldMask: String? = null,
-        cookies: String? = null
+        cookies: String? = null,
+        userSessionId: String? = null
     ): Request {
         val url = endpointUrl(
             endpoint = endpoint,
@@ -207,33 +208,31 @@ object Innertube {
                 }
                 if (!cookies.isNullOrBlank()) {
                     header("Cookie", cookies)
-                    val sapisid = extractSapisidCookie(cookies)
-                    if (sapisid != null) {
-                        header("Authorization", generateSapisidHash(sapisid))
-                    }
+                    musicAuthorization(cookies, userSessionId)?.let { header("Authorization", it) }
                 }
             }
             .build()
     }
 
-    private fun extractSapisidCookie(cookies: String): String? {
-        val parts = cookies.split(";")
-        for (part in parts) {
-            val keyVal = part.trim().split("=", limit = 2)
-            if (keyVal.size >= 2 && keyVal[0].trim() == "SAPISID") {
-                return keyVal[1].trim()
-            }
+    private fun musicAuthorization(cookies: String, userSessionId: String?): String? {
+        val values = cookies.split(';').associate { pair ->
+            pair.substringBefore('=').trim() to pair.substringAfter('=', "").trim()
         }
-        return null
-    }
-
-    private fun generateSapisidHash(sapisid: String): String {
         val timestamp = System.currentTimeMillis() / 1000
-        val payload = "$timestamp $sapisid https://music.youtube.com"
-        val sha1 = java.security.MessageDigest.getInstance("SHA-1")
-            .digest(payload.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-        return "SAPISIDHASH ${timestamp}_$sha1"
+        val schemes = mapOf(
+            "SAPISIDHASH" to values["SAPISID"],
+            "SAPISID1PHASH" to values["__Secure-1PAPISID"],
+            "SAPISID3PHASH" to values["__Secure-3PAPISID"]
+        )
+        return schemes.mapNotNull { (scheme, sid) ->
+            if (sid.isNullOrBlank()) return@mapNotNull null
+            val identity = userSessionId?.let { "$it " }.orEmpty()
+            val payload = "${identity}$timestamp $sid https://music.youtube.com"
+            val digest = java.security.MessageDigest.getInstance("SHA-1")
+                .digest(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+            val suffix = if (userSessionId == null) "" else "_u"
+            "$scheme ${timestamp}_$digest$suffix"
+        }.joinToString(" ").takeIf(String::isNotEmpty)
     }
 
     fun youtubeAndroidPost(

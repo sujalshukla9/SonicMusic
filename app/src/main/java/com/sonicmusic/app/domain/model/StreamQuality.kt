@@ -44,6 +44,9 @@ enum class StreamQuality(
         preferredCodec = "best",
     );
 
+    val prefersHighestQuality: Boolean
+        get() = this == HIGH || this == BEST
+
     /**
      * Data usage multiplier relative to HIGH_QUALITY
      */

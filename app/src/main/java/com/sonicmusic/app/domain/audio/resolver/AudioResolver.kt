@@ -4,6 +4,7 @@ import com.sonicmusic.app.domain.audio.models.TrackIdentity
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.StreamQuality
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 
 /**
  * Main coordinator for audio discovery, quality inspection,
@@ -18,6 +19,7 @@ interface AudioResolver {
         quality: StreamQuality = StreamQuality.BEST,
         forceRefresh: Boolean = false,
         excludeUrls: Set<String> = emptySet(),
+        excludeFormats: Set<PlaybackStreamFormat> = emptySet(),
         onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
     ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>>
 }

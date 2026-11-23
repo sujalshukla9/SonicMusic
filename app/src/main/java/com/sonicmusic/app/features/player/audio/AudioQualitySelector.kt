@@ -64,7 +64,7 @@ class AudioQualitySelector @Inject constructor() {
             return null
         }
 
-        val preferBitrateTarget = requestedQuality == StreamQuality.LOW || requestedQuality == StreamQuality.MEDIUM
+        val preferBitrateTarget = !requestedQuality.prefersHighestQuality
         val ranked = validCandidates.sortedWith(
             compareByDescending<AudioStreamCandidate> { it.isAudioOnly }
                 .thenByDescending { !preferBitrateTarget && it.isLossless() }
@@ -90,10 +90,6 @@ class AudioQualitySelector @Inject constructor() {
         Log.d(TAG, rationale)
         return SelectionResult(best, rationale, ranked)
     }
-
-    private fun AudioStreamCandidate.isExtendedQualityAudio(): Boolean =
-        isAudioOnly && (isAac() || isOpus()) &&
-            (bitrateBps >= 224_000 || AudioStreamInfo.nominalBitrateForItag(itag) == 256)
 
     /**
      * Select the next best fallback candidate when the primary candidate fails.
@@ -188,7 +184,10 @@ class AudioQualitySelector @Inject constructor() {
         val isAac = candidate.isAac()
         val isAacHe = candidate.isAacHe()
         val isLossless = candidate.isLossless()
-        val bitrate = candidate.bitrateBps / 1_000L
+        val bitrate = (candidate.bitrateBps / 1_000L).takeIf { it > 0 }
+            ?: AudioStreamInfo.nominalBitrateForItag(candidate.itag)?.toLong()
+                ?.takeIf { requestedQuality.prefersHighestQuality && it == 256L }
+            ?: 0L
         val isAudioOnly = candidate.isAudioOnly
 
         val baseScore = when (requestedQuality) {

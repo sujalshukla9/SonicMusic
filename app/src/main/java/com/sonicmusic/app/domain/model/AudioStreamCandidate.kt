@@ -48,6 +48,9 @@ data class AudioStreamCandidate(
     fun isOpus(): Boolean = codec.equals("OPUS", true)
     fun isAac(): Boolean = audioCodec.startsWith("AAC")
     fun isAacHe(): Boolean = audioCodec.startsWith("AAC-HE")
+    fun isExtendedQualityAudio(): Boolean =
+        isAudioOnly && (isAac() || isOpus()) &&
+            (bitrateBps >= 224_000 || AudioStreamInfo.nominalBitrateForItag(itag) == 256)
 
     val audioCodec: String
         get() = AudioStreamInfo.codecFromMimeType(codecProfile?.let { if (it.startsWith("40.")) "mp4a.$it" else it } ?: mimeType)

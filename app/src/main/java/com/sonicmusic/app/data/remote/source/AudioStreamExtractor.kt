@@ -15,6 +15,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -48,7 +49,8 @@ class AudioStreamExtractor @Inject constructor(
     private val newPipeService: NewPipeService,
     private val okHttpClient: OkHttpClient,
     private val audioQualitySelector: AudioQualitySelector,
-    private val accountClient: YouTubeMusicAccountClient
+    private val accountClient: YouTubeMusicAccountClient,
+    private val musicPlayerSolver: YoutubeMusicPlayerSolver,
 ) {
 
     private val client = okHttpClient.newBuilder()
@@ -321,13 +323,22 @@ class AudioStreamExtractor @Inject constructor(
         )
     }
 
+    internal suspend fun playbackWebLoginState(session: YouTubePlaybackSession): YouTubeMusicLoginState =
+        withContext(Dispatchers.IO) { accountClient.playbackWebLoginState(session) }
+
     internal suspend fun extractAuthenticatedCandidates(
         videoId: String,
         session: YouTubePlaybackSession,
     ): List<AudioStreamCandidate> {
         return try {
             val signatureTimestamp = withContext(Dispatchers.IO) {
-                runCatching { YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId) }.getOrNull()
+                try {
+                    YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
             }
             val json = authenticatedMusicRequest("player", session) {
                 put("videoId", videoId)
@@ -335,20 +346,61 @@ class AudioStreamExtractor @Inject constructor(
                 signatureTimestamp?.let { playback.put("signatureTimestamp", it) }
                 put("playbackContext", JSONObject().put("contentPlaybackContext", playback))
             }
+            val data = json.optJSONObject("streamingData")
+            val adaptiveFormats = data?.optJSONArray("adaptiveFormats")
+            val solution = if (adaptiveFormats != null && allowsAuthenticatedAudio(json)) {
+                val signatures = mutableSetOf<String>()
+                val throttling = mutableSetOf<String>()
+                for (index in 0 until adaptiveFormats.length()) {
+                    val format = adaptiveFormats.optJSONObject(index) ?: continue
+                    if (!isUnprotectedAudio(format)) continue
+                    val cipher = try {
+                        cipherParameters(format)
+                    } catch (_: IllegalArgumentException) {
+                        continue
+                    }
+                    val url = (format.opt("url") as? String)?.takeIf(String::isNotBlank) ?: cipher["url"]
+                    val uri = url?.toHttpUrlOrNull()?.takeIf(::isYouTubeAudioUrl) ?: continue
+                    cipher["s"]?.takeIf { it.length in 1..2048 }?.let(signatures::add)
+                    uri.queryParameter("n")?.takeIf { it.length in 1..2048 }?.let(throttling::add)
+                }
+                musicPlayerSolver.solve(videoId, signatures, throttling)
+            } else null
             val candidates = withContext(Dispatchers.IO) {
                 parseAuthenticatedPlayerCandidates(
                     json,
-                    decodeSignature = { YoutubeJavaScriptPlayerManager.deobfuscateSignature(videoId, it) },
-                    normalizeUrl = { YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, it) }
+                    decodeSignature = {
+                        solution?.signatures?.get(it)
+                            ?: YoutubeJavaScriptPlayerManager.deobfuscateSignature(videoId, it)
+                    },
+                    normalizeUrl = { url ->
+                        val uri = url.toHttpUrlOrNull()
+                        val replacement = uri?.queryParameter("n")?.let { solution?.throttling?.get(it) }
+                        if (uri != null && replacement != null) {
+                            uri.newBuilder().setQueryParameter("n", replacement).build().toString()
+                        } else {
+                            YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(videoId, url)
+                        }
+                    }
                 )
             }
-            val data = json.optJSONObject("streamingData")
+            val offeredAudioItags = buildSet {
+                if (adaptiveFormats != null) {
+                    for (index in 0 until adaptiveFormats.length()) {
+                        val format = adaptiveFormats.optJSONObject(index) ?: continue
+                        if (format.optString("mimeType").startsWith("audio/")) {
+                            format.optInt("itag").takeIf { it > 0 }?.let(::add)
+                        }
+                    }
+                }
+            }
             val status = json.optJSONObject("playabilityStatus")?.optString("status")
                 ?.takeIf { it.matches(Regex("[A-Z_]{1,40}")) }
             Log.d(TAG, "Authenticated player status=${status ?: "unknown"}, " +
-                "adaptive=${data?.optJSONArray("adaptiveFormats")?.length() ?: 0}, " +
+                "login=${youtubeMusicLoginState(json)}, offeredAudioItags=$offeredAudioItags, " +
                 "serverAbr=${!data?.optString("serverAbrStreamingUrl").isNullOrBlank()}, " +
-                "usable=${candidates.size}, maxKbps=${candidates.maxOfOrNull { it.bitrateKbps } ?: 0}")
+                "usableAudioItags=${candidates.mapNotNull { it.itag }.distinct()}, " +
+                "maxKbps=${candidates.maxOfOrNull { it.bitrateKbps } ?: 0}")
             candidates
         } catch (e: CancellationException) {
             throw e
@@ -366,22 +418,41 @@ class AudioStreamExtractor @Inject constructor(
         decodeSignature: ((String) -> String)? = null,
         normalizeUrl: (String) -> String = { it },
     ): List<AudioStreamCandidate> {
-        val playability = json.optJSONObject("playabilityStatus")
-        val status = playability?.optString("status")
-        val audioAvailability = playability?.optJSONObject("audioOnlyPlayability")
-            ?.optJSONObject("audioOnlyPlayabilityRenderer")?.optString("audioOnlyAvailability").orEmpty()
-        val loggedOut = json.optJSONObject("responseContext")
-            ?.optJSONObject("mainAppWebResponseContext")?.optBoolean("loggedOut") == true
-        if (status != "OK" || loggedOut ||
-            (audioAvailability.isNotEmpty() && audioAvailability != "FEATURE_AVAILABILITY_ALLOWED")
-        ) return emptyList()
+        if (!allowsAuthenticatedAudio(json)) return emptyList()
 
         return parsePlayerCandidates(json, "Innertube-YouTubeMusic", adaptiveAudioOnly = true) { format ->
-            runCatching {
-                val url = resolveFormatUrl(format, decodeSignature) ?: return@runCatching null
-                if (isYouTubeAudioUrl(url)) normalizeUrl(url).takeIf(::isYouTubeAudioUrl) else null
-            }.getOrNull()
+            val url = try {
+                resolveFormatUrl(format, decodeSignature)?.takeIf(::isYouTubeAudioUrl)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.d(TAG, "Authenticated audio URL resolution failed for itag=${format.optInt("itag")} " +
+                    "(${e.javaClass.simpleName})")
+                null
+            }
+            url?.let {
+                val normalizedUrl = try {
+                    normalizeUrl(it)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // The server provided a signed URL. Let playback try it if optional normalization fails.
+                    Log.d(TAG, "Using original authenticated audio URL for itag=${format.optInt("itag")}")
+                    it
+                }
+                normalizedUrl.takeIf(::isYouTubeAudioUrl)
+            }
         }.filter { audioQualitySelector.isCandidateUsable(it, emptySet()) }
+    }
+
+    private fun allowsAuthenticatedAudio(json: JSONObject): Boolean {
+        val playability = json.optJSONObject("playabilityStatus")
+        val audioAvailability = playability?.optJSONObject("audioOnlyPlayability")
+            ?.optJSONObject("audioOnlyPlayabilityRenderer")?.optString("audioOnlyAvailability").orEmpty()
+        return playability?.optString("status") == "OK" &&
+            youtubeMusicLoginState(json) != YouTubeMusicLoginState.SignedOut &&
+            (audioAvailability.isEmpty() || audioAvailability == "FEATURE_AVAILABILITY_ALLOWED" ||
+                audioAvailability == "FEATURE_AVAILABILITY_UNSPECIFIED")
     }
 
     private suspend fun authenticatedMusicRequest(
@@ -419,16 +490,25 @@ class AudioStreamExtractor @Inject constructor(
 
     private fun isYouTubeAudioUrl(value: String): Boolean {
         val url = value.toHttpUrlOrNull() ?: return false
-        return url.isHttps && (url.host == "googlevideo.com" || url.host.endsWith(".googlevideo.com"))
+        return isYouTubeAudioUrl(url)
+    }
+
+    private fun isYouTubeAudioUrl(url: HttpUrl): Boolean =
+        url.isHttps && url.port == 443 && url.username.isEmpty() && url.password.isEmpty() &&
+            (url.host == "googlevideo.com" || url.host.endsWith(".googlevideo.com"))
+
+    private fun cipherParameters(format: JSONObject): Map<String, String> {
+        val cipher = (format.opt("signatureCipher") as? String)?.takeIf(String::isNotBlank)
+            ?: (format.opt("cipher") as? String)?.takeIf(String::isNotBlank)
+            ?: return emptyMap()
+        return cipher.split('&').associate { pair ->
+            pair.substringBefore('=') to URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
+        }
     }
 
     private fun resolveFormatUrl(format: JSONObject, decodeSignature: ((String) -> String)? = null): String? {
-        format.optString("url").takeIf { it.isNotBlank() }?.let { return it }
-        val cipher = format.optString("signatureCipher").ifBlank { format.optString("cipher") }
-        if (cipher.isBlank()) return null
-        val parameters = cipher.split('&').associate { pair ->
-            pair.substringBefore('=') to URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
-        }
+        (format.opt("url") as? String)?.takeIf(String::isNotBlank)?.let { return it }
+        val parameters = cipherParameters(format)
         val url = parameters["url"]?.takeIf { it.isNotBlank() } ?: return null
         val obfuscatedSignature = parameters["s"] ?: return url
         if (decodeSignature == null || !isYouTubeAudioUrl(url)) return null
@@ -436,6 +516,10 @@ class AudioStreamExtractor @Inject constructor(
         val parameter = parameters["sp"]?.takeIf { it.isNotBlank() } ?: "signature"
         return url.toHttpUrlOrNull()?.newBuilder()?.setQueryParameter(parameter, signature)?.build()?.toString()
     }
+
+    private fun isUnprotectedAudio(format: JSONObject): Boolean =
+        format.optString("mimeType").startsWith("audio/") &&
+            (format.optJSONArray("drmFamilies")?.length() ?: 0) == 0
 
     private fun parseFormatArray(
         jsonArray: JSONArray?,
@@ -449,7 +533,7 @@ class AudioStreamExtractor @Inject constructor(
             val format = jsonArray.optJSONObject(i) ?: continue
             val mimeType = format.optString("mimeType", "")
             val isAudioOnly = mimeType.startsWith("audio/")
-            if (audioOnly && (!isAudioOnly || format.optJSONArray("drmFamilies")?.length()?.let { it > 0 } == true)) {
+            if (audioOnly && !isUnprotectedAudio(format)) {
                 continue
             }
             val hasAudio = isAudioOnly || format.has("audioQuality") || format.has("audioSampleRate")

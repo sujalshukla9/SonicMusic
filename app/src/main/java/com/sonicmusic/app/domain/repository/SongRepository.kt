@@ -3,6 +3,7 @@ package com.sonicmusic.app.domain.repository
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.domain.model.StreamQuality
 import kotlinx.coroutines.flow.Flow
 
@@ -27,6 +28,7 @@ interface SongRepository {
         artist: String? = null,
         durationSec: Int? = null,
         excludeUrls: Set<String> = emptySet(),
+        excludeFormats: Set<PlaybackStreamFormat> = emptySet(),
         onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
     ): Result<Pair<String, AudioStreamInfo>>
 

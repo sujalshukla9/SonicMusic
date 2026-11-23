@@ -9,9 +9,11 @@ import com.sonicmusic.app.data.local.entity.SongEntity
 import com.sonicmusic.app.data.remote.source.AudioStreamExtractor
 import com.sonicmusic.app.data.remote.source.NewPipeService
 import com.sonicmusic.app.data.remote.source.YouTubeiService
+import com.sonicmusic.app.domain.audio.resolver.playbackResolutionCacheExpiry
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.player.audio.AudioEngine
@@ -178,6 +180,7 @@ class SongRepositoryImpl @Inject constructor(
         artist: String?,
         durationSec: Int?,
         excludeUrls: Set<String>,
+        excludeFormats: Set<PlaybackStreamFormat>,
         onUpgradeAvailable: ((com.sonicmusic.app.domain.model.AudioStreamCandidate, AudioStreamInfo) -> Unit)?
     ): Result<Pair<String, AudioStreamInfo>> {
         val effectiveQuality = resolveQuality(quality)
@@ -205,13 +208,17 @@ class SongRepositoryImpl @Inject constructor(
             return Result.success(localUri to localInfo)
         }
 
-        val sessionRevision = playbackSessionStore.revision
+        val session = if (effectiveQuality.prefersHighestQuality) playbackSessionStore.snapshot() else null
+        val sessionRevision = session?.revision ?: playbackSessionStore.revision
         if (!forceRefresh) {
             val cached = memoryStreamCache.get(songId)
             if (cached != null &&
-                cached.expiresAtMs > (System.currentTimeMillis() + 60_000L) &&
+                cached.expiresAtMs > System.currentTimeMillis() &&
                 cached.sessionRevision == sessionRevision &&
-                cached.quality == effectiveQuality && cached.url !in excludeUrls
+                sessionRevision == playbackSessionStore.revision &&
+                cached.quality == effectiveQuality && cached.url !in excludeUrls &&
+                (excludeFormats.isEmpty() ||
+                    PlaybackStreamFormat.fromUrl(cached.url, cached.info.itag) !in excludeFormats)
             ) {
                 playbackDiagnostics.rememberResolvedStream(songId, cached.url, cached.info)
                 return Result.success(cached.url to cached.info)
@@ -226,26 +233,17 @@ class SongRepositoryImpl @Inject constructor(
             quality = effectiveQuality,
             forceRefresh = forceRefresh,
             excludeUrls = excludeUrls,
+            excludeFormats = excludeFormats,
             onUpgradeAvailable = { superiorCandidate, superiorInfo ->
-                updateStreamCache(songId, superiorCandidate, superiorInfo, sessionRevision)
-                onUpgradeAvailable?.invoke(superiorCandidate, superiorInfo)
+                if (sessionRevision == playbackSessionStore.revision) {
+                    cacheResolvedStream(songId, superiorCandidate, superiorInfo, effectiveQuality, sessionRevision)
+                    onUpgradeAvailable?.invoke(superiorCandidate, superiorInfo)
+                }
             }
         ).getOrElse { return Result.failure(it) }
 
         val streamUrl = candidate.url
-        val expiry = candidate.expiresAtMs
-            ?: AudioStreamCandidate.extractExpiryFromUrl(streamUrl)
-            ?: (System.currentTimeMillis() + (15 * 60 * 1000L))
-
-        memoryStreamCache.put(songId, CachedStream(
-            url = streamUrl,
-            info = info,
-            quality = effectiveQuality,
-            expiresAtMs = expiry,
-            sourceType = candidate.sourceType,
-            identityConfidence = candidate.identityConfidence,
-            sessionRevision = sessionRevision
-        ))
+        cacheResolvedStream(songId, candidate, info, effectiveQuality, sessionRevision)
 
         playbackDiagnostics.rememberResolvedStream(songId, streamUrl, info)
         return Result.success(streamUrl to info)
@@ -330,31 +328,28 @@ class SongRepositoryImpl @Inject constructor(
         candidate: com.sonicmusic.app.domain.model.AudioStreamCandidate,
         info: AudioStreamInfo
     ) {
-        updateStreamCache(songId, candidate, info, playbackSessionStore.revision)
+        val quality = memoryStreamCache.get(songId)?.quality ?: audioEngine.getOptimalQuality()
+        cacheResolvedStream(songId, candidate, info, quality, playbackSessionStore.revision)
     }
 
-    private fun updateStreamCache(
+    private fun cacheResolvedStream(
         songId: String,
         candidate: AudioStreamCandidate,
         info: AudioStreamInfo,
+        quality: StreamQuality,
         sessionRevision: Long,
     ) {
-        val streamUrl = candidate.url
-        val expiry = candidate.expiresAtMs
-            ?: com.sonicmusic.app.domain.model.AudioStreamCandidate.extractExpiryFromUrl(streamUrl)
-            ?: (System.currentTimeMillis() + (15 * 60 * 1000L))
-
-        val effectiveQuality = memoryStreamCache.get(songId)?.quality ?: StreamQuality.BEST
+        if (sessionRevision != playbackSessionStore.revision) return
+        val hasAccountSession = quality.prefersHighestQuality && playbackSessionStore.connected.value
         memoryStreamCache.put(songId, CachedStream(
-            url = streamUrl,
+            url = candidate.url,
             info = info,
-            quality = effectiveQuality,
-            expiresAtMs = expiry,
+            quality = quality,
+            expiresAtMs = playbackResolutionCacheExpiry(candidate, hasAccountSession),
             sourceType = candidate.sourceType,
             identityConfidence = candidate.identityConfidence,
             sessionRevision = sessionRevision
         ))
-        Log.d(TAG, "Updated stream cache for '$songId': [${candidate.sourceType} ${candidate.codec} ${candidate.bitrateKbps}kbps]")
     }
 
     override suspend fun clearCachedStreamUrl(songId: String) {

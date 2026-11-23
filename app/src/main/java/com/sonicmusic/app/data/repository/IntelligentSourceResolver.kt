@@ -5,6 +5,7 @@ import com.sonicmusic.app.domain.audio.resolver.AudioResolver
 import com.sonicmusic.app.domain.audio.resolver.IntelligentAudioResolver
 import com.sonicmusic.app.domain.model.AudioStreamCandidate
 import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.domain.model.StreamQuality
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,6 +26,7 @@ class IntelligentSourceResolver @Inject constructor(
         quality: StreamQuality = StreamQuality.BEST,
         forceRefresh: Boolean = false,
         excludeUrls: Set<String> = emptySet(),
+        excludeFormats: Set<PlaybackStreamFormat> = emptySet(),
         onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)? = null
     ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> {
         val track = TrackIdentity.from(
@@ -33,7 +35,9 @@ class IntelligentSourceResolver @Inject constructor(
             artist = artist,
             durationSec = durationSec
         )
-        return intelligentAudioResolver.resolveStream(track, quality, forceRefresh, excludeUrls, onUpgradeAvailable)
+        return intelligentAudioResolver.resolveStream(
+            track, quality, forceRefresh, excludeUrls, excludeFormats, onUpgradeAvailable
+        )
     }
 
     override suspend fun resolveStream(
@@ -41,9 +45,10 @@ class IntelligentSourceResolver @Inject constructor(
         quality: StreamQuality,
         forceRefresh: Boolean,
         excludeUrls: Set<String>,
+        excludeFormats: Set<PlaybackStreamFormat>,
         onUpgradeAvailable: ((AudioStreamCandidate, AudioStreamInfo) -> Unit)?
     ): Result<Pair<AudioStreamCandidate, AudioStreamInfo>> =
-        intelligentAudioResolver.resolveStream(track, quality, forceRefresh, excludeUrls, onUpgradeAvailable)
+        intelligentAudioResolver.resolveStream(track, quality, forceRefresh, excludeUrls, excludeFormats, onUpgradeAvailable)
 
     fun cancelResolution(videoId: String) {
         intelligentAudioResolver.cancelResolution(videoId)

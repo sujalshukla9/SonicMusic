@@ -22,7 +22,10 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 
 import android.net.Uri
 import java.io.File
@@ -39,6 +42,9 @@ import com.google.common.collect.ImmutableList
 import com.sonicmusic.app.R
 import com.sonicmusic.app.data.local.datastore.SettingsDataStore
 import com.sonicmusic.app.domain.model.Song
+import com.sonicmusic.app.domain.model.AudioStreamCandidate
+import com.sonicmusic.app.domain.model.AudioStreamInfo
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.domain.model.StreamQuality
 import com.sonicmusic.app.domain.repository.SongRepository
 import com.sonicmusic.app.features.player.audio.PlaybackGain
@@ -55,6 +61,7 @@ import com.sonicmusic.app.features.player.notification.MediaNotificationProvider
 import com.sonicmusic.app.app.MainActivity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -67,6 +74,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -134,7 +142,9 @@ class PlaybackService : MediaSessionService() {
 
         // Retry configuration
         private const val MAX_RETRY_ATTEMPTS = 3
+        private const val MAX_SOURCE_RETRIES = 4
         private const val RETRY_DELAY_MS = 1000L
+        private const val SOURCE_RETRY_TIMEOUT_MS = 20_000L
 
         // Stream request headers (YouTube/CDN is stricter with generic agents on some devices)
         private const val YOUTUBE_STREAM_USER_AGENT =
@@ -351,6 +361,13 @@ class PlaybackService : MediaSessionService() {
         val httpDataSourceFactory = DynamicUserAgentHttpDataSourceFactory(baseHttpDataSourceFactory)
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
         return DefaultMediaSourceFactory(dataSourceFactory)
+            .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy() {
+                override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
+                    // Switch sources promptly when the CDN rejects the request.
+                    if (loadErrorInfo.exception.httpStatus() == 403) return C.TIME_UNSET
+                    return super.getRetryDelayMsFor(loadErrorInfo)
+                }
+            })
     }
     
     private fun setupNotificationProvider() {
@@ -540,6 +557,11 @@ class PlaybackService : MediaSessionService() {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             updateTrackGain(targetPlayer)
             if (targetPlayer != player) return
+            if (sourceRecovery?.matches(targetPlayer) == false) {
+                recoveryJob?.cancel()
+                sourceRecovery = null
+                retryAttempts = 0
+            }
             crossfadeEngine?.invalidatePreparedTrack()
             Log.d(TAG, "Track changed: ${mediaItem?.mediaMetadata?.title}")
 
@@ -631,7 +653,6 @@ class PlaybackService : MediaSessionService() {
                 Player.STATE_READY -> {
                     // Reset retry counter on successful playback
                     retryAttempts = 0
-                    lastErrorCode = 0
                     if (targetPlayer.isPlaying) {
                         playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.PLAYING)
                         startCrossfadeMonitor()
@@ -646,10 +667,10 @@ class PlaybackService : MediaSessionService() {
                     playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
                 }
                 Player.STATE_IDLE -> {
-                    /* Player is idle */
-                    retryAttempts = 0
                     stopCrossfadeMonitor()
-                    playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
+                    if (targetPlayer.playerError == null) {
+                        playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.IDLE)
+                    }
                 }
                 Player.STATE_BUFFERING -> {
                     playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.BUFFERING)
@@ -696,8 +717,7 @@ class PlaybackService : MediaSessionService() {
         
         override fun onPlayerError(error: PlaybackException) {
             if (targetPlayer != player) return
-            Log.e(TAG, "Player error: ${error.message}", error)
-            playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.ERROR, error.message)
+            Log.w(TAG, "Playback error ${error.errorCodeName}, HTTP status=${error.httpStatus()}")
             handlePlaybackError(error)
         }
     }
@@ -745,130 +765,148 @@ class PlaybackService : MediaSessionService() {
         }
     }
     
+    private class SourceRecovery(val mediaId: String, val index: Int) {
+        val urls = mutableSetOf<String>()
+        val formats = mutableSetOf<PlaybackStreamFormat>()
+        var refreshedPremiumStream = false
+
+        fun matches(player: ExoPlayer): Boolean =
+            player.currentMediaItem?.mediaId == mediaId && player.currentMediaItemIndex == index
+    }
+
+    private var sourceRecovery: SourceRecovery? = null
+    private var recoveryJob: Job? = null
     private var retryAttempts = 0
-    private var lastErrorCode = 0
 
     private fun handlePlaybackError(error: PlaybackException) {
         val p = player ?: return
+        val item = p.currentMediaItem ?: return
+        val uri = item.localConfiguration?.uri?.toString().orEmpty()
+        val index = p.currentMediaItemIndex
+        val position = p.currentPosition
 
-        val isNetworkError = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
-            error.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED
+        fun isCurrent(): Boolean = p == player && p.currentMediaItemIndex == index &&
+            p.currentMediaItem == item
 
-        lastErrorCode = error.errorCode
+        fun fail(message: String) {
+            if (!isCurrent()) return
+            sourceRecovery = null
+            retryAttempts = 0
+            p.pause()
+            playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.ERROR, message)
+            playerServiceConnection.get().updatePlaybackRecovery(item.mediaId, message)
+        }
 
-        if (isNetworkError && !isNetworkAvailable()) {
-            val mediaItem = p.currentMediaItem
-            if (mediaItem != null) {
-                val videoId = mediaItem.mediaId
-                val currentPos = p.currentPosition
-                serviceScope.launch {
-                    val title = mediaItem.mediaMetadata.title?.toString()
-                    val artist = mediaItem.mediaMetadata.artist?.toString()
-                    val source = songRepository.getSongStreamSource(videoId, title, artist)
-                    if (source is com.sonicmusic.app.data.repository.SongSource.Local) {
-                        Log.d(TAG, "Internet dropped. Found offline file, performing seamless fallback: ${source.filePath}")
-                        val fileUri = normalizeSourceUri(source.filePath)
-                        val updatedMediaItem = mediaItem.buildUpon()
-                            .setUri(fileUri)
-                            .build()
-                        val index = p.currentMediaItemIndex
-                        p.replaceMediaItem(index, updatedMediaItem)
-                        p.seekTo(index, currentPos)
-                        p.prepare()
-                        p.play()
-                        return@launch
-                    } else {
-                        Log.w(TAG, "Internet dropped and song is not available offline. Pausing playback gracefully.")
-                        p.pause()
-                    }
-                }
+        fun retrySource(url: String) {
+            p.replaceMediaItem(index, item.buildUpon().setUri(normalizeSourceUri(url)).build())
+            p.seekTo(index, position)
+            p.prepare()
+        }
+
+        val sourceError = when (error.errorCode) {
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_UNSPECIFIED -> true
+            else -> false
+        }
+        val connectionError = error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+
+        recoveryJob?.cancel()
+        if (!sourceError && !connectionError) {
+            if (p.hasNextMediaItem()) {
+                p.seekToNext()
+                p.prepare()
             } else {
-                Log.d(TAG, "Network unavailable, skipping auto-retry")
-                retryAttempts = 0
+                fail("Playback failed: " + error.errorCodeName)
             }
             return
         }
 
-        val isExpiredUrlError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
-            error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
-            error.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED
+        playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.RECOVERING, "Trying to resume playback…")
+        playerServiceConnection.get().updatePlaybackRecovery(item.mediaId)
+        recoveryJob = serviceScope.launch {
+            try {
+                if (!isNetworkAvailable()) {
+                    val local = withTimeoutOrNull(SOURCE_RETRY_TIMEOUT_MS) {
+                        songRepository.getSongStreamSource(item.mediaId, item.mediaMetadata.title?.toString(),
+                            item.mediaMetadata.artist?.toString())
+                    } as? com.sonicmusic.app.data.repository.SongSource.Local
+                    if (!isCurrent()) return@launch
+                    if (local != null && normalizeSourceUri(local.filePath).toString() != uri) {
+                        retrySource(local.filePath)
+                    } else {
+                        fail("You're offline. Connect to the internet to play this track.")
+                    }
+                    return@launch
+                }
 
-        val currentMediaItem = p.currentMediaItem
-        val failedUri = currentMediaItem?.localConfiguration?.uri?.toString()
-        if (currentMediaItem != null && !failedUri.isNullOrBlank() && (isExpiredUrlError || isNetworkError)) {
-            val songId = currentMediaItem.mediaId
-            val currentPos = p.currentPosition
-            serviceScope.launch {
-                Log.w(TAG, "Playback error for $songId. Attempting automatic candidate fallback.")
-                val fallbackResult = songRepository.getStreamWithInfo(
-                    songId = songId,
-                    quality = StreamQuality.BEST,
-                    forceRefresh = true,
-                    excludeUrls = setOf(failedUri),
-                    title = currentMediaItem.mediaMetadata.title?.toString(),
-                    artist = currentMediaItem.mediaMetadata.artist?.toString()
-                )
-                fallbackResult.onSuccess { (newUrl, newInfo) ->
-                    if (p.currentMediaItem?.mediaId == songId &&
-                        p.currentMediaItem?.localConfiguration?.uri?.toString() == failedUri &&
-                        newUrl != failedUri && newUrl.isNotBlank()
-                    ) {
-                        Log.d(TAG, "Recovered from playback error for $songId.")
-                        val updatedMediaItem = currentMediaItem.buildUpon()
-                            .setUri(normalizeSourceUri(newUrl))
-                            .build()
-                        val index = p.currentMediaItemIndex
-                        p.replaceMediaItem(index, updatedMediaItem)
-                        p.seekTo(index, currentPos)
-                        p.prepare()
-                        p.play()
-                        audioEngine.updateStreamInfo(newInfo, songId)
-                        playbackDiagnostics.onCandidateSelected(songId, newInfo)
-                        return@launch
+                if (connectionError && retryAttempts < MAX_RETRY_ATTEMPTS) {
+                    delay(RETRY_DELAY_MS * ++retryAttempts)
+                    if (isCurrent()) p.prepare()
+                    return@launch
+                }
+
+                val recovery = sourceRecovery?.takeIf { it.matches(p) }
+                    ?: SourceRecovery(item.mediaId, index).also { sourceRecovery = it }
+                val info = playbackDiagnostics.resolvedStreamInfo(item.mediaId, uri)
+                val format = PlaybackStreamFormat.fromUrl(uri, info?.itag)
+                val forbidden = error.httpStatus() == 403
+                val refreshPremium = forbidden && format?.client == "WEB_REMIX" &&
+                    AudioStreamInfo.nominalBitrateForItag(format.itag) == 256 &&
+                    !recovery.refreshedPremiumStream
+                if (refreshPremium) {
+                    recovery.refreshedPremiumStream = true
+                    Log.d(TAG, "Requesting one fresh Premium URL for ${item.mediaId} after HTTP 403")
+                } else if (forbidden && format != null) {
+                    val expiry = AudioStreamCandidate.extractExpiryFromUrl(uri)
+                    if ((expiry == null || expiry > System.currentTimeMillis()) && recovery.formats.add(format)) {
+                        Log.d(TAG, "CDN rejected itag=${format.itag}, client=${format.client}. Trying another format.")
                     }
                 }
-            }
-        }
-
-        when {
-            // Expired stream URL errors - URL likely expired, pause and wait for URL refresh callback
-            isExpiredUrlError -> {
-                Log.d(TAG, "Expired stream URL error (${error.errorCode}), waiting for URL refresh callback")
-                retryAttempts = 0
-                p.pause()
-            }
-
-            // Network errors with automatic retry
-            isNetworkError && retryAttempts < MAX_RETRY_ATTEMPTS -> {
-                retryAttempts++
-                Log.d(TAG, "Network error, retrying ${retryAttempts}/$MAX_RETRY_ATTEMPTS...")
-                serviceScope.launch {
-                    delay(RETRY_DELAY_MS * retryAttempts) // Progressive delay
-                    p.prepare()
-                    p.play()
+                if (uri.isEmpty() || !recovery.urls.add(uri) || recovery.urls.size > MAX_SOURCE_RETRIES) {
+                    fail("No playable stream is available for this track.")
+                    return@launch
                 }
-            }
 
-            // Max retries reached or other errors - skip to next if available
-            p.hasNextMediaItem() -> {
-                Log.d(TAG, "Skipping to next due to error")
-                retryAttempts = 0
-                p.seekToNext()
-                p.prepare()
-            }
+                val fallback = withTimeoutOrNull(SOURCE_RETRY_TIMEOUT_MS) {
+                    songRepository.getStreamWithInfo(
+                        songId = item.mediaId,
+                        quality = StreamQuality.BEST,
+                        // Excluding the failed URL refreshes the account stream while retaining public candidates.
+                        forceRefresh = recovery.formats.isEmpty() && !refreshPremium,
+                        excludeUrls = recovery.urls.toSet(),
+                        excludeFormats = recovery.formats.toSet(),
+                        title = item.mediaMetadata.title?.toString(),
+                        artist = item.mediaMetadata.artist?.toString(),
+                    ).getOrNull()
+                }
+                if (!isCurrent()) return@launch
+                if (fallback == null || fallback.first in recovery.urls) {
+                    fail("No playable stream is available for this track.")
+                    return@launch
+                }
 
-            else -> {
-                Log.d(TAG, "Playback error, no next item to skip to")
-                retryAttempts = 0
+                val (url, replacementInfo) = fallback
+                Log.d(TAG, "Retrying ${item.mediaId} with itag=${replacementInfo.itag}")
+                retrySource(url)
+                audioEngine.updateStreamInfo(replacementInfo, item.mediaId)
+                playbackDiagnostics.onCandidateSelected(item.mediaId, replacementInfo)
+                playerServiceConnection.get().cacheRecoveredStream(item.mediaId, url)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Log.w(TAG, "Playback recovery failed (${error.javaClass.simpleName})")
+                fail("Couldn't resume this track. Try playing it again.")
             }
         }
     }
+
+    private fun Throwable.httpStatus(): Int? =
+        generateSequence(this) { it.cause }
+            .filterIsInstance<HttpDataSource.InvalidResponseCodeException>().firstOrNull()?.responseCode
 
     private fun normalizeSourceUri(source: String): Uri {
         val parsed = Uri.parse(source)

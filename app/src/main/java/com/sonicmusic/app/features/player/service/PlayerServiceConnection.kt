@@ -6,7 +6,6 @@ import android.net.Uri
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
-import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -19,6 +18,9 @@ import com.sonicmusic.app.domain.model.Song
 import com.sonicmusic.app.domain.model.deviceLocalSongId
 import com.sonicmusic.app.data.repository.SongSource
 import com.sonicmusic.app.data.remote.source.YouTubePlaybackSessionStore
+import com.sonicmusic.app.domain.audio.models.QualityClassification
+import com.sonicmusic.app.domain.audio.resolver.STANDARD_STREAM_RECHECK_MS
+import com.sonicmusic.app.domain.model.PlaybackStreamFormat
 import com.sonicmusic.app.features.player.service.PlaybackService
 import com.sonicmusic.app.features.player.audio.AudioEngine
 import com.sonicmusic.app.features.player.audio.PlaybackDiagnostics
@@ -264,25 +266,40 @@ class PlayerServiceConnection @Inject constructor(
     // INTERNAL STATE
     // ═══════════════════════════════════════════════════════════════
     
-    // Cache of stream URLs by song ID
-    // Keep cache small — YouTube URLs expire after ~6h, no point hoarding stale ones.
-    private val streamUrlCache: MutableMap<String, String> = Collections.synchronizedMap(
-        object : LinkedHashMap<String, String>(32, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean {
+    private data class QueuedStream(val url: String, val expiresAtMs: Long)
+
+    private val streamUrlCache: MutableMap<String, QueuedStream> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, QueuedStream>(32, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, QueuedStream>?): Boolean {
                 return size > 50
             }
         }
     )
 
     private fun usableQueueStreamUrl(songId: String): String? = synchronized(streamUrlCache) {
-        val url = streamUrlCache[songId] ?: return@synchronized null
-        val expiresAt = AudioStreamCandidate.extractExpiryFromUrl(url)
-        if (expiresAt != null && expiresAt <= System.currentTimeMillis() + 60_000L) {
+        val cached = streamUrlCache[songId] ?: return@synchronized null
+        if (cached.expiresAtMs <= System.currentTimeMillis()) {
             streamUrlCache.remove(songId)
             null
         } else {
-            url
+            cached.url
         }
+    }
+
+    private fun cacheQueueStream(songId: String, url: String) = synchronized(streamUrlCache) {
+        // Reusing a queue entry never extends the lifetime of a fallback.
+        if (streamUrlCache[songId]?.url == url) return@synchronized
+        val urlDeadline = AudioStreamCandidate.extractExpiryFromUrl(url)?.minus(60_000L) ?: Long.MAX_VALUE
+        val expiry = if (playbackSessionStore.connected.value && url.startsWith("https://") &&
+            audioEngine.getOptimalQuality().prefersHighestQuality
+        ) {
+            val info = playbackDiagnostics.resolvedStreamInfo(songId, url)
+            val itag = info?.itag ?: PlaybackStreamFormat.fromUrl(url)?.itag
+            val highQuality = AudioStreamInfo.nominalBitrateForItag(itag) == 256 ||
+                (info?.bitrate ?: 0) >= 224 || info?.qualityClassification == QualityClassification.VERIFIED_LOSSLESS
+            if (highQuality) urlDeadline else minOf(urlDeadline, System.currentTimeMillis() + STANDARD_STREAM_RECHECK_MS)
+        } else urlDeadline
+        streamUrlCache[songId] = QueuedStream(url, expiry)
     }
     
     // Queue of songs (mirrors player queue)
@@ -292,8 +309,6 @@ class PlayerServiceConnection @Inject constructor(
     private var lastQueueCheckTime = 0L
     private var onQueueNeedsMoreSongs: ((String) -> Unit)? = null
     
-    // Callback for when stream URL expires/fails (needs re-extraction)
-    private var onStreamUrlExpired: ((String) -> Unit)? = null
     
     // Track if we're at end of queue
     private var reachedEndOfQueue = false
@@ -455,7 +470,7 @@ class PlayerServiceConnection @Inject constructor(
                     reachedEndOfQueue = true
                 }
                 Player.STATE_IDLE -> {
-                    _isBuffering.value = false
+                    _isBuffering.value = playbackDiagnostics.uiState.value?.playbackStatus == PlaybackStatus.RECOVERING
                 }
             }
         }
@@ -529,25 +544,6 @@ class PlayerServiceConnection @Inject constructor(
             if (_shuffleEnabled.value != shuffleModeEnabled) applyQueueShuffle(shuffleModeEnabled)
         }
 
-        override fun onPlayerError(error: PlaybackException) {
-            Log.e(TAG, "Player error: ${error.message}, code: ${error.errorCode}")
-            
-            // Check if this is an HTTP error (likely expired URL)
-            if (isHttpError(error)) {
-                Log.d(TAG, "HTTP error detected, requesting URL refresh...")
-                _isBuffering.value = true
-                _playbackError.value = null // Don't flash playback error banner during transparent recovery
-                playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.RECOVERING, "Refreshing stream...")
-                _currentSong.value?.let { song ->
-                    onStreamUrlExpired?.invoke(song.id)
-                }
-            } else {
-                _playbackError.value = "Playback error: ${error.errorCodeName}"
-                _isBuffering.value = false
-                playbackDiagnostics.onPlaybackStatusChanged(PlaybackStatus.ERROR, error.message)
-            }
-        }
-        
         override fun onPositionDiscontinuity(
             oldPosition: Player.PositionInfo,
             newPosition: Player.PositionInfo,
@@ -563,19 +559,6 @@ class PlayerServiceConnection @Inject constructor(
 
     }
     
-    /**
-     * Check if error is HTTP-related (403 Forbidden, 410 Gone, etc.)
-     */
-    private fun isHttpError(error: PlaybackException): Boolean {
-        return when (error.errorCode) {
-            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
-            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
-            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
-            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
-            PlaybackException.ERROR_CODE_UNSPECIFIED -> true
-            else -> false
-        }
-    }
 
     // ═══════════════════════════════════════════════════════════════
     // CONNECTION MANAGEMENT
@@ -671,8 +654,15 @@ class PlayerServiceConnection @Inject constructor(
     /**
      * Set callback for when stream URL expires and needs refresh
      */
-    fun setOnStreamUrlExpired(callback: (String) -> Unit) {
-        onStreamUrlExpired = callback
+    internal fun updatePlaybackRecovery(songId: String, error: String? = null) {
+        if (mediaController?.currentMediaItem?.mediaId != songId && _currentSong.value?.id != songId) return
+        _playbackError.value = error
+        _isBuffering.value = error == null
+        if (error != null) _isPlaying.value = false
+    }
+
+    internal fun cacheRecoveredStream(songId: String, url: String) {
+        cacheQueueStream(songId, url)
     }
 
     /**
@@ -794,7 +784,7 @@ class PlayerServiceConnection @Inject constructor(
             }
 
             // Cache the URL
-            streamUrlCache[song.id] = finalUrl
+            cacheQueueStream(song.id, finalUrl)
             
             // Clear and set new queue
             val queueSnapshot: List<Song>
@@ -890,7 +880,7 @@ class PlayerServiceConnection @Inject constructor(
             }
 
             // Cache the URL
-            streamUrlCache[song.id] = finalUrl
+            cacheQueueStream(song.id, finalUrl)
             
             val controller = mediaController ?: return@launch
             val count = controller.mediaItemCount
@@ -972,7 +962,7 @@ class PlayerServiceConnection @Inject constructor(
 
         // Cache only playable URLs.
         playableEntries.forEach { (_, song, url) ->
-            streamUrlCache[song.id] = url
+            cacheQueueStream(song.id, url)
         }
 
         // Keep local queue and player queue aligned 1:1.
@@ -1096,7 +1086,7 @@ class PlayerServiceConnection @Inject constructor(
                     playbackDiagnostics.onCandidateSelected(targetSong.id, resolvedInfo)
                 }
 
-                streamUrlCache[targetSong.id] = targetUrl
+                cacheQueueStream(targetSong.id, targetUrl)
 
                 // 3. Play the target song on MediaController
                 val targetMediaItem = createMediaItem(targetSong, targetUrl)
@@ -1403,7 +1393,7 @@ class PlayerServiceConnection @Inject constructor(
             _currentSong.value = targetSong
             _currentQueueIndex.value = targetIndex
             persistCurrentState(targetSong, snapshot, targetIndex, 0L)
-            streamUrlCache[targetSong.id] = url
+            cacheQueueStream(targetSong.id, url)
             audioEngine.clearStreamInfo()
             controller.setMediaItem(createMediaItem(targetSong, url))
             controller.prepare()
@@ -1465,7 +1455,7 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     fun insertPlayNext(song: Song, streamUrl: String) {
-        streamUrlCache[song.id] = streamUrl
+        cacheQueueStream(song.id, streamUrl)
         insertPlayNext(song)
     }
 
@@ -1501,7 +1491,7 @@ class PlayerServiceConnection @Inject constructor(
     }
 
     fun addToQueue(song: Song, streamUrl: String) {
-        streamUrlCache[song.id] = streamUrl
+        cacheQueueStream(song.id, streamUrl)
         addSongToQueue(song)
     }
 
@@ -1537,7 +1527,7 @@ class PlayerServiceConnection @Inject constructor(
                     is SongSource.Remote -> source.streamUrl
                     SongSource.Unavailable -> break
                 }
-                streamUrlCache[song.id] = url
+                cacheQueueStream(song.id, url)
                 syncUpcomingMediaItems()
             }
         }

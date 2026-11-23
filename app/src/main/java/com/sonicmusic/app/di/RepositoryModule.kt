@@ -152,9 +152,12 @@ abstract class RepositoryModule {
             newPipeService: NewPipeService,
             okHttpClient: okhttp3.OkHttpClient,
             audioQualitySelector: com.sonicmusic.app.features.player.audio.AudioQualitySelector,
-            accountClient: com.sonicmusic.app.data.remote.source.YouTubeMusicAccountClient
+            accountClient: com.sonicmusic.app.data.remote.source.YouTubeMusicAccountClient,
+            musicPlayerSolver: com.sonicmusic.app.data.remote.source.YoutubeMusicPlayerSolver,
         ): AudioStreamExtractor {
-            return AudioStreamExtractor(newPipeService, okHttpClient, audioQualitySelector, accountClient)
+            return AudioStreamExtractor(
+                newPipeService, okHttpClient, audioQualitySelector, accountClient, musicPlayerSolver
+            )
         }
     }
 }

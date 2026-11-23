@@ -27,7 +27,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -125,8 +124,6 @@ class PlayerViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "SonicPlayer"
-        private const val MAX_URL_RETRY_ATTEMPTS = 3
-        private const val URL_RETRY_DELAY_MS = 1500L
         private const val RECOMMENDATION_BATCH_SIZE = 20 // Larger batches to load queue fast
         private const val TARGET_QUEUE_SIZE = 20
         private const val SAME_SONG_RETRY_COOLDOWN_MS = 2000L // Fast retry for queue refill
@@ -323,12 +320,6 @@ class PlayerViewModel @Inject constructor(
             }
         }
         
-        // Set up callback for URL expiration (retry with fresh URL)
-        playerServiceConnection.setOnStreamUrlExpired { songId ->
-            Log.d(TAG, "Stream URL expired for: $songId")
-            retryWithFreshUrl(songId)
-        }
-        
         // Observe current song for like status and played tracking
         var likeObserverJob: Job? = null
         viewModelScope.launch {
@@ -406,70 +397,6 @@ class PlayerViewModel @Inject constructor(
         }
     }
     
-    /**
-     * Retry playback with a fresh stream URL (when current URL expires)
-     */
-    private fun retryWithFreshUrl(songId: String) {
-        viewModelScope.launch {
-            Log.d(TAG, "Retrying with fresh URL for: $songId")
-
-            // Clear cached URL first
-            songRepository.clearCachedStreamUrl(songId)
-
-            // Find song in queue or fetch it from repository
-            val song = queue.value.find { it.id == songId }
-                ?: songRepository.getSongById(songId).getOrNull()
-
-            if (song != null) {
-                var lastException: Exception? = null
-
-                // Retry with progressive delay
-                repeat(MAX_URL_RETRY_ATTEMPTS) { attempt ->
-                    try {
-                        Log.d(TAG, "URL refresh attempt ${attempt + 1}/$MAX_URL_RETRY_ATTEMPTS")
-
-                        val result = songRepository.getStreamUrl(
-                            songId = song.id,
-                            quality = StreamQuality.BEST,
-                            forceRefresh = true,
-                            title = song.title,
-                            artist = song.artist,
-                            durationSec = song.duration
-                        )
-
-                        result.onSuccess { streamUrl ->
-                            Log.d(TAG, "Got fresh stream URL, resuming/updating playback")
-                            _error.value = null
-                            playerServiceConnection.playSongInPlace(song, streamUrl)
-                            return@launch
-                        }.onFailure { exception ->
-                            Log.e(TAG, "Failed to get fresh URL", exception)
-                            lastException = exception as? Exception
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error refreshing URL", e)
-                        lastException = e
-                    }
-
-                    // Wait before retry (except on last attempt)
-                    if (attempt < MAX_URL_RETRY_ATTEMPTS - 1) {
-                        delay(URL_RETRY_DELAY_MS * (attempt + 1))
-                    }
-                }
-
-                // All retries failed
-                val errMsg = "Failed to refresh stream for ${song.title}: ${lastException?.message ?: " Unknown error"}"
-                _error.value = errMsg
-                Log.w(TAG, "$errMsg. Skipping to next song.")
-                delay(1500)
-                if (_error.value == errMsg) {
-                    _error.value = null
-                }
-                playerServiceConnection.skipToNext()
-            }
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════
     // PLAYBACK OPERATIONS - ViTune Style
     // ═══════════════════════════════════════════════════════════════

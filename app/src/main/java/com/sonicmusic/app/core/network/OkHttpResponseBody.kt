@@ -8,7 +8,7 @@ import java.io.IOException
 
 internal class HttpStatusException(val code: Int) : IllegalStateException("Request failed with HTTP $code")
 
-internal data class HttpResponseBody(val code: Int, val body: String?) {
+internal data class HttpResponseBody(val code: Int, val body: String?, val location: String? = null) {
     val isSuccessful: Boolean get() = code in 200..299
 }
 
@@ -30,7 +30,7 @@ internal suspend fun Call.awaitResponseBody(): HttpResponseBody =
             override fun onResponse(call: Call, response: Response) {
                 continuation.resumeWith(runCatching {
                     response.use {
-                        HttpResponseBody(it.code, if (it.isSuccessful) it.body?.string() else null)
+                        HttpResponseBody(it.code, if (it.isSuccessful) it.body?.string() else null, it.header("Location"))
                     }
                 })
             }

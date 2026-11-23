@@ -12,6 +12,11 @@ on:
         required: false
         default: ""
         type: string
+      previous_apk_url:
+        description: HTTPS URL for the last production APK when no GitHub release exists
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: sonicmusic-apk-release
@@ -36,45 +41,65 @@ jobs:
         run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
       - name: Build Release APK
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_VERSION_NAME: ${{ inputs.version }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+          BASELINE_URL: ${{ inputs.previous_apk_url }}
+          RELEASE_CERT_SHA256: ${{ vars.RELEASE_CERT_SHA256 }}
           KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
           KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+          INNERTUBE_API_KEY: ${{ secrets.INNERTUBE_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
         run: |
           set -euo pipefail
           chmod +x gradlew
 
-          # Use release signing if keystore secret is available, otherwise debug signing
-          if [ -n "${KEYSTORE_B64:-}" ]; then
-            echo "Using release keystore for signing"
-            umask 077
-            export KEYSTORE_FILE="$RUNNER_TEMP/sonicmusic-release.jks"
-            trap 'rm -f "$KEYSTORE_FILE"' EXIT
-            printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
-            ./gradlew :app:assembleRelease --no-daemon
+          for setting in KEYSTORE_B64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD RELEASE_CERT_SHA256 INNERTUBE_API_KEY YOUTUBE_API_KEY; do
+            if [ -z "${!setting}" ]; then
+              echo "::error::Missing production release setting: $setting"
+              exit 1
+            fi
+          done
+
+          release_tag=$(gh release list --repo "$GH_REPO" --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq '.[0].tagName // empty')
+          export PREVIOUS_RELEASE_APK="$RUNNER_TEMP/sonicmusic-baseline.apk"
+          if [ -n "$release_tag" ]; then
+            apk_name=$(gh release view "$release_tag" --repo "$GH_REPO" --json assets --jq \
+              '[.assets[] | select(.name | endswith(".apk")) | .name] | if length == 1 then .[0] elif index("app-release.apk") != null then "app-release.apk" else empty end')
+            if [ -z "$apk_name" ]; then
+              echo "::error::The previous release does not identify a universal APK."
+              exit 1
+            fi
+            gh release download "$release_tag" --repo "$GH_REPO" --pattern "$apk_name" --output "$PREVIOUS_RELEASE_APK"
           else
-            echo "No keystore secret found — building with debug signing"
-            ./gradlew :app:assembleRelease --no-daemon \
-              -Pandroid.injected.signing.store.file="" \
-              -Pandroid.injected.signing.store.password="" \
-              -Pandroid.injected.signing.key.alias="" \
-              -Pandroid.injected.signing.key.password="" || \
-            ./gradlew :app:assembleDebug --no-daemon
+            if [[ "$BASELINE_URL" != https://* ]]; then
+              echo "::error::Provide the last production APK's HTTPS URL for the first GitHub release."
+              exit 1
+            fi
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+              --output "$PREVIOUS_RELEASE_APK" -- "$BASELINE_URL"
           fi
+
+          umask 077
+          export KEYSTORE_FILE="$RUNNER_TEMP/sonicmusic-release.jks"
+          trap 'rm -f "$KEYSTORE_FILE"' EXIT
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$KEYSTORE_FILE"
+          unset KEYSTORE_B64
+          ./gradlew :app:assembleRelease --no-daemon
 
           mkdir -p out
-          # Find the built APK (release or debug)
-          APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
-          echo "Built APK: $APK"
-
-          DISPLAY_NAME="${{ inputs.release_title }}"
-          if [ -n "$DISPLAY_NAME" ]; then
-            SAFE_NAME=$(echo "$DISPLAY_NAME" | sed 's/ /-/g')
-            cp "$APK" "out/${SAFE_NAME}.apk"
-          else
-            cp "$APK" "out/app-release.apk"
+          release_dir=app/build/outputs/apk/release
+          apk_name=app-release.apk
+          if [ -n "$RELEASE_TITLE" ]; then
+            slug=$(printf '%s' "$RELEASE_TITLE" | LC_ALL=C sed -E 's/[^A-Za-z0-9_-]+/-/g; s/^-+//; s/-+$//')
+            if [ -n "$slug" ]; then apk_name="$slug.apk"; fi
           fi
+          cp "$release_dir/app-release.apk" "out/$apk_name"
+          jq --arg apk "$apk_name" '.apk = $apk' "$release_dir/sonicmusic-update.json" > out/sonicmusic-update.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -103,17 +128,16 @@ jobs:
           tag="v$VERSION_NAME"
           display_title="${RELEASE_TITLE:-Sonic Music $VERSION_NAME}"
 
-          # Delete old release/tag with same name if it exists
-          gh release delete "$tag" --repo "$GH_REPO" --yes 2>/dev/null || true
-
-          # Create the release and upload the APK
+          apk=(out/*.apk)
+          test "${#apk[@]}" -eq 1
           gh release create "$tag" \
             --repo "$GH_REPO" \
             --title "$display_title" \
             --target "$GITHUB_SHA" \
             --generate-notes \
             --latest \
-            out/*
+            "${apk[0]}#$display_title.apk" \
+            out/sonicmusic-update.json
 
           echo "✅ Published: $display_title ($tag)"
           gh release view "$tag" --repo "$GH_REPO"
